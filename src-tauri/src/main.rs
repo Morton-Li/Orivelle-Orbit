@@ -1,1 +1,3 @@
-fn main() { orbit_desktop::run() }
+fn main() {
+    orbit_desktop::run()
+}

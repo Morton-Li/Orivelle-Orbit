@@ -51,6 +51,7 @@ pub fn run() {
             } else {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/gui")
             };
+            let instance = orbit_core::runtime_lock::RuntimeLock::acquire(&root)?;
             let store = Arc::new(Store::open(&root)?);
             let paths = if authorized {
                 let home = app
@@ -97,7 +98,10 @@ pub fn run() {
             service.observe_authorization(Arc::new(move |event| {
                 let _ = handle.emit("orbit://authorization", event);
             }))?;
-            app.manage(Native { service });
+            app.manage(Native {
+                service,
+                _instance: instance,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -138,9 +142,9 @@ pub fn run() {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 let native = window.state::<Native>();
                 if let Ok(settings) = native.service.store.settings() {
-                    if settings.close_behavior == "keep_running"
-                        || settings.close_behavior == "platform_default"
-                            && cfg!(target_os = "macos")
+                    if cfg!(target_os = "macos")
+                        && (settings.close_behavior == "keep_running"
+                            || settings.close_behavior == "platform_default")
                     {
                         api.prevent_close();
                         let _ = window.hide();

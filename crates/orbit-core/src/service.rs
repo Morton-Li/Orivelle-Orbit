@@ -23,7 +23,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -105,6 +105,35 @@ struct PendingAuthorization {
     cancel: Arc<tokio::sync::Notify>,
     committed_connection: Option<String>,
 }
+pub struct MutationLease {
+    count: Arc<AtomicU64>,
+}
+impl Drop for MutationLease {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+pub struct MaintenanceLease<'a> {
+    service: &'a Service,
+}
+impl Drop for MaintenanceLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(_gate) = self.service.account_gate.lock() {
+            // A storage failure keeps the application closed to mutations until restart.
+            if self
+                .service
+                .store
+                .set_meta("maintenance_active", "0")
+                .is_ok()
+            {
+                self.service
+                    .maintenance_active
+                    .store(false, Ordering::SeqCst);
+                self.service.changed();
+            }
+        }
+    }
+}
 pub struct Service {
     pub store: Arc<Store>,
     pub vault: Arc<dyn Vault>,
@@ -112,6 +141,8 @@ pub struct Service {
     pub paths: SystemPaths,
     state_revision: AtomicU64,
     login_epoch: AtomicU64,
+    maintenance_active: AtomicBool,
+    mutation_count: Arc<AtomicU64>,
     account_gate: Mutex<()>,
     clients: Mutex<Vec<ClientView>>,
     previews: Mutex<HashMap<String, PreviewEntry>>,
@@ -157,6 +188,7 @@ impl Service {
         }
         store.set_meta("preview_runtime_nonce", &uuid())?;
         store.delete("authorization-pending", "local")?;
+        store.set_meta("maintenance_active", "0")?;
         for client in &clients {
             store.put("client-state", client.client.as_str(), "local", client)?;
         }
@@ -167,6 +199,8 @@ impl Service {
             paths,
             state_revision: AtomicU64::new(1),
             login_epoch: AtomicU64::new(0),
+            maintenance_active: AtomicBool::new(false),
+            mutation_count: Arc::new(AtomicU64::new(0)),
             account_gate: Mutex::new(()),
             clients: Mutex::new(clients),
             previews: Mutex::new(HashMap::new()),
@@ -191,6 +225,46 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))? = Some(observer);
         Ok(())
+    }
+    pub fn ensure_mutations_available(&self) -> Result<()> {
+        if self.maintenance_active.load(Ordering::SeqCst) {
+            return Err(fail("update_busy"));
+        }
+        Ok(())
+    }
+    pub fn begin_mutation(&self) -> Result<MutationLease> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
+        self.mutation_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
+            .map_err(|_| fail("update_busy"))?;
+        Ok(MutationLease {
+            count: self.mutation_count.clone(),
+        })
+    }
+    pub fn begin_maintenance(&self) -> Result<MaintenanceLease<'_>> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
+        if self.active_tasks()?
+            || self.mutation_count.load(Ordering::SeqCst) > 0
+            || self
+                .pending_authorization
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?
+                .is_some()
+        {
+            return Err(fail("update_busy"));
+        }
+        self.store.set_meta("maintenance_active", "1")?;
+        self.maintenance_active.store(true, Ordering::SeqCst);
+        self.changed();
+        Ok(MaintenanceLease { service: self })
     }
     pub fn observe_authorization(&self, observer: AuthorizationObserver) -> Result<()> {
         *self
@@ -296,6 +370,7 @@ impl Service {
     }
     /// This local cancellation never revokes or clears an existing active account.
     pub fn cancel_login(&self, id: &str) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         let event = {
             let _gate = self
                 .account_gate
@@ -339,6 +414,7 @@ impl Service {
         self.bootstrap()
     }
     pub fn fail_login(&self, id: &str, error: PublicError) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         self.complete_authorization(id, Err(error), true)
     }
     fn changed(&self) {
@@ -432,6 +508,7 @@ impl Service {
         Ok((image, snap))
     }
     fn persist_task(&self, snap: &TaskSnapshot) -> Result<()> {
+        self.ensure_mutations_available()?;
         self.store.put_task(snap)?;
         self.changed();
         Ok(())
@@ -685,6 +762,7 @@ impl Service {
         })
     }
     pub async fn start_login(self: &Arc<Self>, panel_origin: &str) -> Result<(LoginStart, String)> {
+        let operation = self.begin_mutation()?;
         let origin = canonical_origin(panel_origin)?;
         let epoch = {
             let _gate = self
@@ -793,6 +871,7 @@ impl Service {
         let service = self.clone();
         let pending_id = view.request_id.clone();
         tokio::spawn(async move {
+            let _operation = operation;
             let result = tokio::select! {
                 _=cancel.notified()=>Err(fail("authorization_cancelled")),
                 result=tokio::time::timeout(Duration::from_secs(seconds),service.finish_login(listener,installation,
@@ -983,6 +1062,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
         if self.login_epoch.load(Ordering::SeqCst) != epoch {
             return Err(fail("authorization_cancelled"));
         }
@@ -1087,6 +1167,7 @@ impl Service {
         installation: &Installation,
         delivery: CredentialDelivery,
     ) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -1162,6 +1243,7 @@ impl Service {
         &self,
         id: &str,
     ) -> Result<(ConnectionRecord, Installation, ProofSession)> {
+        let _operation = self.begin_mutation()?;
         let lock = {
             let mut locks = self
                 .session_locks
@@ -1259,6 +1341,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
         let current = self.record(&record.view.id)?;
         self.ensure_installation_available(&record.installation_id)?;
         if current.view.revision != record.view.revision
@@ -1285,6 +1368,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
         let mut current = self.record(&expected.view.id)?;
         if current.view.revision == expected.view.revision
             && current.authorization_epoch == expected.authorization_epoch
@@ -1417,6 +1501,7 @@ impl Service {
         self.invalidate_evidence()
     }
     async fn refresh_account_cache(&self, id: &str, activate: bool) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         let lock = self.network_lock(&format!("account/{id}"))?;
         let _serial = lock.lock().await;
         let (record, installation, session) = self.fresh_session(id).await?;
@@ -1495,6 +1580,7 @@ impl Service {
         Ok(())
     }
     pub async fn refresh_account(&self, id: &str, revision: u64) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         let record = self.record(id)?;
         if record.view.revision != revision || record.session_status != "authenticated" {
             return Err(fail("connection_conflict"));
@@ -1527,6 +1613,7 @@ impl Service {
         self.bootstrap()
     }
     pub fn select_connection(&self, id: &str) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -1599,11 +1686,20 @@ impl Service {
         Ok(bytes)
     }
     pub fn active_tasks(&self) -> Result<bool> {
-        Ok(self
-            .store
-            .list::<TaskView>("task", None)?
-            .iter()
-            .any(|t| ["queued", "sending", "waiting", "saving"].contains(&t.state.as_str())))
+        if self.image_workers.available_permits() != 2
+            || self.image_memory_workers.available_permits() != 2
+            || !self
+                .received_memory
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?
+                .is_empty()
+        {
+            return Ok(true);
+        }
+        Ok(self.store.list::<TaskView>("task", None)?.iter().any(|t| {
+            t.local_save_available
+                || ["queued", "sending", "waiting", "saving"].contains(&t.state.as_str())
+        }))
     }
     pub fn select_node(
         &self,
@@ -1611,6 +1707,7 @@ impl Service {
         node_id: &str,
         expected_revision: u64,
     ) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -1636,6 +1733,7 @@ impl Service {
         self.bootstrap()
     }
     pub async fn list_models(&self, id: &str) -> Result<Vec<ModelView>> {
+        let _operation = self.begin_mutation()?;
         let (record, installation, session) = self.fresh_session(id).await?;
         let node = record
             .view
@@ -1687,6 +1785,7 @@ impl Service {
         Ok(models)
     }
     fn commit_logout(&self, id: &str) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -1726,6 +1825,7 @@ impl Service {
         Ok(())
     }
     pub async fn logout(&self, id: &str) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         {
             let _gate = self
                 .account_gate
@@ -1763,6 +1863,7 @@ impl Service {
         expected: &str,
         confirmed: bool,
     ) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         if !confirmed {
             return Err(fail("confirmation_required"));
         }
@@ -1816,6 +1917,7 @@ impl Service {
         revoke: bool,
         confirmed: bool,
     ) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         if !confirmed {
             return Err(fail("confirmation_required"));
         }
@@ -2007,6 +2109,7 @@ impl Service {
         client: ClientKind,
         model_id: &str,
     ) -> Result<ConfigPreview> {
+        let _operation = self.begin_mutation()?;
         let (record, cache) = self.current_connection(id, revision)?;
         let model = cache
             .models
@@ -2276,6 +2379,7 @@ impl Service {
         confirmed: bool,
         restore: bool,
     ) -> Result<ConfigResult> {
+        let _operation = self.begin_mutation()?;
         if !confirmed {
             return Err(fail("confirmation_required"));
         }
@@ -2325,6 +2429,7 @@ impl Service {
         })
     }
     pub fn export_claude_import(&self, id: &str, confirmed: bool, path: &Path) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         if !confirmed {
             return Err(fail("confirmation_required"));
         }
@@ -2386,6 +2491,7 @@ impl Service {
         Ok(())
     }
     pub fn preview_restore(&self, backup_id: &str) -> Result<ConfigPreview> {
+        let _operation = self.begin_mutation()?;
         validate_uuid(backup_id)?;
         let backup = self
             .store
@@ -2476,6 +2582,7 @@ impl Service {
         Ok(preview)
     }
     pub fn import_inputs(&self, id: &str, paths: &[PathBuf]) -> Result<Vec<ImageInput>> {
+        let _operation = self.begin_mutation()?;
         let _permit = self.image_memory_permit()?;
         let record = self.record(id)?;
         let _ = self.current_connection(id, record.view.revision)?;
@@ -2493,6 +2600,7 @@ impl Service {
         id: &str,
         revision: u64,
     ) -> Result<ImageInput> {
+        let _operation = self.begin_mutation()?;
         let _permit = self.image_memory_permit()?;
         let (record, _) = self.current_connection(id, revision)?;
         let (image, snapshot) = self.scoped_image(image_id)?;
@@ -2517,6 +2625,7 @@ impl Service {
         parameters: ImageParameters,
         input_ids: Vec<String>,
     ) -> Result<TaskView> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -2812,6 +2921,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
         let current = self
             .store
             .get::<TaskView>("task", &snapshot.task.id)?
@@ -2860,6 +2970,7 @@ impl Service {
         self.persist_task(snapshot)
     }
     async fn reconcile_task(&self, snapshot: &mut TaskSnapshot) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         let lock = self.network_lock(&format!("task/{}", snapshot.task.id))?;
         let _serial = lock.lock().await;
         let Some(request_id) = &snapshot.task.request_id else {
@@ -2918,6 +3029,7 @@ impl Service {
         Ok(())
     }
     pub fn cancel_image_task(&self, id: &str) -> Result<TaskView> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -2953,6 +3065,7 @@ impl Service {
         Ok(snapshot.task)
     }
     pub fn retry_local_save(&self, id: &str) -> Result<TaskView> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
@@ -2991,6 +3104,7 @@ impl Service {
         Ok((image, images::owned_image_path(&self.store, &name)?))
     }
     pub fn export_image(&self, id: &str, target: &Path) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         let _permit = self.image_memory_permit()?;
         let (_, source) = self.image_for_native_export(id)?;
         if !target.is_absolute() || source == target {
@@ -3001,10 +3115,15 @@ impl Service {
         crate::config::atomic_write(target, &bytes)
     }
     pub fn delete_history(&self, ids: &[String], confirmed: bool) -> Result<u32> {
+        let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        if self.image_workers.available_permits() != 2 {
+            return Err(fail("image_busy"));
+        }
+        let _files = self.store.image_files_lock()?;
         if !confirmed || ids.is_empty() || ids.len() > 100 {
             return Err(fail("confirmation_required"));
         }
@@ -3088,6 +3207,11 @@ impl Service {
         )
     }
     pub fn update_settings(&self, patch: Value) -> Result<SettingsView> {
+        let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let mut current = serde_json::to_value(self.store.settings()?)
             .map_err(|_| fail("serialization_failed"))?;
         let object = patch.as_object().ok_or_else(|| fail("invalid_settings"))?;
@@ -3106,6 +3230,7 @@ impl Service {
             || !["zh-CN", "en"].contains(&settings.locale.as_str())
             || !["platform_default", "keep_running", "quit"]
                 .contains(&settings.close_behavior.as_str())
+            || settings.close_behavior == "keep_running" && !cfg!(target_os = "macos")
             || settings.image_disk_limit_bytes < 32 * 1024 * 1024
             || settings.image_disk_limit_bytes > 64 * 1024 * 1024 * 1024
             || settings.preview_cache_limit_bytes > 1024 * 1024 * 1024
@@ -3124,6 +3249,7 @@ impl Service {
         Ok(settings)
     }
     pub fn prepare_diagnostics(&self) -> Result<DiagnosticsPreview> {
+        let _operation = self.begin_mutation()?;
         let bootstrap = self.bootstrap()?;
         let text = format!(
             "Orivelle Orbit 0.1.0\nPlatform: {} / {}\nSchema: {}\nState revision: {}\nSession state: {}\nVault mode: {}\nConnections: {}\nLocal tasks: {}\nClient states: {}\nImages, prompts, account identifiers, URLs, tokens and configuration contents excluded.\n",
@@ -3165,6 +3291,7 @@ impl Service {
         Ok(preview)
     }
     pub fn export_diagnostics(&self, id: &str, path: &Path) -> Result<()> {
+        let _operation = self.begin_mutation()?;
         validate_uuid(id)?;
         let diagnostics = self
             .diagnostics
@@ -3191,6 +3318,7 @@ impl Service {
         Ok(groups.into_values().collect())
     }
     pub fn preview_forget_installation(&self, id: &str) -> Result<ForgetInstallationPreview> {
+        let _operation = self.begin_mutation()?;
         validate_uuid(id)?;
         let _gate = self
             .account_gate
@@ -3260,6 +3388,7 @@ impl Service {
         acknowledged: bool,
         confirmed: bool,
     ) -> Result<BootstrapView> {
+        let _operation = self.begin_mutation()?;
         if !confirmed || !acknowledged {
             return Err(fail("confirmation_required"));
         }
@@ -5371,6 +5500,201 @@ mod tests {
             assert!(service.bootstrap().unwrap().pending_authorization.is_none());
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             service.cancel_login(&start.request_id).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn update_maintenance_blocks_new_sends_and_snapshot_mutations_during_installer_await() {
+        let (_dir, service, _vault, mut record, install) = setup();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+            )
+            .unwrap();
+        let before = service.bootstrap().unwrap().state_revision;
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        service.http.scripted(Arc::new(move |_| {
+            let counted = counted.clone();
+            Box::pin(async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Err(fail("unexpected_fixture_http"))
+            })
+        }));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (a, b) = (started.clone(), release.clone());
+        let installer = service.clone();
+        let task = tokio::spawn(async move {
+            let _lease = installer.begin_maintenance()?;
+            a.notify_one();
+            b.notified().await;
+            Err::<(), PublicError>(fail("update_unavailable"))
+        });
+        started.notified().await;
+        let view = service.bootstrap().unwrap();
+        assert!(view.maintenance_active);
+        assert!(view.state_revision > before);
+        assert_eq!(
+            service
+                .create_image_task(
+                    &record.view.id,
+                    record.view.revision,
+                    "synthetic",
+                    "prompt".into(),
+                    ImageParameters::default(),
+                    vec![]
+                )
+                .unwrap_err()
+                .code,
+            "update_busy"
+        );
+        let mut snapshot = task_snapshot(&record);
+        snapshot.task.state = "queued".into();
+        snapshot.task.request_id = None;
+        assert_eq!(
+            service
+                .send_image_once(&mut snapshot)
+                .await
+                .unwrap_err()
+                .code,
+            "update_busy"
+        );
+        assert_eq!(
+            service
+                .update_settings(json!({"locale":"en"}))
+                .unwrap_err()
+                .code,
+            "update_busy"
+        );
+        assert_eq!(
+            service.select_connection(&record.view.id).unwrap_err().code,
+            "update_busy"
+        );
+        assert_eq!(
+            service.preview_restore(&uuid()).unwrap_err().code,
+            "update_busy"
+        );
+        assert_eq!(
+            service
+                .apply_client_config(&uuid(), true, true)
+                .unwrap_err()
+                .code,
+            "update_busy"
+        );
+        assert_eq!(
+            service.logout(&record.view.id).await.unwrap_err().code,
+            "update_busy"
+        );
+        assert!(
+            service
+                .store
+                .list::<TaskView>("task", None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        release.notify_one();
+        assert_eq!(task.await.unwrap().unwrap_err().code, "update_unavailable");
+        let after = service.bootstrap().unwrap();
+        assert!(!after.maintenance_active);
+        assert!(after.state_revision > view.state_revision);
+        service.update_settings(json!({"locale":"en"})).unwrap();
+        let lease = service.begin_maintenance().unwrap();
+        drop(lease);
+        assert!(service.begin_mutation().is_ok());
+    }
+    #[tokio::test]
+    async fn cancelled_inflight_workers_and_unsaved_material_still_block_installation() {
+        let (_dir, service, _vault, mut record, install) = setup();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+            )
+            .unwrap();
+        let mut snapshot = task_snapshot(&record);
+        snapshot.task.state = "queued".into();
+        snapshot.task.request_id = None;
+        service.persist_task(&snapshot).unwrap();
+        let permit = service.image_workers.clone().acquire_owned().await.unwrap();
+        service.claim_image_send(&mut snapshot).unwrap();
+        assert_eq!(
+            service.cancel_image_task(&snapshot.task.id).unwrap().state,
+            "unconfirmed"
+        );
+        assert_eq!(
+            service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        drop(permit);
+        let lease = service.begin_maintenance().unwrap();
+        drop(lease);
+        let mut current = service
+            .store
+            .get::<TaskSnapshot>("task-snapshot", &snapshot.task.id)
+            .unwrap()
+            .unwrap();
+        current.task.local_save_available = true;
+        service.persist_task(&current).unwrap();
+        assert_eq!(
+            service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        current.task.local_save_available = false;
+        service.persist_task(&current).unwrap();
+        let operation = service.begin_mutation().unwrap();
+        assert_eq!(
+            service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        drop(operation);
+        assert!(service.begin_maintenance().is_ok());
+    }
+    #[tokio::test]
+    async fn pending_account_get_holds_snapshot_lease_until_response_is_committed() {
+        let (_dir, service, _vault, record, _install) = setup();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (a, b) = (started.clone(), release.clone());
+        let reply = golden()["bootstrap_reply"].clone();
+        service.http.scripted(Arc::new(move |_| {
+            let (a, b, reply) = (a.clone(), b.clone(), reply.clone());
+            Box::pin(async move {
+                a.notify_one();
+                b.notified().await;
+                Ok(crate::network::RemoteResponse {
+                    status: 200,
+                    request_id: None,
+                    bytes: serde_json::to_vec(&reply).unwrap(),
+                })
+            })
+        }));
+        let worker = service.clone();
+        let id = record.view.id.clone();
+        let revision = record.view.revision;
+        let task = tokio::spawn(async move { worker.refresh_account(&id, revision).await });
+        started.notified().await;
+        assert_eq!(
+            service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        release.notify_one();
+        task.await.unwrap().unwrap();
+        let lease = service.begin_maintenance().unwrap();
+        drop(lease);
+        assert!(!service.bootstrap().unwrap().maintenance_active);
+    }
+    #[test]
+    fn window_keep_running_is_only_an_available_macos_setting() {
+        let (_dir, service, _vault, _record, _install) = setup();
+        let result = service.update_settings(json!({"close_behavior":"keep_running"}));
+        if cfg!(target_os = "macos") {
+            assert_eq!(result.unwrap().close_behavior, "keep_running");
+        } else {
+            assert_eq!(result.unwrap_err().code, "invalid_settings");
         }
     }
     #[tokio::test]

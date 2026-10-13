@@ -13,6 +13,7 @@ use tauri_plugin_opener::OpenerExt;
 
 pub struct Native {
     pub service: Arc<Service>,
+    pub _instance: orbit_core::runtime_lock::RuntimeLock,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -531,11 +532,13 @@ pub async fn forget_installation(
 }
 #[tauri::command]
 pub async fn check_update(native: State<'_, Native>, request: Empty) -> Result<UpdateView> {
+    let _operation = native.service.begin_mutation()?;
     let _ = request;
     updates::check(&native.service.http, &native.service.store).await
 }
 #[tauri::command]
 pub async fn download_update(native: State<'_, Native>, request: Update) -> Result<UpdateView> {
+    let _operation = native.service.begin_mutation()?;
     updates::download(
         &native.service.http,
         &native.service.store,
@@ -559,9 +562,7 @@ pub async fn install_update(
     if native.service.paths.isolated {
         return Err(fail("integration_authorization_required"));
     }
-    if native.service.active_tasks()? {
-        return Err(fail("update_busy"));
-    }
+    let _maintenance = native.service.begin_maintenance()?;
     let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
     let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
     let _ = updates::prepare_schema_backup(&native.service.store, &artifact.candidate().version)?;
