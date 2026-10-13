@@ -93,6 +93,220 @@ test("changing accounts clears prompt and drafts before another submit", async (
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
+test("healthy session rotation preserves a draft while disabling submission, and expiry clears it", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await page.locator("#image-model").selectOption("synthetic-image");
+  await page.locator("#image-prompt").fill("Same actor draft during rotation");
+  const rotating = bootstrap("synthetic-account-a", 2);
+  rotating.session.status = "refreshing";
+  await pushState(page, rotating);
+  await expect(page.locator("#image-prompt")).toHaveValue(
+    "Same actor draft during rotation",
+  );
+  await expect(page.locator("#image-model")).toHaveValue("synthetic-image");
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeDisabled();
+  await pushState(page, bootstrap("synthetic-account-a", 3));
+  await expect(page.locator("#image-prompt")).toHaveValue(
+    "Same actor draft during rotation",
+  );
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeEnabled();
+  const expired = bootstrap("synthetic-account-a", 4);
+  expired.session.status = "expired";
+  await pushState(page, expired);
+  await expect(page.locator("#image-prompt")).toHaveValue("");
+  await expect(page.locator("#image-model")).toHaveValue("");
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+test("browser authorization remains pending and supports explicit denial and cancellation", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "连接账户", exact: true })
+    .last()
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("#panel-address").fill("https://panel.invalid");
+  await dialog.getByRole("button", { name: "继续", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "继续", exact: true }),
+  ).toBeDisabled();
+  await expect(dialog.locator("#panel-address")).toBeDisabled();
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.pushAuthorization({
+      request_id: "synthetic-login",
+      state: "denied",
+      error: null,
+    }),
+  );
+  await expect(
+    page.getByText("浏览器授权已拒绝，当前账户保持原状态。"),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "继续", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "继续", exact: true }).click();
+  await expect(dialog.locator("#panel-address")).toBeDisabled();
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await calls(page, "cancel_login")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.pushAuthorization({
+      request_id: "synthetic-login",
+      state: "connected",
+      error: null,
+    }),
+  );
+  await expect(page.locator(".account-summary h2")).toHaveText(
+    "Synthetic synthetic-account-a",
+  );
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+test("synthetic Windows capabilities never offer an inaccessible hidden background window", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  state.platform = "windows";
+  await fixture(page, { state });
+  await page.goto("/#/settings");
+  await expect(
+    page.locator('#setting-close option[value="keep_running"]'),
+  ).toHaveCount(0);
+  await expect(page.locator("#setting-close option")).toHaveCount(2);
+});
+
+test("update maintenance disables image submission and settings without losing a same-account draft", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await page.locator("#image-model").selectOption("synthetic-image");
+  await page
+    .locator("#image-prompt")
+    .fill("Draft retained through maintenance");
+  const state = bootstrap("synthetic-account-a", 2);
+  state.maintenance_active = true;
+  await pushState(page, state);
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator("#image-prompt")).toHaveValue(
+    "Draft retained through maintenance",
+  );
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "设置", exact: true })
+    .click();
+  await expect(page.locator("#setting-theme")).toBeDisabled();
+  await expect(
+    page.getByText("正在准备安装更新，新的图片请求与配置变更已暂停。"),
+  ).toBeVisible();
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+for (const recoverable of [false, true]) {
+  test(`conflicted backup offers a gated preview while logged out; recoverable=${recoverable}`, async ({
+    page,
+  }) => {
+    const state = bootstrap();
+    state.session.status = "logged_out";
+    state.session.account = null;
+    state.session.inference_credential_status = "unavailable";
+    state.backups = [
+      {
+        id: "synthetic-conflict-backup",
+        client: "codex",
+        account_id: "synthetic-account-a",
+        account_label: "Fixture A",
+        panel_origin: "https://panel.invalid",
+        installation_id: "fixture-install",
+        created_at: "2026-10-13T03:00:00Z",
+        expires_at: "2026-11-12T03:00:00Z",
+        file_count: 2,
+        state: "conflict",
+      },
+    ];
+    await fixture(page, {
+      state,
+      restoreMode: recoverable ? "recoverable" : "blocked",
+    });
+    await page.goto("/#/access");
+    await page
+      .locator("#backup-account")
+      .selectOption("https://panel.invalid/synthetic-account-a");
+    await page.getByRole("button", { name: "预览恢复", exact: true }).click();
+    const apply = page
+      .getByRole("dialog")
+      .getByRole("button", { name: "确认应用", exact: true });
+    if (recoverable) {
+      await expect(apply).toBeEnabled();
+      await apply.click();
+      expect(await calls(page, "restore_client_config")).toBe(1);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+    } else {
+      await expect(apply).toBeDisabled();
+      expect(await calls(page, "restore_client_config")).toBe(0);
+    }
+    expect(await calls(page, "create_image_task")).toBe(0);
+    expect(await calls(page, "apply_client_config")).toBe(0);
+  });
+}
+
+test("Claude import export requires confirmation and never claims configuration was applied", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  state.clients[1]!.configuration_state = "not_configured";
+  state.clients[1]!.loaded_state = "unconfirmed";
+  await fixture(page, { state, claudeImport: true });
+  await page.goto("/#/access");
+  await page.locator("#model-claude").selectOption("synthetic-text");
+  await page.getByRole("button", { name: "预览配置" }).last().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "确认应用" })).toBeDisabled();
+  const exportButton = dialog.getByRole("button", {
+    name: "确认并导出 Claude 导入文件",
+  });
+  await expect(exportButton).toBeEnabled();
+  expect(await calls(page, "export_claude_import")).toBe(0);
+  await exportButton.click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Claude 导入文件已保存。请手动导入并完整重启，配置载入和连接仍待确认。",
+    ),
+  ).toBeVisible();
+  expect(await calls(page, "apply_client_config")).toBe(0);
+  expect(await calls(page, "export_claude_import")).toBe(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.export_claude_import,
+    ),
+  ).toEqual({ preview_id: "synthetic-preview", confirmed: true });
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "首页", exact: true })
+    .click();
+  await expect(page.getByText("配置已保存", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("尚未配置", { exact: true })).toHaveCount(1);
+});
+
 test("UTF-8 bound prevents a paid submit and failed paid submission never retries", async ({
   page,
 }) => {
@@ -224,6 +438,10 @@ test("theme, language, wide window and accessible image tabs", async ({
     .getByRole("link", { name: "Images", exact: true })
     .click();
   const create = page.getByRole("tab", { name: "Create", exact: true });
+  await page.screenshot({
+    path: ".cache/evidence/images-composer-dark-wide.png",
+    fullPage: true,
+  });
   await create.focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Local history" })).toBeFocused();

@@ -5,7 +5,19 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   clearScreen: false,
-  server: { host: "127.0.0.1", port: 1420, strictPort: true },
+  server: {
+    host: "127.0.0.1",
+    port: 1420,
+    strictPort: true,
+    watch: {
+      ignored: [
+        "**/src-tauri/**",
+        "**/crates/**",
+        "**/runtime/**",
+        "**/.cache/**",
+      ],
+    },
+  },
   build: { target: ["es2022", "chrome111", "safari18"] },
   test: {
     environment: "jsdom",

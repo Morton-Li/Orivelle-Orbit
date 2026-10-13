@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-client-config"
+description = "Enables the preview_client_config command without any pre-configured scope."
+commands.allow = ["preview_client_config"]
+
+[[permission]]
+identifier = "deny-preview-client-config"
+description = "Denies the preview_client_config command without any pre-configured scope."
+commands.deny = ["preview_client_config"]

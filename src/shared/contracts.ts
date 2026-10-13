@@ -44,8 +44,14 @@ export type PricingMeter =
   | "image_output";
 export type PriceView = {
   currency: string | null;
-  source: "sales" | "official" | "operator_estimate" | "unknown";
-  status: "configured" | "unpriced_free" | "unavailable" | "unknown";
+  source:
+    | "sales"
+    | "official"
+    | "configured_reference"
+    | "operator_estimate"
+    | "unknown";
+  status:
+    "configured" | "partial" | "unpriced_free" | "unavailable" | "unknown";
   rates: {
     meter: PricingMeter;
     unit_size: number;
@@ -66,6 +72,7 @@ export type AccountView = {
   id: string;
   label: string;
   email: string | null;
+  updated_at: string | null;
   member: boolean;
   wallet: Money | null;
   budget: {
@@ -80,6 +87,7 @@ export type SessionView = {
     | "logged_out"
     | "authorizing"
     | "authenticated"
+    | "refreshing"
     | "expired"
     | "revoked"
     | "vault_unavailable";
@@ -178,6 +186,12 @@ export type ImageInputsEvent = {
   connection_revision: number;
   inputs: ImageInput[];
 };
+export type ScopedErrorEvent = {
+  error: PublicError;
+  account_id: string | null;
+  connection_id: string | null;
+  connection_revision: number | null;
+};
 export type TaskView = {
   id: string;
   account_id: string;
@@ -256,6 +270,9 @@ export type BootstrapView = {
   schema_version: 1;
   state_revision: number;
   source: "local" | "remote" | "synthetic";
+  platform: "macos" | "windows" | null;
+  pending_authorization: LoginStart | null;
+  maintenance_active: boolean;
   session: SessionView;
   connections: ConnectionView[];
   installations: InstallationView[];
@@ -276,6 +293,7 @@ type ConfigPreviewBase = {
   redacted_diff: string;
   expires_at: string;
   can_apply: boolean;
+  can_export_import: boolean;
   blocking_reason: string | null;
 };
 export type ConfigPreview = ConfigPreviewBase &
@@ -309,6 +327,11 @@ export type ConfigResult = {
   backup_group_id: string | null;
 };
 export type LoginStart = { request_id: string; expires_at: string };
+export type AuthorizationEvent = {
+  request_id: string;
+  state: "connected" | "denied" | "expired" | "failed" | "cancelled";
+  error: PublicError | null;
+};
 export type DiagnosticsPreview = {
   id: string;
   text: string;
@@ -339,6 +362,11 @@ export type ForgetInstallationPreview = {
 export interface IpcCommands {
   bootstrap: { args: Record<string, never>; result: BootstrapView };
   start_login: { args: { panel_origin: string }; result: LoginStart };
+  cancel_login: { args: { request_id: string }; result: BootstrapView };
+  refresh_account: {
+    args: { connection_id: string; expected_revision: number };
+    result: BootstrapView;
+  };
   logout: { args: { connection_id: string }; result: BootstrapView };
   select_connection: { args: { connection_id: string }; result: BootstrapView };
   select_node: {
@@ -376,6 +404,10 @@ export interface IpcCommands {
   apply_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;
+  };
+  export_claude_import: {
+    args: { preview_id: string; confirmed: true };
+    result: { saved: boolean };
   };
   preview_restore: { args: { backup_group_id: string }; result: ConfigPreview };
   restore_client_config: {

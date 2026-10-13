@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useOrbitStore } from "../stores/orbit";
 import { t } from "../shared/i18n";
-import { formatMoney } from "../shared/format";
+import { formatMoney, formatUpdatedAt } from "../shared/format";
 import ClientRow from "../components/ClientRow.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import StatusBadge from "../components/StatusBadge.vue";
@@ -13,6 +13,12 @@ const store = useOrbitStore();
     <h1>{{ t("home.title") }}</h1>
     <p class="page-description">{{ t("home.description") }}</p>
   </section>
+  <p v-if="store.account" class="field-hint">
+    {{ t("home.updatedAt") }} · {{ formatUpdatedAt(store.account.updated_at) }}
+    <span v-if="store.state.session.status === 'refreshing'">
+      · {{ t("login.refreshing") }}</span
+    >
+  </p>
   <section class="account-strip" :aria-label="t('home.account')">
     <span class="account-avatar" aria-hidden="true"
       ><OrbitIcon name="account"

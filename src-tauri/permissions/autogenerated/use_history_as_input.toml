@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-use-history-as-input"
+description = "Enables the use_history_as_input command without any pre-configured scope."
+commands.allow = ["use_history_as_input"]
+
+[[permission]]
+identifier = "deny-use-history-as-input"
+description = "Denies the use_history_as_input command without any pre-configured scope."
+commands.deny = ["use_history_as_input"]

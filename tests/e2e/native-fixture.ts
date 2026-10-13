@@ -1,15 +1,25 @@
 import type { Page } from "@playwright/test";
-import type { BootstrapView, ModelView } from "../../src/shared/contracts";
+import type {
+  AuthorizationEvent,
+  BootstrapView,
+  ModelView,
+} from "../../src/shared/contracts";
 import { bootstrap, imageModel, task } from "../fixtures";
 
 export type FixtureControl = {
   counts: Record<string, number>;
   lastRequests: Record<string, Record<string, unknown>>;
   pushState: (state: BootstrapView) => void;
+  pushAuthorization: (event: AuthorizationEvent) => void;
 };
 export async function fixture(
   page: Page,
-  options: { state?: BootstrapView; paidFailure?: boolean } = {},
+  options: {
+    state?: BootstrapView;
+    paidFailure?: boolean;
+    claudeImport?: boolean;
+    restoreMode?: "blocked" | "recoverable";
+  } = {},
 ) {
   const state = options.state ?? bootstrap();
   const text: ModelView = {
@@ -21,7 +31,14 @@ export async function fixture(
     sales_price: null,
   };
   await page.addInitScript(
-    ({ initial, models, initialTask, paidFailure }) => {
+    ({
+      initial,
+      models,
+      initialTask,
+      paidFailure,
+      claudeImport,
+      restoreMode,
+    }) => {
       // Test-only in-memory IPC. This is injected by Playwright and is never included in the application bundle.
       const testWindow = window as unknown as {
         isTauri: boolean;
@@ -53,6 +70,13 @@ export async function fixture(
           current = value;
           emit("orbit://state", value);
         },
+        pushAuthorization(value) {
+          if (current.pending_authorization?.request_id === value.request_id) {
+            current.pending_authorization = null;
+            update();
+          }
+          emit("orbit://authorization", value);
+        },
       };
       function update() {
         current.state_revision++;
@@ -83,6 +107,23 @@ export async function fixture(
           const request = (args.request ?? {}) as Record<string, unknown>;
           control.lastRequests[command] = structuredClone(request);
           if (command === "bootstrap") return structuredClone(current);
+          if (command === "refresh_account") return structuredClone(current);
+          if (command === "start_login") {
+            current.pending_authorization = {
+              request_id: "synthetic-login",
+              expires_at: new Date(Date.now() + 60000).toISOString(),
+            };
+            update();
+            return current.pending_authorization;
+          }
+          if (command === "cancel_login") {
+            testWindow.__ORBIT_TEST__.pushAuthorization({
+              request_id: String(request.request_id),
+              state: "cancelled",
+              error: null,
+            });
+            return structuredClone(current);
+          }
           if (command === "list_models") return models;
           if (command === "update_settings") {
             current.settings = {
@@ -133,6 +174,40 @@ export async function fixture(
             update();
             return { deleted: ids.length };
           }
+          if (command === "preview_restore") {
+            const backup = current.backups.find(
+              (item) => item.id === request.backup_group_id,
+            )!;
+            return {
+              id: "synthetic-restore-preview",
+              client: backup.client,
+              operation: "restore",
+              target_version: "synthetic-version",
+              paths: ["/fixture/config"],
+              model_id: null,
+              context: null,
+              restore_owner: {
+                account_id: backup.account_id,
+                account_label: backup.account_label,
+                panel_origin: backup.panel_origin,
+                installation_id: backup.installation_id,
+              },
+              impact: ["Synthetic complete original operation group"],
+              redacted_diff: "- mixed fixture state\n+ original fixture group",
+              expires_at: new Date(Date.now() + 60000).toISOString(),
+              can_apply: restoreMode === "recoverable",
+              can_export_import: false,
+              blocking_reason:
+                restoreMode === "recoverable" ? null : "config_conflict",
+            };
+          }
+          if (command === "restore_client_config")
+            return {
+              client: "codex",
+              state: "restored",
+              loaded_state: "unconfirmed",
+              backup_group_id: null,
+            };
           if (command === "preview_client_config") {
             const connection = current.connections.find(
               (item) => item.id === request.connection_id,
@@ -159,10 +234,15 @@ export async function fixture(
               redacted_diff:
                 "- model = old\n+ model = synthetic-text\n+ helper binding = [redacted]",
               expires_at: new Date(Date.now() + 60000).toISOString(),
-              can_apply: true,
-              blocking_reason: null,
+              can_apply: !claudeImport || request.client !== "claude",
+              can_export_import: claudeImport && request.client === "claude",
+              blocking_reason:
+                claudeImport && request.client === "claude"
+                  ? "claude_library_schema_unverified"
+                  : null,
             };
           }
+          if (command === "export_claude_import") return { saved: true };
           throw { code: "unsupported_fixture_command", retryable: false };
         },
       };
@@ -172,6 +252,8 @@ export async function fixture(
       models: [imageModel(), text],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
+      claudeImport: options.claudeImport ?? false,
+      restoreMode: options.restoreMode ?? "blocked",
     },
   );
 }

@@ -4,7 +4,20 @@ import type {
   ConnectionView,
   Money,
 } from "./contracts";
-import { t } from "./i18n";
+import { locale, t } from "./i18n";
+
+export function formatUpdatedAt(value: string | null): string {
+  if (!value || value.length > 64 || !Number.isFinite(Date.parse(value)))
+    return t("common.unknown");
+  return new Intl.DateTimeFormat(locale.value, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(value));
+}
 
 export function formatDecimal(amount: string): string | null {
   if (amount.length > 96 || !/^-?\d+(?:\.\d+)?$/.test(amount)) return null;

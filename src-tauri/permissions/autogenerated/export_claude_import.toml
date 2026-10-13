@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-claude-import"
+description = "Enables the export_claude_import command without any pre-configured scope."
+commands.allow = ["export_claude_import"]
+
+[[permission]]
+identifier = "deny-export-claude-import"
+description = "Denies the export_claude_import command without any pre-configured scope."
+commands.deny = ["export_claude_import"]

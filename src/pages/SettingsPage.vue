@@ -23,7 +23,10 @@ const update = ref<UpdateView | null>(null);
 const installOpen = ref(false);
 const updateBusy = computed(() => store.busy.has("update"));
 const settingsDisabled = computed(
-  () => !store.native || store.busy.has("settings"),
+  () =>
+    !store.native ||
+    store.state.maintenance_active ||
+    store.busy.has("settings"),
 );
 const installationId = ref("");
 watch(
@@ -263,7 +266,9 @@ async function installUpdate() {
           class="button secondary"
           :disabled="
             !store.activeConnection ||
-            store.state.session.status !== 'authenticated'
+            !['authenticated', 'refreshing'].includes(
+              store.state.session.status,
+            )
           "
           @click="logoutConnectionId = store.activeConnection?.id ?? null"
         >
@@ -301,7 +306,9 @@ async function installUpdate() {
           <option value="platform_default">
             {{ t("settings.platformDefault") }}
           </option>
-          <option value="keep_running">{{ t("settings.keepRunning") }}</option>
+          <option v-if="store.state.platform === 'macos'" value="keep_running">
+            {{ t("settings.keepRunning") }}
+          </option>
           <option value="quit">{{ t("settings.quit") }}</option>
         </select>
       </div>

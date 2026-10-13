@@ -127,8 +127,8 @@ onUnmounted(() => {
         ><button
           class="icon-button"
           :aria-label="t('action.refresh')"
-          :disabled="!store.native || store.busy.has('bootstrap')"
-          @click="store.refresh"
+          :disabled="!store.native || store.busy.has('refresh')"
+          @click="store.refresh(true)"
         >
           <OrbitIcon name="refresh" />
         </button>
@@ -144,6 +144,9 @@ onUnmounted(() => {
         {{ t("common.desktopRequired") }}
       </div>
       <main id="main-content" class="page-container" tabindex="-1">
+        <p v-if="store.state.maintenance_active" class="info-box" role="status">
+          {{ t("common.updateMaintenance") }}
+        </p>
         <RouterView />
       </main>
     </div>
@@ -198,7 +201,8 @@ onUnmounted(() => {
           <button
             type="button"
             class="button secondary"
-            @click="store.loginOpen = false"
+            :disabled="store.busy.has('login-cancel')"
+            @click="store.cancelLogin"
           >
             {{ t("action.cancel") }}</button
           ><button

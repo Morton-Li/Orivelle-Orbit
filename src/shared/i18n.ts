@@ -42,6 +42,14 @@ const zh = {
     "复用 Orivelle 登录、验证和账户权限，无需手动输入 API key。",
   "home.wallet": "钱包余额",
   "home.budget": "当前可用预算",
+  "home.updatedAt": "账户数据更新于",
+  "login.refreshing": "正在更新会话",
+  "login.connected": "账户连接已完成。",
+  "login.denied": "浏览器授权已拒绝，当前账户保持原状态。",
+  "login.expired": "浏览器授权已过期，请重新连接。",
+  "login.cancelled": "已取消本次浏览器授权。",
+  "common.updateMaintenance":
+    "正在准备安装更新，新的图片请求与配置变更已暂停。",
   "home.balanceUnknown": "额度暂不可确认",
   "home.accountReady": "账户已连接",
   "home.permissionDenied": "当前账户无自动取得接入凭据的权限",
@@ -91,6 +99,11 @@ const zh = {
   "access.selectBackupAccount": "选择明确的原账户与 Panel 地址",
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
+  "access.exportImport": "确认并导出 Claude 导入文件",
+  "access.importHint":
+    "将保存 Claude 官方导入文件，请在目标应用中手动导入并完整重启。此操作不会写入客户端配置，载入和连接仍待确认。",
+  "access.importExported":
+    "Claude 导入文件已保存。请手动导入并完整重启，配置载入和连接仍待确认。",
   "access.previewExpired":
     "预览已过期，或账户、节点、凭据、模型及客户端版本已变化，请重新预览。",
   "access.removeHint":
@@ -147,6 +160,8 @@ const zh = {
   "images.priceSales": "平台销售价",
   "images.priceOfficial": "官方参考价",
   "images.priceEstimate": "运营估价",
+  "images.priceConfiguredReference": "平台配置参考价",
+  "images.pricePartial": "仅部分计费项配置了参考价，缺失价格保持未知。",
   "images.legacyBilling": "旧按张计费口径",
   "images.tokenBilling": "按图片 token 合同计费",
   "images.removeInput": "移除参考图",
@@ -281,6 +296,15 @@ const en: Record<keyof typeof zh, string> = {
     "Use Orivelle sign-in, verification and account permissions. No manual API key is needed.",
   "home.wallet": "Wallet balance",
   "home.budget": "Available budget",
+  "home.updatedAt": "Account data updated",
+  "login.refreshing": "Refreshing session",
+  "login.connected": "Account connected.",
+  "login.denied":
+    "Browser authorization was denied. The current account is unchanged.",
+  "login.expired": "Browser authorization expired. Connect again.",
+  "login.cancelled": "Browser authorization cancelled.",
+  "common.updateMaintenance":
+    "Preparing to install an update. New image requests and configuration changes are paused.",
   "home.balanceUnknown": "Allowance is unconfirmed",
   "home.accountReady": "Account connected",
   "home.permissionDenied":
@@ -336,6 +360,11 @@ const en: Record<keyof typeof zh, string> = {
     "Select the original account and Panel explicitly",
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
+  "access.exportImport": "Confirm and export Claude import file",
+  "access.importHint":
+    "Saves an official Claude import file. Import it in the client and fully restart. This operation does not write the client configuration; loading and connection remain unconfirmed.",
+  "access.importExported":
+    "Claude import file saved. Import it manually and fully restart; loading and connection remain unconfirmed.",
   "access.previewExpired":
     "This preview expired or the account, node, credential, model or client version changed. Create a new preview.",
   "access.removeHint":
@@ -395,6 +424,9 @@ const en: Record<keyof typeof zh, string> = {
   "images.priceSales": "Platform sale price",
   "images.priceOfficial": "Official reference",
   "images.priceEstimate": "Operator estimate",
+  "images.priceConfiguredReference": "Platform-configured reference",
+  "images.pricePartial":
+    "Only some meters have configured reference prices; missing rates remain unknown.",
   "images.legacyBilling": "Legacy per-image billing",
   "images.tokenBilling": "Image-token contract billing",
   "images.removeInput": "Remove reference",
