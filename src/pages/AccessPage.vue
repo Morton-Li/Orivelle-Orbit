@@ -321,7 +321,7 @@ function changeNode(event: Event) {
       /><button
         class="button secondary"
         :disabled="
-          backup.state !== 'available' || store.busy.has('preview-restore')
+          backup.state === 'unavailable' || store.busy.has('preview-restore')
         "
         @click="restore(backup.id)"
       >

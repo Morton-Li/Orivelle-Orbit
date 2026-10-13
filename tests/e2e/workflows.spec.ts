@@ -189,6 +189,54 @@ test("synthetic Windows capabilities never offer an inaccessible hidden backgrou
   await expect(page.locator("#setting-close option")).toHaveCount(2);
 });
 
+for (const recoverable of [false, true]) {
+  test(`conflicted backup offers a gated preview while logged out; recoverable=${recoverable}`, async ({
+    page,
+  }) => {
+    const state = bootstrap();
+    state.session.status = "logged_out";
+    state.session.account = null;
+    state.session.inference_credential_status = "unavailable";
+    state.backups = [
+      {
+        id: "synthetic-conflict-backup",
+        client: "codex",
+        account_id: "synthetic-account-a",
+        account_label: "Fixture A",
+        panel_origin: "https://panel.invalid",
+        installation_id: "fixture-install",
+        created_at: "2026-10-13T03:00:00Z",
+        expires_at: "2026-11-12T03:00:00Z",
+        file_count: 2,
+        state: "conflict",
+      },
+    ];
+    await fixture(page, {
+      state,
+      restoreMode: recoverable ? "recoverable" : "blocked",
+    });
+    await page.goto("/#/access");
+    await page
+      .locator("#backup-account")
+      .selectOption("https://panel.invalid/synthetic-account-a");
+    await page.getByRole("button", { name: "预览恢复", exact: true }).click();
+    const apply = page
+      .getByRole("dialog")
+      .getByRole("button", { name: "确认应用", exact: true });
+    if (recoverable) {
+      await expect(apply).toBeEnabled();
+      await apply.click();
+      expect(await calls(page, "restore_client_config")).toBe(1);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+    } else {
+      await expect(apply).toBeDisabled();
+      expect(await calls(page, "restore_client_config")).toBe(0);
+    }
+    expect(await calls(page, "create_image_task")).toBe(0);
+    expect(await calls(page, "apply_client_config")).toBe(0);
+  });
+}
+
 test("Claude import export requires confirmation and never claims configuration was applied", async ({
   page,
 }) => {

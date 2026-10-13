@@ -31,7 +31,7 @@ const current = computed(() => {
         backup.panel_origin === preview.restore_owner.panel_origin &&
         backup.installation_id === preview.restore_owner.installation_id &&
         backup.client === preview.client &&
-        backup.state === "available",
+        backup.state !== "unavailable",
     );
   const connection = store.activeConnection;
   if (!connection) return false;

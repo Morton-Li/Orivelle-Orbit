@@ -18,6 +18,7 @@ export async function fixture(
     state?: BootstrapView;
     paidFailure?: boolean;
     claudeImport?: boolean;
+    restoreMode?: "blocked" | "recoverable";
   } = {},
 ) {
   const state = options.state ?? bootstrap();
@@ -30,7 +31,14 @@ export async function fixture(
     sales_price: null,
   };
   await page.addInitScript(
-    ({ initial, models, initialTask, paidFailure, claudeImport }) => {
+    ({
+      initial,
+      models,
+      initialTask,
+      paidFailure,
+      claudeImport,
+      restoreMode,
+    }) => {
       // Test-only in-memory IPC. This is injected by Playwright and is never included in the application bundle.
       const testWindow = window as unknown as {
         isTauri: boolean;
@@ -166,6 +174,40 @@ export async function fixture(
             update();
             return { deleted: ids.length };
           }
+          if (command === "preview_restore") {
+            const backup = current.backups.find(
+              (item) => item.id === request.backup_group_id,
+            )!;
+            return {
+              id: "synthetic-restore-preview",
+              client: backup.client,
+              operation: "restore",
+              target_version: "synthetic-version",
+              paths: ["/fixture/config"],
+              model_id: null,
+              context: null,
+              restore_owner: {
+                account_id: backup.account_id,
+                account_label: backup.account_label,
+                panel_origin: backup.panel_origin,
+                installation_id: backup.installation_id,
+              },
+              impact: ["Synthetic complete original operation group"],
+              redacted_diff: "- mixed fixture state\n+ original fixture group",
+              expires_at: new Date(Date.now() + 60000).toISOString(),
+              can_apply: restoreMode === "recoverable",
+              can_export_import: false,
+              blocking_reason:
+                restoreMode === "recoverable" ? null : "config_conflict",
+            };
+          }
+          if (command === "restore_client_config")
+            return {
+              client: "codex",
+              state: "restored",
+              loaded_state: "unconfirmed",
+              backup_group_id: null,
+            };
           if (command === "preview_client_config") {
             const connection = current.connections.find(
               (item) => item.id === request.connection_id,
@@ -211,6 +253,7 @@ export async function fixture(
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
       claudeImport: options.claudeImport ?? false,
+      restoreMode: options.restoreMode ?? "blocked",
     },
   );
 }
