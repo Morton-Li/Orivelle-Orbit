@@ -13,7 +13,25 @@ use url::Url;
 pub struct Http {
     client: Client,
     allow_loopback: bool,
+    #[cfg(test)]
+    fixture: std::sync::Arc<std::sync::Mutex<Option<FixtureHandler>>>,
 }
+#[cfg(test)]
+pub struct FixtureRequest {
+    pub method: Method,
+    pub url: String,
+    pub body: Vec<u8>,
+    pub headers: Vec<(String, String)>,
+}
+#[cfg(test)]
+pub type FixtureHandler = std::sync::Arc<
+    dyn Fn(
+            FixtureRequest,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RemoteResponse>> + Send>>
+        + Send
+        + Sync,
+>;
 impl Http {
     pub fn new() -> Result<Self> {
         Self::build(false)
@@ -29,11 +47,17 @@ impl Http {
         Ok(Self {
             client,
             allow_loopback,
+            #[cfg(test)]
+            fixture: Default::default(),
         })
     }
     #[cfg(test)]
     pub fn fixture() -> Self {
         Self::build(true).unwrap()
+    }
+    #[cfg(test)]
+    pub fn scripted(&self, handler: FixtureHandler) {
+        *self.fixture.lock().unwrap() = Some(handler);
     }
     pub fn validate_url(&self, raw: &str) -> Result<Url> {
         let url = Url::parse(raw).map_err(|_| fail("invalid_remote_url"))?;
@@ -74,6 +98,27 @@ impl Http {
         observation: Option<std::sync::Arc<std::sync::Mutex<Option<(u16, Option<String>)>>>>,
     ) -> Result<RemoteResponse> {
         let url = self.validate_url(url)?;
+        #[cfg(test)]
+        {
+            let fixture = self.fixture.lock().unwrap().clone();
+            if let Some(handler) = fixture {
+                let response = handler(FixtureRequest {
+                    method,
+                    url: url.to_string(),
+                    body,
+                    headers,
+                })
+                .await?;
+                if response.bytes.len() as u64 > limit {
+                    return Err(fail("response_too_large"));
+                }
+                if let Some(observation) = observation {
+                    *observation.lock().map_err(|_| fail("state_unavailable"))? =
+                        Some((response.status, response.request_id.clone()));
+                }
+                return Ok(response);
+            }
+        }
         let mut request = self.client.request(method, url).timeout(timeout).body(body);
         for (key, value) in headers {
             request = request.header(key, value);

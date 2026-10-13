@@ -29,6 +29,12 @@ pub struct Connection {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RefreshAccount {
+    connection_id: String,
+    expected_revision: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Node {
     connection_id: String,
     node_id: String,
@@ -161,6 +167,16 @@ pub struct ScopedErrorEvent {
 pub fn bootstrap(native: State<'_, Native>, request: Empty) -> Result<BootstrapView> {
     let _ = request;
     native.service.bootstrap()
+}
+#[tauri::command]
+pub async fn refresh_account(
+    native: State<'_, Native>,
+    request: RefreshAccount,
+) -> Result<BootstrapView> {
+    native
+        .service
+        .refresh_account(&request.connection_id, request.expected_revision)
+        .await
 }
 #[tauri::command]
 pub async fn start_login(

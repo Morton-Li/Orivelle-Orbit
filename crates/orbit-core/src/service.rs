@@ -115,6 +115,7 @@ pub struct Service {
     image_workers: Arc<Semaphore>,
     image_memory_workers: Arc<Semaphore>,
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    network_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     received_memory: Mutex<HashMap<String, Vec<images::ReceivedImage>>>,
 }
 impl Service {
@@ -130,6 +131,19 @@ impl Service {
                     "unconfirmed"
                 }
                 .into();
+            }
+        }
+        for mut record in store.list::<ConnectionRecord>("connection", None)? {
+            if record.session_status == "refreshing"
+                || record.refresh_attempt.is_some() && record.session_status == "authenticated"
+            {
+                record.session_status = "expired".into();
+                store.put(
+                    "connection",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &record,
+                )?;
             }
         }
         store.set_meta("preview_runtime_nonce", &uuid())?;
@@ -153,6 +167,7 @@ impl Service {
             image_workers: Arc::new(Semaphore::new(2)),
             image_memory_workers: Arc::new(Semaphore::new(2)),
             session_locks: Mutex::new(HashMap::new()),
+            network_locks: Mutex::new(HashMap::new()),
             received_memory: Mutex::new(HashMap::new()),
         });
         service.coordinate_configuration_recovery()?;
@@ -210,6 +225,15 @@ impl Service {
         self.store
             .get("account-cache", &record.view.id)?
             .ok_or_else(|| fail("account_unavailable"))
+    }
+    fn network_lock(&self, id: &str) -> Result<Arc<tokio::sync::Mutex<()>>> {
+        Ok(self
+            .network_locks
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .entry(id.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone())
     }
     fn scoped_task(&self, id: &str) -> Result<TaskSnapshot> {
         validate_uuid(id)?;
@@ -322,7 +346,7 @@ impl Service {
         let mut backups = vec![];
         if let Some(record) = &active {
             session.status = record.session_status.clone();
-            if session.status == "authenticated"
+            if matches!(session.status.as_str(), "authenticated" | "refreshing")
                 && record
                     .session_expires_at
                     .is_some_and(|at| at <= chrono::Utc::now().timestamp())
@@ -331,7 +355,7 @@ impl Service {
             }
             session.panel_origin = Some(record.view.panel_origin.clone());
             if let Some(cache) = snapshot.get::<AccountCache>("account-cache", &record.view.id)? {
-                if session.status == "authenticated" {
+                if matches!(session.status.as_str(), "authenticated" | "refreshing") {
                     session.account = Some(cache.account);
                     nodes = cache.nodes;
                 }
@@ -353,7 +377,7 @@ impl Service {
                 }
                 .into();
             }
-            if session.status == "authenticated" {
+            if matches!(session.status.as_str(), "authenticated" | "refreshing") {
                 for snap in
                     snapshot.list::<TaskSnapshot>("task-snapshot", Some(&record.view.account_id))?
                 {
@@ -475,6 +499,18 @@ impl Service {
             schema_version: 1,
             state_revision: snapshot.revision,
             source: "local".into(),
+            platform: if cfg!(target_os = "macos") {
+                Some("macos".into())
+            } else if cfg!(target_os = "windows") {
+                Some("windows".into())
+            } else {
+                None
+            },
+            pending_authorization: snapshot.get("authorization-pending", "local")?,
+            maintenance_active: snapshot
+                .meta
+                .get("maintenance_active")
+                .is_some_and(|v| v == "1"),
             session,
             connections: records.into_iter().map(|r| r.view).collect(),
             installations,
@@ -707,7 +743,7 @@ impl Service {
                 }
             } /* Lost single-use delivery is never replayed. Account login remains available. */
         }
-        self.refresh_account(&record.view.id, false).await?;
+        self.refresh_account_cache(&record.view.id, false).await?;
         {
             let _gate = self
                 .account_gate
@@ -963,28 +999,36 @@ impl Service {
                 {
                     return Err(fail("connection_conflict"));
                 }
-                record.session_status = "expired".into();
+                record.session_status = "refreshing".into();
                 record.refresh_attempt = Some(uuid());
                 self.store
                     .put("connection", id, &record.view.account_id, &record)?;
             }
             self.changed();
-            let response: TokenResponse = self
-                .http
-                .panel(
-                    &record.view.panel_origin,
-                    "/api/v1/orbit/token",
-                    Method::POST,
-                    body.to_vec(),
-                    Some((&installation, &session, self.vault.as_ref())),
-                    false,
-                )
-                .await?;
-            let (account, new_session) = response.into_session(&installation)?;
-            if account != record.view.account_id {
-                return Err(fail("account_scope_mismatch"));
+            let rotation = async {
+                let response: TokenResponse = self
+                    .http
+                    .panel(
+                        &record.view.panel_origin,
+                        "/api/v1/orbit/token",
+                        Method::POST,
+                        body.to_vec(),
+                        Some((&installation, &session, self.vault.as_ref())),
+                        false,
+                    )
+                    .await?;
+                let (account, new_session) = response.into_session(&installation)?;
+                if account != record.view.account_id {
+                    return Err(fail("account_scope_mismatch"));
+                }
+                self.commit_refresh(&mut record, new_session)
             }
-            self.commit_refresh(&mut record, new_session)?;
+            .await;
+            if let Err(error) = rotation {
+                self.fail_refresh(&record, &error)?;
+                self.changed();
+                return Err(error);
+            }
             session = self.session(&record)?;
             self.changed();
         }
@@ -1002,8 +1046,9 @@ impl Service {
         let current = self.record(&record.view.id)?;
         self.ensure_installation_available(&record.installation_id)?;
         if current.view.revision != record.view.revision
-            || current.session_status != "expired"
+            || current.session_status != "refreshing"
             || current.refresh_attempt != record.refresh_attempt
+            || current.authorization_epoch != record.authorization_epoch
         {
             return Err(fail("connection_conflict"));
         }
@@ -1018,6 +1063,32 @@ impl Service {
             &record.view.account_id,
             record,
         )
+    }
+    fn fail_refresh(&self, expected: &ConnectionRecord, error: &PublicError) -> Result<()> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let mut current = self.record(&expected.view.id)?;
+        if current.view.revision == expected.view.revision
+            && current.authorization_epoch == expected.authorization_epoch
+            && current.session_status == "refreshing"
+            && current.refresh_attempt == expected.refresh_attempt
+        {
+            current.session_status = if error.code == "vault_unavailable" {
+                "vault_unavailable"
+            } else {
+                "expired"
+            }
+            .into();
+            self.store.put(
+                "connection",
+                &current.view.id,
+                &current.view.account_id,
+                &current,
+            )?;
+        }
+        Ok(())
     }
     fn advance_authorization_epoch(&self, record: &ConnectionRecord) -> Result<u64> {
         let key = authorization_epoch_reference(
@@ -1129,7 +1200,9 @@ impl Service {
         let _ = self.cleanup_pending(record)?;
         self.invalidate_evidence()
     }
-    pub async fn refresh_account(&self, id: &str, activate: bool) -> Result<()> {
+    async fn refresh_account_cache(&self, id: &str, activate: bool) -> Result<()> {
+        let lock = self.network_lock(&format!("account/{id}"))?;
+        let _serial = lock.lock().await;
         let (record, installation, session) = self.fresh_session(id).await?;
         let value: Value = self
             .http
@@ -1142,7 +1215,8 @@ impl Service {
                 true,
             )
             .await?;
-        let cache = map_account_cache(&value, &record)?;
+        let mut cache = map_account_cache(&value, &record)?;
+        cache.account.updated_at = Some(chrono::Utc::now().to_rfc3339());
         {
             let _gate = self
                 .account_gate
@@ -1152,6 +1226,7 @@ impl Service {
             if current.session_status != "authenticated"
                 || current.view.revision != record.view.revision
                 || current.installation_id != record.installation_id
+                || current.authorization_epoch != record.authorization_epoch
             {
                 return Err(fail("connection_conflict"));
             }
@@ -1202,6 +1277,38 @@ impl Service {
         }
         self.changed();
         Ok(())
+    }
+    pub async fn refresh_account(&self, id: &str, revision: u64) -> Result<BootstrapView> {
+        let record = self.record(id)?;
+        if record.view.revision != revision || record.session_status != "authenticated" {
+            return Err(fail("connection_conflict"));
+        }
+        self.refresh_account_cache(id, false).await?;
+        if self.image_workers.available_permits() == 2 {
+            for mut snapshot in self
+                .store
+                .list::<TaskSnapshot>("task-snapshot", Some(&record.view.account_id))?
+            {
+                if snapshot.task.connection_id == id
+                    && snapshot.panel_origin == record.view.panel_origin
+                    && snapshot.installation_id == record.installation_id
+                    && snapshot.task.request_id.is_some()
+                    && !["queued", "sending", "waiting", "saving"]
+                        .contains(&snapshot.task.state.as_str())
+                    && (snapshot.task.result_state == "unconfirmed"
+                        || [
+                            "unavailable",
+                            "pending",
+                            "reconciliation_pending",
+                            "incomplete",
+                        ]
+                        .contains(&snapshot.task.charge_state.as_str()))
+                {
+                    let _ = self.reconcile_task(&mut snapshot).await;
+                }
+            }
+        }
+        self.bootstrap()
     }
     pub fn select_connection(&self, id: &str) -> Result<BootstrapView> {
         self.login_epoch.fetch_add(1, Ordering::SeqCst);
@@ -2531,6 +2638,8 @@ impl Service {
         self.persist_task(snapshot)
     }
     async fn reconcile_task(&self, snapshot: &mut TaskSnapshot) -> Result<()> {
+        let lock = self.network_lock(&format!("task/{}", snapshot.task.id))?;
+        let _serial = lock.lock().await;
         let Some(request_id) = &snapshot.task.request_id else {
             return Ok(());
         };
@@ -2554,8 +2663,37 @@ impl Service {
                 true,
             )
             .await?;
-        apply_server_fact(&mut snapshot.task, &fact)?;
-        self.persist_task(snapshot)
+        if fact["request_id"].as_str() != Some(request_id.as_str()) {
+            return Err(fail("account_scope_mismatch"));
+        }
+        if fact["observation_state"] != "observed"
+            || fact["record"].is_null()
+            || fact["execution_status"].is_null()
+        {
+            return Ok(());
+        }
+        let mut facts = snapshot.task.clone();
+        apply_server_fact(&mut facts, &fact)?;
+        {
+            let _gate = self
+                .account_gate
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            let current = self.record(&record.view.id)?;
+            self.ensure_installation_available(&record.installation_id)?;
+            if current.session_status != "authenticated"
+                || current.view.revision != record.view.revision
+                || current.authorization_epoch != record.authorization_epoch
+                || current.installation_id != record.installation_id
+                || current.view.account_id != record.view.account_id
+                || current.view.panel_origin != record.view.panel_origin
+            {
+                return Err(fail("account_scope_mismatch"));
+            }
+            *snapshot = self.store.merge_task_facts(snapshot, &facts)?;
+        }
+        self.changed();
+        Ok(())
     }
     pub fn cancel_image_task(&self, id: &str) -> Result<TaskView> {
         let _gate = self
@@ -2593,6 +2731,10 @@ impl Service {
         Ok(snapshot.task)
     }
     pub fn retry_local_save(&self, id: &str) -> Result<TaskView> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let _permit = self.image_memory_permit()?;
         let mut snapshot = self.scoped_task(id)?;
         if !["save_failed", "unconfirmed"].contains(&snapshot.task.state.as_str())
@@ -2637,6 +2779,10 @@ impl Service {
         crate::config::atomic_write(target, &bytes)
     }
     pub fn delete_history(&self, ids: &[String], confirmed: bool) -> Result<u32> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         if !confirmed || ids.is_empty() || ids.len() > 100 {
             return Err(fail("confirmation_required"));
         }
@@ -3263,6 +3409,7 @@ fn map_account_cache(value: &Value, record: &ConnectionRecord) -> Result<Account
             id: record.view.account_id.clone(),
             label: text(account, "name")?,
             email: nullable_text(account, "email")?,
+            updated_at: None,
             member,
             wallet,
             budget,
@@ -4477,6 +4624,385 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn manual_refresh_uses_only_account_and_captured_fact_gets_and_keeps_as_of_cache() {
+        let (_dir, service, _vault, record, _install) = setup();
+        let snapshot = task_snapshot(&record);
+        service.persist_task(&snapshot).unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let observed = calls.clone();
+        let wire = golden();
+        service.http.scripted(Arc::new(move |request| {
+            let wire=wire.clone();let observed=observed.clone();
+            Box::pin(async move {
+                assert_eq!(request.method, Method::GET);
+                assert!(request.body.is_empty());
+                assert!(request.headers.iter().any(|(key,_)|key=="X-Orbit-Proof-Signature"));
+                let data=if request.url.ends_with("/bootstrap") {wire["bootstrap_reply"].clone()} else {
+                    assert!(request.url.ends_with("/usage/records/33333333-3333-4333-8333-333333333333"));
+                    let count=observed.fetch_add(1, Ordering::SeqCst);
+                    if count==0 {json!({"data":{"request_id":"33333333-3333-4333-8333-333333333333","observation_state":"unconfirmed","execution_status":null,"record":null,"correlation":null}})}
+                    else {wire["usage_lookup_reply"].clone()}
+                };
+                Ok(crate::network::RemoteResponse{status:200,request_id:None,bytes:serde_json::to_vec(&data).unwrap()})
+            })
+        }));
+        let first = service
+            .refresh_account(&record.view.id, record.view.revision)
+            .await
+            .unwrap();
+        assert_eq!(first.tasks[0].charge_state, "unavailable");
+        assert!(first.session.account.as_ref().unwrap().updated_at.is_some());
+        let second = service
+            .refresh_account(&record.view.id, record.view.revision)
+            .await
+            .unwrap();
+        assert_eq!(second.tasks[0].charge_state, "charged");
+        assert_eq!(
+            second.tasks[0].charges[0].request_id.as_deref(),
+            Some("44444444-4444-4444-8444-444444444444")
+        );
+        assert_eq!(second.tasks[0].state, "completed");
+        let captured = second.session.account.unwrap().updated_at;
+        service.http.scripted(Arc::new(|_| {
+            Box::pin(async { Err(fail("panel_unavailable")) })
+        }));
+        assert!(
+            service
+                .refresh_account(&record.view.id, record.view.revision)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            service
+                .bootstrap()
+                .unwrap()
+                .session
+                .account
+                .unwrap()
+                .updated_at,
+            captured
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn delayed_fact_merge_preserves_local_save_and_image_deletion_and_rejects_old_epoch() {
+        for mode in ["local-save", "delete-image", "logout"] {
+            let (_dir, service, _vault, record, _install) = setup();
+            let mut snapshot = task_snapshot(&record);
+            snapshot.task.state = "save_failed".into();
+            snapshot.task.local_save_available = true;
+            service.persist_task(&snapshot).unwrap();
+            let mut output = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(2, 2)
+                .write_to(&mut output, image::ImageFormat::Png)
+                .unwrap();
+            let bytes = output.into_inner();
+            let received = images::ReceivedImage {
+                id: uuid(),
+                info: images::validate_image(&bytes).unwrap(),
+                bytes,
+            };
+            images::stage_received(&service.store, &snapshot, &[received]).unwrap();
+            if mode == "delete-image" {
+                snapshot.task = service.retry_local_save(&snapshot.task.id).unwrap();
+            }
+            let started = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let (a, b) = (started.clone(), release.clone());
+            let fact = golden()["usage_lookup_reply"].clone();
+            service.http.scripted(Arc::new(move |request| {
+                let (a, b, fact) = (a.clone(), b.clone(), fact.clone());
+                Box::pin(async move {
+                    assert_eq!(request.method, Method::GET);
+                    a.notify_one();
+                    b.notified().await;
+                    Ok(crate::network::RemoteResponse {
+                        status: 200,
+                        request_id: None,
+                        bytes: serde_json::to_vec(&fact).unwrap(),
+                    })
+                })
+            }));
+            let worker = service.clone();
+            let mut captured = snapshot.clone();
+            let task = tokio::spawn(async move { worker.reconcile_task(&mut captured).await });
+            started.notified().await;
+            if mode == "local-save" {
+                service.retry_local_save(&snapshot.task.id).unwrap();
+            } else if mode == "delete-image" {
+                service
+                    .delete_history(&snapshot.task.image_ids, true)
+                    .unwrap();
+            } else {
+                service.commit_logout(&record.view.id).unwrap();
+            }
+            release.notify_one();
+            let result = task.await.unwrap();
+            let current = service
+                .store
+                .get::<TaskSnapshot>("task-snapshot", &snapshot.task.id)
+                .unwrap()
+                .unwrap();
+            if mode == "logout" {
+                assert!(result.is_err());
+                assert_eq!(current.task.charge_state, "unavailable");
+            } else {
+                result.unwrap();
+                assert_eq!(current.task.state, "completed");
+                assert!(!current.task.local_save_available);
+                assert_eq!(current.task.charge_state, "charged");
+                assert_eq!(
+                    current.task.image_ids.len(),
+                    if mode == "delete-image" { 0 } else { 1 }
+                );
+                assert_eq!(current.task.prompt, "synthetic prompt");
+            }
+        }
+    }
+    #[tokio::test]
+    async fn healthy_rotation_preserves_actor_and_draft_scope_but_failure_never_retries() {
+        for fail_response in [false, true] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            let mut session = service.session(&record).unwrap();
+            session.expires_at = chrono::Utc::now().timestamp() - 1;
+            record.expires_at = session.expires_at;
+            service.save_session(&record, session).unwrap();
+            service
+                .store
+                .put(
+                    "connection",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &record,
+                )
+                .unwrap();
+            let snapshot = task_snapshot(&record);
+            service.persist_task(&snapshot).unwrap();
+            let started = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let count = Arc::new(AtomicU64::new(0));
+            let (a, b, c) = (started.clone(), release.clone(), count.clone());
+            let token = golden()["token_reply"].clone();
+            service.http.scripted(Arc::new(move |request| {
+                let (a, b, c, token) = (a.clone(), b.clone(), c.clone(), token.clone());
+                Box::pin(async move {
+                    assert_eq!(request.method, Method::POST);
+                    assert!(
+                        !request
+                            .headers
+                            .iter()
+                            .any(|(key, _)| key == "Authorization")
+                    );
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&request.body).unwrap()["grant_type"],
+                        "refresh_token"
+                    );
+                    c.fetch_add(1, Ordering::SeqCst);
+                    a.notify_one();
+                    b.notified().await;
+                    if fail_response {
+                        return Err(fail("result_unconfirmed"));
+                    }
+                    Ok(crate::network::RemoteResponse {
+                        status: 200,
+                        request_id: None,
+                        bytes: serde_json::to_vec(&token).unwrap(),
+                    })
+                })
+            }));
+            let worker = service.clone();
+            let id = record.view.id.clone();
+            let task = tokio::spawn(async move { worker.fresh_session(&id).await.map(|_| ()) });
+            started.notified().await;
+            let view = service.bootstrap().unwrap();
+            assert_eq!(view.session.status, "refreshing");
+            assert_eq!(view.session.account.unwrap().id, record.view.account_id);
+            assert_eq!(view.tasks[0].prompt, "synthetic prompt");
+            assert!(
+                service
+                    .current_connection(&record.view.id, record.view.revision)
+                    .is_err()
+            );
+            release.notify_one();
+            let result = task.await.unwrap();
+            if fail_response {
+                assert!(result.is_err());
+                assert_eq!(service.bootstrap().unwrap().session.status, "expired");
+                assert!(service.fresh_session(&record.view.id).await.is_err());
+            } else {
+                result.unwrap();
+                assert_eq!(service.bootstrap().unwrap().session.status, "authenticated");
+                assert!(
+                    service
+                        .record(&record.view.id)
+                        .unwrap()
+                        .refresh_attempt
+                        .is_none()
+                );
+            }
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            record = service.record(&record.view.id).unwrap();
+            record.session_status = "refreshing".into();
+            record.refresh_attempt = Some(uuid());
+            service
+                .store
+                .put(
+                    "connection",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &record,
+                )
+                .unwrap();
+            let rebuilt = Service::new(
+                service.store.clone(),
+                service.vault.clone(),
+                service.paths.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                rebuilt.record(&record.view.id).unwrap().session_status,
+                "expired"
+            );
+            assert_eq!(rebuilt.installation(&record).unwrap().id, install.id);
+        }
+    }
+    #[tokio::test]
+    async fn finalized_facts_survive_following_local_save_delete_and_active_workers_defer_manual_lookup()
+     {
+        let (_dir, service, _vault, record, _install) = setup();
+        let mut snapshot = task_snapshot(&record);
+        snapshot.task.state = "save_failed".into();
+        snapshot.task.local_save_available = true;
+        service.persist_task(&snapshot).unwrap();
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = out.into_inner();
+        images::stage_received(
+            &service.store,
+            &snapshot,
+            &[images::ReceivedImage {
+                id: uuid(),
+                info: images::validate_image(&bytes).unwrap(),
+                bytes,
+            }],
+        )
+        .unwrap();
+        let wire = golden();
+        let count = Arc::new(AtomicU64::new(0));
+        let called = count.clone();
+        service.http.scripted(Arc::new(move |request| {
+            let (wire, called) = (wire.clone(), called.clone());
+            Box::pin(async move {
+                assert_eq!(request.method, Method::GET);
+                let response = if request.url.ends_with("/bootstrap") {
+                    wire["bootstrap_reply"].clone()
+                } else {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    wire["usage_lookup_reply"].clone()
+                };
+                Ok(crate::network::RemoteResponse {
+                    status: 200,
+                    request_id: None,
+                    bytes: serde_json::to_vec(&response).unwrap(),
+                })
+            })
+        }));
+        // A cancelled public state cannot conceal a worker still waiting for its HTTP body.
+        let permit = service.image_workers.clone().acquire_owned().await.unwrap();
+        service
+            .refresh_account(&record.view.id, record.view.revision)
+            .await
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        drop(permit);
+        service.reconcile_task(&mut snapshot).await.unwrap();
+        assert_eq!(snapshot.task.charge_state, "charged");
+        let saved = service.retry_local_save(&snapshot.task.id).unwrap();
+        assert_eq!(saved.charge_state, "charged");
+        service.delete_history(&saved.image_ids, true).unwrap();
+        let current = service
+            .store
+            .get::<TaskSnapshot>("task-snapshot", &snapshot.task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.task.charge_state, "charged");
+        assert!(current.task.image_ids.is_empty());
+        assert_eq!(
+            current.task.charges[0].amount.as_deref(),
+            Some("0.00000000")
+        );
+    }
+    #[tokio::test]
+    async fn late_account_bootstrap_after_logout_or_reauthorization_cannot_replace_cache() {
+        for reauthorize in [false, true] {
+            let (_dir, service, _vault, record, install) = setup();
+            let captured = service
+                .account_cache(&record)
+                .unwrap()
+                .account
+                .wallet
+                .unwrap()
+                .amount;
+            let started = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let (a, b) = (started.clone(), release.clone());
+            let mut reply = golden()["bootstrap_reply"].clone();
+            reply["data"]["wallet"]["amount"] = json!("999.00000000");
+            service.http.scripted(Arc::new(move |_| {
+                let (a, b, reply) = (a.clone(), b.clone(), reply.clone());
+                Box::pin(async move {
+                    a.notify_one();
+                    b.notified().await;
+                    Ok(crate::network::RemoteResponse {
+                        status: 200,
+                        request_id: None,
+                        bytes: serde_json::to_vec(&reply).unwrap(),
+                    })
+                })
+            }));
+            let worker = service.clone();
+            let id = record.view.id.clone();
+            let revision = record.view.revision;
+            let task = tokio::spawn(async move { worker.refresh_account(&id, revision).await });
+            started.notified().await;
+            if reauthorize {
+                let (_, session) = serde_json::from_value::<TokenResponse>(
+                    golden()["token_reply"]["data"].clone(),
+                )
+                .unwrap()
+                .into_session(&install)
+                .unwrap();
+                service
+                    .commit_authorization(&install, record.view.account_id.clone(), session, 0)
+                    .unwrap();
+            } else {
+                service.commit_logout(&record.view.id).unwrap();
+            }
+            release.notify_one();
+            assert!(task.await.unwrap().is_err());
+            assert_eq!(
+                service
+                    .account_cache(&record)
+                    .unwrap()
+                    .account
+                    .wallet
+                    .unwrap()
+                    .amount,
+                captured
+            );
+            assert!(
+                service
+                    .account_cache(&record)
+                    .unwrap()
+                    .account
+                    .updated_at
+                    .is_none()
+            );
+        }
+    }
+    #[tokio::test]
     async fn expired_refresh_gate_does_not_send_again() {
         let (_d, service, _v, mut record, _i) = setup();
         record.session_status = "expired".into();
@@ -4499,7 +5025,7 @@ mod tests {
     #[test]
     fn logout_between_refresh_response_and_commit_cannot_revive_session() {
         let (_d, service, vault, mut record, install) = setup();
-        record.session_status = "expired".into();
+        record.session_status = "refreshing".into();
         record.refresh_attempt = Some(uuid());
         service
             .store

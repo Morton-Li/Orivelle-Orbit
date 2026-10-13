@@ -2,6 +2,7 @@ fn main() {
     embedded_helper();
     const COMMANDS: &[&str] = &[
         "bootstrap",
+        "refresh_account",
         "start_login",
         "logout",
         "select_connection",

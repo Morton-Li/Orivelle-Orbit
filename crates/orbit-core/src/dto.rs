@@ -39,6 +39,8 @@ pub struct AccountView {
     pub id: String,
     pub label: String,
     pub email: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
     pub member: bool,
     pub wallet: Option<Money>,
     pub budget: Option<BudgetView>,
@@ -269,6 +271,9 @@ pub struct BootstrapView {
     pub schema_version: u32,
     pub state_revision: u64,
     pub source: String,
+    pub platform: Option<String>,
+    pub pending_authorization: Option<LoginStart>,
+    pub maintenance_active: bool,
     pub session: SessionView,
     pub connections: Vec<ConnectionView>,
     pub installations: Vec<InstallationView>,
@@ -319,6 +324,12 @@ pub struct ConfigResult {
 pub struct LoginStart {
     pub request_id: String,
     pub expires_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizationEvent {
+    pub request_id: String,
+    pub state: String,
+    pub error: Option<PublicError>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsPreview {

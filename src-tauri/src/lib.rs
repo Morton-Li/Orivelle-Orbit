@@ -98,6 +98,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            refresh_account,
             start_login,
             logout,
             select_connection,

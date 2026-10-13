@@ -305,6 +305,67 @@ impl Store {
         Self::advance(&tx)?;
         tx.commit().map_err(|_| fail("database_unavailable"))
     }
+    /// Merge authoritative facts into the current local snapshot in one transaction.
+    /// A late GET cannot restore deleted images or rewind a completed local save.
+    pub fn merge_task_facts(
+        &self,
+        expected: &crate::images::TaskSnapshot,
+        facts: &crate::dto::TaskView,
+    ) -> Result<crate::images::TaskSnapshot> {
+        let mut db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
+        let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT payload FROM records WHERE kind='task-snapshot' AND id=?1",
+                params![expected.task.id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| fail("database_unavailable"))?;
+        let mut current: crate::images::TaskSnapshot =
+            serde_json::from_str(&raw.ok_or_else(|| fail("task_unavailable"))?)
+                .map_err(|_| fail("local_metadata_invalid"))?;
+        let mut a = serde_json::to_value(expected).map_err(|_| fail("serialization_failed"))?;
+        let mut b = serde_json::to_value(&current).map_err(|_| fail("serialization_failed"))?;
+        for value in [&mut a, &mut b] {
+            let task = value["task"]
+                .as_object_mut()
+                .ok_or_else(|| fail("local_metadata_invalid"))?;
+            for key in [
+                "state",
+                "result_state",
+                "outcome",
+                "charge_state",
+                "charges",
+                "image_ids",
+                "local_save_available",
+                "error",
+            ] {
+                task.remove(key);
+            }
+        }
+        if a != b {
+            return Err(fail("account_scope_mismatch"));
+        }
+        current.task.result_state = facts.result_state.clone();
+        current.task.outcome = facts.outcome.clone();
+        current.task.charge_state = facts.charge_state.clone();
+        current.task.charges = facts.charges.clone();
+        for (kind, payload) in [
+            ("task", serde_json::to_string(&current.task)),
+            ("task-snapshot", serde_json::to_string(&current)),
+        ] {
+            let payload = payload.map_err(|_| fail("serialization_failed"))?;
+            tx.execute(
+                "UPDATE records SET payload=?1 WHERE kind=?2 AND id=?3",
+                params![payload, kind, current.task.id],
+            )
+            .map_err(|_| fail("database_unavailable"))?;
+        }
+        Self::advance(&tx)?;
+        tx.commit().map_err(|_| fail("database_unavailable"))?;
+        Ok(current)
+    }
     pub fn commit_configuration(
         &self,
         journal: &crate::config::Journal,
@@ -511,8 +572,10 @@ impl Store {
             )
             .optional()
             .map_err(|_| fail("database_unavailable"))?;
-        if record["session_status"] != "authenticated"
-            || forgetting.as_deref() == Some("1")
+        if !matches!(
+            record["session_status"].as_str(),
+            Some("authenticated" | "refreshing")
+        ) || forgetting.as_deref() == Some("1")
             || record["session_expires_at"]
                 .as_i64()
                 .is_none_or(|at| at <= chrono::Utc::now().timestamp())
