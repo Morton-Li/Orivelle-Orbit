@@ -152,6 +152,8 @@ const zh = {
   "images.priceSales": "平台销售价",
   "images.priceOfficial": "官方参考价",
   "images.priceEstimate": "运营估价",
+  "images.priceConfiguredReference": "平台配置参考价",
+  "images.pricePartial": "仅部分计费项配置了参考价，缺失价格保持未知。",
   "images.legacyBilling": "旧按张计费口径",
   "images.tokenBilling": "按图片 token 合同计费",
   "images.removeInput": "移除参考图",
@@ -405,6 +407,9 @@ const en: Record<keyof typeof zh, string> = {
   "images.priceSales": "Platform sale price",
   "images.priceOfficial": "Official reference",
   "images.priceEstimate": "Operator estimate",
+  "images.priceConfiguredReference": "Platform-configured reference",
+  "images.pricePartial":
+    "Only some meters have configured reference prices; missing rates remain unknown.",
   "images.legacyBilling": "Legacy per-image billing",
   "images.tokenBilling": "Image-token contract billing",
   "images.removeInput": "Remove reference",

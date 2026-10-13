@@ -23,9 +23,11 @@ function priceTitle(price: PriceView) {
       ? "images.priceOfficial"
       : price.source === "sales"
         ? "images.priceSales"
-        : price.source === "operator_estimate"
-          ? "images.priceEstimate"
-          : "common.unknown",
+        : price.source === "configured_reference"
+          ? "images.priceConfiguredReference"
+          : price.source === "operator_estimate"
+            ? "images.priceEstimate"
+            : "common.unknown",
   );
 }
 function prices() {
@@ -58,7 +60,9 @@ function prices() {
           t(
             price.status === "unpriced_free"
               ? "images.unpricedFree"
-              : "common.unknown",
+              : price.status === "partial"
+                ? "images.pricePartial"
+                : "common.unknown",
           )
         }}
       </p>

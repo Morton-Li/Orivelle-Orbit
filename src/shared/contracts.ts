@@ -44,8 +44,14 @@ export type PricingMeter =
   | "image_output";
 export type PriceView = {
   currency: string | null;
-  source: "sales" | "official" | "operator_estimate" | "unknown";
-  status: "configured" | "unpriced_free" | "unavailable" | "unknown";
+  source:
+    | "sales"
+    | "official"
+    | "configured_reference"
+    | "operator_estimate"
+    | "unknown";
+  status:
+    "configured" | "partial" | "unpriced_free" | "unavailable" | "unknown";
   rates: {
     meter: PricingMeter;
     unit_size: number;
