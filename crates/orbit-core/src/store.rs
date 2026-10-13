@@ -15,11 +15,30 @@ use std::{
 pub struct Store {
     pub root: PathBuf,
     db: Mutex<Connection>,
+    image_files: Mutex<()>,
 }
 pub struct Snapshot {
     records: Vec<(String, String, String, String)>,
     pub meta: HashMap<String, String>,
     pub revision: u64,
+}
+pub struct PreviewScope {
+    pub token: String,
+    pub origin: String,
+    pub account_id: String,
+    pub installation_id: String,
+    pub connection_id: String,
+    pub connection_revision: u64,
+}
+pub fn preview_scope_token(
+    nonce: &str,
+    origin: &str,
+    account_id: &str,
+    installation_id: &str,
+    connection_id: &str,
+    revision: u64,
+) -> String {
+    crate::identity::sha256(format!("orbit-preview-v1\n{nonce}\n{origin}\n{account_id}\n{installation_id}\n{connection_id}\n{revision}\n").as_bytes())
 }
 impl Snapshot {
     pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
@@ -191,6 +210,7 @@ impl Store {
         let store = Self {
             root: root.to_path_buf(),
             db: Mutex::new(db),
+            image_files: Mutex::new(()),
         };
         store
             .db
@@ -247,6 +267,7 @@ impl Store {
         Ok(Self {
             root: root.to_path_buf(),
             db: Mutex::new(db),
+            image_files: Mutex::new(()),
         })
     }
     pub fn put<T: Serialize>(&self, kind: &str, id: &str, scope: &str, value: &T) -> Result<()> {
@@ -301,14 +322,23 @@ impl Store {
     }
     pub fn list<T: DeserializeOwned>(&self, kind: &str, scope: Option<&str>) -> Result<Vec<T>> {
         let db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
-        let mut stmt=db.prepare("SELECT payload FROM records WHERE kind=?1 AND (?2 IS NULL OR scope=?2) ORDER BY rowid DESC LIMIT 1000").map_err(|_| fail("database_unavailable"))?;
-        stmt.query_map(params![kind, scope], |r| r.get::<_, String>(0))
+        let mut stmt=db.prepare("SELECT payload FROM records WHERE kind=?1 AND (?2 IS NULL OR scope=?2) ORDER BY rowid DESC").map_err(|_| fail("database_unavailable"))?;
+        let mut size = 0usize;
+        let mut values = vec![];
+        for row in stmt
+            .query_map(params![kind, scope], |r| r.get::<_, String>(0))
             .map_err(|_| fail("database_unavailable"))?
-            .map(|v| {
-                serde_json::from_str(&v.map_err(|_| fail("database_unavailable"))?)
-                    .map_err(|_| fail("local_metadata_invalid"))
-            })
-            .collect()
+        {
+            let row = row.map_err(|_| fail("database_unavailable"))?;
+            size = size
+                .checked_add(row.len())
+                .ok_or_else(|| fail("metadata_too_large"))?;
+            if size > 64 * 1024 * 1024 {
+                return Err(fail("metadata_too_large"));
+            }
+            values.push(serde_json::from_str(&row).map_err(|_| fail("local_metadata_invalid"))?);
+        }
+        Ok(values)
     }
     fn advance(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         tx.execute("UPDATE meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='state_revision'",[]).map_err(|_|fail("database_unavailable"))?;
@@ -343,7 +373,7 @@ impl Store {
         let mut records = vec![];
         let mut size = 0usize;
         {
-            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind='backup' THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','settings','client-state') ORDER BY rowid DESC LIMIT 10000").map_err(|_|fail("database_unavailable"))?;
+            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind='backup' THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','settings','client-state') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
             for row in stmt
                 .query_map([], |r| {
                     Ok((
@@ -412,11 +442,88 @@ impl Store {
     pub fn settings(&self) -> Result<SettingsView> {
         Ok(self.get("settings", "local")?.unwrap_or_default())
     }
+    pub fn preview_scope(&self) -> Result<Option<PreviewScope>> {
+        let mut db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
+        let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
+        let raw:Option<String>=tx.query_row("SELECT r.payload FROM records r JOIN meta m ON m.key='active_connection' AND m.value=r.id WHERE r.kind='connection'",[],|r|r.get(0)).optional().map_err(|_|fail("database_unavailable"))?;
+        let nonce: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key='preview_runtime_nonce'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| fail("database_unavailable"))?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let Some(nonce) = nonce else {
+            return Ok(None);
+        };
+        let record: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|_| fail("local_metadata_invalid"))?;
+        let view = &record["view"];
+        let field = |key: &str| {
+            view[key]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| fail("local_metadata_invalid"))
+        };
+        let origin = field("panel_origin")?;
+        let account_id = field("account_id")?;
+        let connection_id = field("id")?;
+        let installation_id = record["installation_id"]
+            .as_str()
+            .ok_or_else(|| fail("local_metadata_invalid"))?
+            .to_owned();
+        let connection_revision = view["revision"]
+            .as_u64()
+            .ok_or_else(|| fail("local_metadata_invalid"))?;
+        let forgetting: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key=?1",
+                params![format!("installation_forgetting/{installation_id}")],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| fail("database_unavailable"))?;
+        if record["session_status"] != "authenticated"
+            || forgetting.as_deref() == Some("1")
+            || record["session_expires_at"]
+                .as_i64()
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+        {
+            return Ok(None);
+        }
+        tx.commit().map_err(|_| fail("database_unavailable"))?;
+        let token = preview_scope_token(
+            &nonce,
+            &origin,
+            &account_id,
+            &installation_id,
+            &connection_id,
+            connection_revision,
+        );
+        Ok(Some(PreviewScope {
+            token,
+            origin,
+            account_id,
+            installation_id,
+            connection_id,
+            connection_revision,
+        }))
+    }
     pub fn consistent_backup(&self, target: &Path) -> Result<()> {
         let db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
         db.backup("main", target, None)
             .map_err(|_| fail("database_backup_failed"))?;
         private_file(target)
+    }
+    pub fn image_files_lock(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        self.image_files
+            .lock()
+            .map_err(|_| fail("local_storage_unavailable"))
     }
 }
 #[cfg(test)]
@@ -458,5 +565,48 @@ mod tests {
         let backup = dir.path().join("backup.sqlite3");
         s.consistent_backup(&backup).unwrap();
         assert!(backup.exists());
+    }
+    #[test]
+    fn safety_enumeration_and_snapshot_never_silently_evict_old_identity_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store
+            .put(
+                "connection",
+                "old",
+                "actor",
+                &serde_json::json!({"old_identity":true}),
+            )
+            .unwrap();
+        {
+            let mut db = store.db.lock().unwrap();
+            let tx = db.transaction().unwrap();
+            for n in 0..10001 {
+                tx.execute(
+                    "INSERT INTO records(kind,id,scope,payload) VALUES('task',?1,'actor','{}')",
+                    params![n.to_string()],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        assert_eq!(
+            store.list::<serde_json::Value>("task", None).unwrap().len(),
+            10001
+        );
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(
+            snapshot
+                .list::<serde_json::Value>("task", None)
+                .unwrap()
+                .len(),
+            10001
+        );
+        assert!(
+            snapshot
+                .get::<serde_json::Value>("connection", "old")
+                .unwrap()
+                .is_some()
+        );
     }
 }

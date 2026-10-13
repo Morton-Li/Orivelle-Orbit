@@ -19,6 +19,26 @@ const BUNDLED_HELPER: &[u8] = include_bytes!(env!("ORBIT_BUNDLED_HELPER_FILE"));
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .register_uri_scheme_protocol("asset", |context, request| {
+            let bytes = if context.webview_label() == "main"
+                && request.method() == tauri::http::Method::GET
+                && request.uri().query().is_none()
+            {
+                context
+                    .app_handle()
+                    .try_state::<Native>()
+                    .and_then(|n| n.service.read_preview_asset(request.uri().path()).ok())
+            } else {
+                None
+            };
+            tauri::http::Response::builder()
+                .status(if bytes.is_some() { 200 } else { 404 })
+                .header("Content-Type", "image/png")
+                .header("Cache-Control", "no-store, max-age=0")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(bytes.unwrap_or_default())
+                .unwrap()
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -69,9 +89,6 @@ pub fn run() {
             {
                 let _lock = orbit_core::updates::exclusive_helper_lock(&root)?;
             }
-            app.asset_protocol_scope()
-                .allow_directory(root.join("previews"), true)
-                .map_err(|_| fail("preview_scope_unavailable"))?;
             let handle = app.handle().clone();
             service.observe(Arc::new(move |state| {
                 let _ = handle.emit("orbit://state", state);

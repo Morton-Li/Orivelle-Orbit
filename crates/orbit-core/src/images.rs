@@ -142,16 +142,26 @@ pub fn owned_image_path(store: &Store, name: &str) -> Result<PathBuf> {
 }
 pub fn preview_url(store: &Store, id: &str) -> Result<String> {
     crate::identity::validate_uuid(id)?;
-    let path = store.root.join("previews").join(format!("{id}.png"));
-    // The webview receives only paths under the separate preview asset scope.
+    let scope = store
+        .preview_scope()?
+        .ok_or_else(|| fail("preview_scope_unavailable"))?;
+    preview_url_with_token(id, &scope.token)
+}
+pub fn preview_url_with_token(id: &str, token: &str) -> Result<String> {
+    crate::identity::validate_uuid(id)?;
+    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(fail("preview_scope_unavailable"));
+    }
+    // Opaque paths are resolved and authorized by the native asset protocol on
+    // every read; no filesystem path is delivered to the webview.
     Ok(format!(
-        "{}/{}",
+        "{}/{}/{id}.png",
         if cfg!(windows) {
             "http://asset.localhost"
         } else {
             "asset://localhost"
         },
-        url::form_urlencoded::byte_serialize(path.to_string_lossy().as_bytes()).collect::<String>()
+        token
     ))
 }
 pub fn disk_usage(root: &Path) -> Result<u64> {
@@ -180,6 +190,10 @@ pub fn ensure_disk_budget(store: &Store, new_bytes: u64) -> Result<()> {
     Ok(())
 }
 pub fn save_preview(store: &Store, id: &str, bytes: &[u8]) -> Result<Option<String>> {
+    let _files = store.image_files_lock()?;
+    save_preview_inner(store, id, bytes)
+}
+fn save_preview_inner(store: &Store, id: &str, bytes: &[u8]) -> Result<Option<String>> {
     crate::identity::validate_uuid(id)?;
     let root = store.root.join("previews");
     let limit = store.settings()?.preview_cache_limit_bytes;
@@ -210,11 +224,16 @@ pub fn save_preview(store: &Store, id: &str, bytes: &[u8]) -> Result<Option<Stri
         return Ok(None);
     }
     atomic_write(&root.join(format!("{id}.png")), bytes)?;
-    Ok(Some(preview_url(store, id)?))
+    match preview_url(store, id) {
+        Ok(url) => Ok(Some(url)),
+        Err(e) if e.code == "preview_scope_unavailable" => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 pub fn import_input(store: &Store, path: &Path, connection: &ConnectionView) -> Result<ImageInput> {
     let bytes = bounded_read(path, MAX_IMAGE_BYTES)?;
     let info = validate_image(&bytes)?;
+    let _files = store.image_files_lock()?;
     ensure_disk_budget(store, bytes.len() as u64)?;
     let id = uuid();
     let file_name = format!("{id}.{}", info.extension);
@@ -234,7 +253,7 @@ pub fn import_input(store: &Store, path: &Path, connection: &ConnectionView) -> 
         bytes: bytes.len() as u64,
         width: info.width,
         height: info.height,
-        preview_url: save_preview(store, &id, &info.preview)?,
+        preview_url: save_preview_inner(store, &id, &info.preview)?,
     };
     store.put(
         "input",
@@ -335,6 +354,63 @@ pub fn validate_parameters(
     ))
 }
 pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> {
+    let limit = snapshot.maximum_request_bytes.min(MAX_REQUEST_BYTES) as usize;
+    if snapshot.inputs.len() > 5 || snapshot.task.prompt.len() > MAX_PROMPT_BYTES {
+        return Err(fail("image_limit_exceeded"));
+    }
+    // Serialize only empty URL placeholders first. This accounts for every JSON
+    // escape, optional parameter and separator before reading/encoding any image.
+    let skeleton = ImageRequest {
+        model: &snapshot.task.requested_model,
+        prompt: &snapshot.task.prompt,
+        parameters: &snapshot.task.parameters,
+        images: snapshot
+            .inputs
+            .iter()
+            .map(|_| ImageReference {
+                image_url: String::new(),
+            })
+            .collect(),
+        response_format: "b64_json",
+    };
+    let mut estimated = serde_json::to_vec(&skeleton)
+        .map_err(|_| fail("serialization_failed"))?
+        .len();
+    for input in &snapshot.inputs {
+        if input.file_name.contains('/')
+            || input.file_name.contains('\\')
+            || input.file_name.contains("..")
+        {
+            return Err(fail("invalid_identifier"));
+        }
+        let metadata = fs::symlink_metadata(store.root.join("inputs").join(&input.file_name))
+            .map_err(|_| fail("local_image_missing"))?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() != input.view.bytes
+        {
+            return Err(fail("input_changed"));
+        }
+        if metadata.len() > MAX_IMAGE_BYTES
+            || !["image/png", "image/jpeg", "image/webp"].contains(&input.view.mime.as_str())
+        {
+            return Err(fail("image_limit_exceeded"));
+        }
+        let encoded = (metadata.len() as usize)
+            .checked_add(2)
+            .and_then(|n| (n / 3).checked_mul(4))
+            .ok_or_else(|| fail("image_limit_exceeded"))?;
+        estimated = estimated
+            .checked_add(5 + input.view.mime.len() + 8)
+            .and_then(|n| n.checked_add(encoded))
+            .ok_or_else(|| fail("image_limit_exceeded"))?;
+        if estimated > limit {
+            return Err(fail("image_limit_exceeded"));
+        }
+    }
+    if estimated > limit {
+        return Err(fail("image_limit_exceeded"));
+    }
     let mut references = Vec::new();
     for input in &snapshot.inputs {
         if input.account_id != snapshot.task.account_id
@@ -370,18 +446,51 @@ pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> 
             image_url: format!("data:{mime};base64,{}", STANDARD.encode(&bytes)),
         });
     }
-    let bytes = serde_json::to_vec(&ImageRequest {
-        model: &snapshot.task.requested_model,
-        prompt: &snapshot.task.prompt,
-        parameters: &snapshot.task.parameters,
-        images: references,
-        response_format: "b64_json",
-    })
-    .map_err(|_| fail("serialization_failed"))?;
+    let mut writer = CappedRequestWriter {
+        bytes: Vec::with_capacity(estimated),
+        limit,
+    };
+    serde_json::to_writer(
+        &mut writer,
+        &ImageRequest {
+            model: &snapshot.task.requested_model,
+            prompt: &snapshot.task.prompt,
+            parameters: &snapshot.task.parameters,
+            images: references,
+            response_format: "b64_json",
+        },
+    )
+    .map_err(|_| fail("image_limit_exceeded"))?;
+    let bytes = writer.bytes;
     if bytes.len() as u64 > snapshot.maximum_request_bytes.min(MAX_REQUEST_BYTES) {
         return Err(fail("image_limit_exceeded"));
     }
     Ok(bytes)
+}
+struct CappedRequestWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+impl Write for CappedRequestWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let length = self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "bounded request")
+        })?;
+        if length > self.limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bounded request",
+            ));
+        }
+        if length > self.bytes.capacity() {
+            self.bytes.reserve_exact(length - self.bytes.len());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -496,6 +605,7 @@ pub fn stage_received(
     snapshot: &TaskSnapshot,
     images: &[ReceivedImage],
 ) -> Result<Vec<PendingImage>> {
+    let _files = store.image_files_lock()?;
     let mut out = images
         .iter()
         .map(|image| {
@@ -571,6 +681,7 @@ fn validate_uuid_image(id: &str) -> Result<()> {
     crate::identity::validate_uuid(id)
 }
 pub fn finish_local_save(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<HistoryImage>> {
+    let _files = store.image_files_lock()?;
     let mut manifest = store
         .get::<SaveManifest>("local-save-manifest", &snapshot.task.id)?
         .ok_or_else(|| fail("local_result_incomplete"))?;
@@ -625,7 +736,7 @@ pub fn finish_local_save(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<H
             width: item.width,
             height: item.height,
             bytes: item.bytes,
-            preview_url: save_preview(store, &item.id, &info.preview)?,
+            preview_url: save_preview_inner(store, &item.id, &info.preview)?,
         };
         store.put("image", &view.id, &view.account_id, &view)?;
         store.put("image-file", &view.id, &view.account_id, &item.file_name)?;
@@ -867,6 +978,116 @@ mod tests {
         assert_eq!(
             request_bytes(&store, &snap).unwrap_err().code,
             "image_limit_exceeded"
+        );
+    }
+    #[test]
+    fn total_budget_rejects_sparse_large_input_before_read_hash_or_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut task = snapshot();
+        task.maximum_request_bytes = 2 * 1024 * 1024;
+        let id = uuid();
+        let name = format!("{id}.png");
+        let file = File::create(store.root.join("inputs").join(&name)).unwrap();
+        file.set_len(MAX_IMAGE_BYTES).unwrap();
+        task.inputs.push(InputRecord {
+            view: ImageInput {
+                id,
+                name: "synthetic.png".into(),
+                mime: "image/png".into(),
+                bytes: MAX_IMAGE_BYTES,
+                width: 1,
+                height: 1,
+                preview_url: None,
+            },
+            account_id: task.task.account_id.clone(),
+            connection_id: task.task.connection_id.clone(),
+            connection_revision: task.task.connection_revision,
+            hash: "intentionally-not-the-file-hash".into(),
+            file_name: name,
+        });
+        // A read/hash/format attempt would produce input_changed/invalid_image.
+        assert_eq!(
+            request_bytes(&store, &task).unwrap_err().code,
+            "image_limit_exceeded"
+        );
+        let mut writer = CappedRequestWriter {
+            bytes: Vec::new(),
+            limit: 3,
+        };
+        writer.write_all(b"12").unwrap();
+        let capacity = writer.bytes.capacity();
+        assert!(writer.write_all(b"34").is_err());
+        assert_eq!(writer.bytes, b"12");
+        assert_eq!(writer.bytes.capacity(), capacity);
+    }
+    #[test]
+    fn concurrent_image_and_preview_writes_cannot_overrun_disk_quotas() {
+        use std::sync::{Arc, Barrier};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("data")).unwrap());
+        let bytes = png();
+        let source = dir.path().join("public-fixture.png");
+        fs::write(&source, &bytes).unwrap();
+        let mut settings = store.settings().unwrap();
+        settings.image_disk_limit_bytes = bytes.len() as u64;
+        settings.preview_cache_limit_bytes = 1024;
+        store.put("settings", "local", "local", &settings).unwrap();
+        let connection = ConnectionView {
+            id: uuid(),
+            label: "synthetic".into(),
+            panel_origin: "https://fixture.example.test".into(),
+            account_id: "a".into(),
+            node_id: None,
+            node_label: None,
+            edge_base_url: None,
+            provider_id: "openai".into(),
+            revision: 1,
+            credential_revision: None,
+            permission_state: "allowed".into(),
+        };
+        let barrier = Arc::new(Barrier::new(3));
+        let mut threads = vec![];
+        for _ in 0..2 {
+            let store = store.clone();
+            let source = source.clone();
+            let connection = connection.clone();
+            let gate = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                gate.wait();
+                import_input(&store, &source, &connection)
+            }));
+        }
+        barrier.wait();
+        let successes = threads
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(Result::is_ok)
+            .count();
+        assert_eq!(successes, 1);
+        assert_eq!(
+            disk_usage(&store.root.join("inputs")).unwrap(),
+            bytes.len() as u64
+        );
+        settings.preview_cache_limit_bytes = bytes.len() as u64;
+        store.put("settings", "local", "local", &settings).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let mut threads = vec![];
+        for _ in 0..2 {
+            let store = store.clone();
+            let bytes = bytes.clone();
+            let gate = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                gate.wait();
+                save_preview(&store, &uuid(), &bytes)
+            }));
+        }
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+        assert!(
+            disk_usage(&store.root.join("previews")).unwrap() <= settings.preview_cache_limit_bytes
         );
     }
     #[test]

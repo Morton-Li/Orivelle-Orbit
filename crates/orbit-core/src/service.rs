@@ -54,6 +54,8 @@ struct ConnectionRecord {
     api_key_id: Option<String>,
     #[serde(default)]
     authorization_epoch: u64,
+    #[serde(default)]
+    cleanup_references: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct AccountCache {
@@ -118,6 +120,7 @@ pub struct Service {
 impl Service {
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
         let clients = detect_clients(&paths);
+        store.set_meta("preview_runtime_nonce", &uuid())?;
         for client in &clients {
             store.put("client-state", client.client.as_str(), "local", client)?;
         }
@@ -203,6 +206,13 @@ impl Service {
         let active = self
             .active_record()?
             .ok_or_else(|| fail("session_expired"))?;
+        if active.session_status != "authenticated"
+            || active
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+        {
+            return Err(fail("session_expired"));
+        }
         if snap.panel_origin != active.view.panel_origin
             || snap.task.account_id != active.view.account_id
         {
@@ -307,11 +317,13 @@ impl Service {
             }
             session.panel_origin = Some(record.view.panel_origin.clone());
             if let Some(cache) = snapshot.get::<AccountCache>("account-cache", &record.view.id)? {
-                session.account = Some(cache.account);
-                nodes = cache.nodes;
+                if session.status == "authenticated" {
+                    session.account = Some(cache.account);
+                    nodes = cache.nodes;
+                }
                 session.inference_credential_status = if record.view.credential_revision.is_some()
                     && record.credential_reference.is_some()
-                    && record.session_status == "authenticated"
+                    && session.status == "authenticated"
                     && record.credential_state == "active"
                     && record
                         .credential_expires_at
@@ -327,33 +339,55 @@ impl Service {
                 }
                 .into();
             }
-            for snap in
-                snapshot.list::<TaskSnapshot>("task-snapshot", Some(&record.view.account_id))?
-            {
-                if snap.panel_origin == record.view.panel_origin {
-                    if let Some(task) = snapshot.get("task", &snap.task.id)? {
-                        tasks.push(task);
+            if session.status == "authenticated" {
+                for snap in
+                    snapshot.list::<TaskSnapshot>("task-snapshot", Some(&record.view.account_id))?
+                {
+                    if snap.panel_origin == record.view.panel_origin {
+                        if let Some(task) = snapshot.get("task", &snap.task.id)? {
+                            tasks.push(task);
+                        }
                     }
                 }
+                let task_ids: HashSet<String> =
+                    tasks.iter().map(|t: &TaskView| t.id.clone()).collect();
+                history = snapshot
+                    .list::<HistoryImage>("image", Some(&record.view.account_id))?
+                    .into_iter()
+                    .filter(|i| task_ids.contains(&i.task_id))
+                    .map(|mut i| {
+                        if !self
+                            .store
+                            .root
+                            .join("previews")
+                            .join(format!("{}.png", i.id))
+                            .exists()
+                        {
+                            i.preview_url = None;
+                        } else {
+                            i.preview_url =
+                                snapshot
+                                    .meta
+                                    .get("preview_runtime_nonce")
+                                    .and_then(|nonce| {
+                                        images::preview_url_with_token(
+                                            &i.id,
+                                            &crate::store::preview_scope_token(
+                                                nonce,
+                                                &record.view.panel_origin,
+                                                &record.view.account_id,
+                                                &record.installation_id,
+                                                &record.view.id,
+                                                record.view.revision,
+                                            ),
+                                        )
+                                        .ok()
+                                    });
+                        }
+                        i
+                    })
+                    .collect();
             }
-            let task_ids: HashSet<String> = tasks.iter().map(|t: &TaskView| t.id.clone()).collect();
-            history = snapshot
-                .list::<HistoryImage>("image", Some(&record.view.account_id))?
-                .into_iter()
-                .filter(|i| task_ids.contains(&i.task_id))
-                .map(|mut i| {
-                    if !self
-                        .store
-                        .root
-                        .join("previews")
-                        .join(format!("{}.png", i.id))
-                        .exists()
-                    {
-                        i.preview_url = None;
-                    }
-                    i
-                })
-                .collect();
         } else if self.paths.isolated {
             session.status = "vault_unavailable".into();
         }
@@ -663,6 +697,10 @@ impl Service {
             credential_state: "unavailable".into(),
             api_key_id: None,
             authorization_epoch: 0,
+            cleanup_references: existing
+                .as_ref()
+                .map(|r| r.cleanup_references.clone())
+                .unwrap_or_default(),
         };
         let ticket = session.credential_delivery_ticket.clone();
         {
@@ -956,18 +994,10 @@ impl Service {
                         .is_none_or(|at| at > chrono::Utc::now().timestamp())
             });
         if !ready && record.credential_reference.is_some() {
-            self.store
-                .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
-            if let Some(reference) = record.credential_reference.take() {
-                self.vault.delete(&reference)?;
-            }
-            record.view.credential_revision = None;
-            record.credential_state = key
+            let state = key
                 .map(|k| k.state.clone())
                 .unwrap_or_else(|| "unavailable".into());
-            record.authorization_epoch = self.advance_authorization_epoch(record)?;
-            record.view.revision += 1;
-            self.invalidate_evidence()?;
+            self.disable_inference_before_cleanup(record, &state)?;
         } else if let Some(key) = key {
             record.credential_state = key.state.clone();
             record.credential_expires_at = key.expires_at;
@@ -987,6 +1017,56 @@ impl Service {
             }
         }
         Ok(())
+    }
+    fn cleanup_pending(&self, record: &mut ConnectionRecord) -> Result<bool> {
+        let pending = std::mem::take(&mut record.cleanup_references);
+        for reference in pending {
+            if self.vault.delete(&reference).is_err()
+                && !record.cleanup_references.contains(&reference)
+            {
+                record.cleanup_references.push(reference);
+            }
+        }
+        let failed = !record.cleanup_references.is_empty();
+        if failed {
+            record.session_status = "vault_unavailable".into();
+        }
+        self.store.put(
+            "connection",
+            &record.view.id,
+            &record.view.account_id,
+            record,
+        )?;
+        Ok(failed)
+    }
+    fn disable_inference_before_cleanup(
+        &self,
+        record: &mut ConnectionRecord,
+        state: &str,
+    ) -> Result<()> {
+        // The durable authorization epoch and non-ready record precede all fallible
+        // secret deletion, so a denied delete can never reopen a helper grant.
+        record.authorization_epoch = self.advance_authorization_epoch(record)?;
+        if let Some(reference) = record.credential_reference.take() {
+            if !record.cleanup_references.contains(&reference) {
+                record.cleanup_references.push(reference);
+            }
+        }
+        record.view.credential_revision = None;
+        record.credential_expires_at = None;
+        record.credential_state = state.into();
+        record.view.permission_state = "unavailable".into();
+        record.view.revision += 1;
+        self.store.put(
+            "connection",
+            &record.view.id,
+            &record.view.account_id,
+            record,
+        )?;
+        self.store
+            .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
+        let _ = self.cleanup_pending(record)?;
+        self.invalidate_evidence()
     }
     pub async fn refresh_account(&self, id: &str, activate: bool) -> Result<()> {
         let (record, installation, session) = self.fresh_session(id).await?;
@@ -1076,6 +1156,63 @@ impl Service {
     }
     pub fn connection_view(&self, id: &str) -> Result<ConnectionView> {
         Ok(self.record(id)?.view)
+    }
+    pub fn read_preview_asset(&self, path: &str) -> Result<Vec<u8>> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let parts = path
+            .strip_prefix('/')
+            .ok_or_else(|| fail("preview_scope_unavailable"))?
+            .split('/')
+            .collect::<Vec<_>>();
+        if parts.len() != 2
+            || parts[0].len() != 64
+            || !parts[0].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(fail("preview_scope_unavailable"));
+        }
+        let id = parts[1]
+            .strip_suffix(".png")
+            .ok_or_else(|| fail("preview_scope_unavailable"))?;
+        validate_uuid(id)?;
+        let scope = self
+            .store
+            .preview_scope()?
+            .ok_or_else(|| fail("preview_scope_unavailable"))?;
+        if parts[0] != scope.token {
+            return Err(fail("preview_scope_unavailable"));
+        }
+        let input = self.store.get::<InputRecord>("input", id)?;
+        let input_owned = input.is_some_and(|i| {
+            i.account_id == scope.account_id
+                && i.connection_id == scope.connection_id
+                && i.connection_revision == scope.connection_revision
+        });
+        let history_owned = if let Some(image) = self.store.get::<HistoryImage>("image", id)? {
+            self.store
+                .get::<TaskSnapshot>("task-snapshot", &image.task_id)?
+                .is_some_and(|s| {
+                    image.account_id == scope.account_id
+                        && s.task.account_id == scope.account_id
+                        && s.panel_origin == scope.origin
+                        && s.task.id == image.task_id
+                })
+        } else {
+            false
+        };
+        if !input_owned && !history_owned {
+            return Err(fail("preview_scope_unavailable"));
+        }
+        let bytes = images::bounded_read(
+            &self.store.root.join("previews").join(format!("{id}.png")),
+            4 * 1024 * 1024,
+        )?;
+        if image::guess_format(&bytes).ok() != Some(image::ImageFormat::Png) {
+            return Err(fail("invalid_image"));
+        }
+        Ok(bytes)
     }
     pub fn active_tasks(&self) -> Result<bool> {
         Ok(self
@@ -1172,17 +1309,18 @@ impl Service {
             .map_err(|_| fail("state_unavailable"))?;
         let mut record = self.record(id)?;
         record.authorization_epoch = self.advance_authorization_epoch(&record)?;
-        self.store
-            .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
-        let mut secret_failure = false;
         if record.session_status != "logged_out"
-            && self.vault.delete(&record.session_reference).is_err()
+            && !record
+                .cleanup_references
+                .contains(&record.session_reference)
         {
-            secret_failure = true;
+            record
+                .cleanup_references
+                .push(record.session_reference.clone());
         }
         if let Some(reference) = record.credential_reference.take() {
-            if self.vault.delete(&reference).is_err() {
-                secret_failure = true;
+            if !record.cleanup_references.contains(&reference) {
+                record.cleanup_references.push(reference);
             }
         }
         record.view.credential_revision = None;
@@ -1191,14 +1329,12 @@ impl Service {
         record.view.permission_state = "unavailable".into();
         record.view.revision += 1;
         record.refresh_attempt = None;
-        record.session_status = if secret_failure {
-            "vault_unavailable"
-        } else {
-            "logged_out"
-        }
-        .into();
+        record.session_status = "logged_out".into();
         self.store
             .put("connection", id, &record.view.account_id, &record)?;
+        self.store
+            .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
+        let secret_failure = self.cleanup_pending(&mut record)?;
         self.invalidate_evidence()?;
         if secret_failure {
             return Err(fail("vault_unavailable"));
@@ -1278,19 +1414,7 @@ impl Service {
         if current.view.credential_revision.as_deref() != Some(expected) {
             return Err(fail("connection_conflict"));
         }
-        self.store
-            .disable_bindings(&current.view.account_id, &current.view.panel_origin)?;
-        if let Some(reference) = current.credential_reference.take() {
-            self.vault.delete(&reference)?;
-        }
-        current.view.credential_revision = None;
-        current.credential_state = "revoked".into();
-        current.authorization_epoch = self.advance_authorization_epoch(&current)?;
-        current.view.permission_state = "unavailable".into();
-        current.view.revision += 1;
-        self.store
-            .put("connection", id, &current.view.account_id, &current)?;
-        self.invalidate_evidence()?;
+        self.disable_inference_before_cleanup(&mut current, "revoked")?;
         self.changed();
         self.bootstrap()
     }
@@ -1359,6 +1483,9 @@ impl Service {
             || record.view.revision != revision
             || record.session_status != "authenticated"
             || record.view.permission_state != "allowed"
+            || record
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
             || record.credential_reference.is_none()
             || record.view.credential_revision.is_none()
             || record.credential_state != "active"
@@ -2232,12 +2359,30 @@ impl Service {
             return Err(fail("task_state_conflict"));
         }
         let record = self.record(&snapshot.task.connection_id)?;
+        self.ensure_installation_available(&record.installation_id)?;
         if record.view.account_id != snapshot.task.account_id
             || record.view.panel_origin != snapshot.panel_origin
             || record.view.revision != snapshot.task.connection_revision
             || record.view.credential_revision.as_deref()
                 != Some(&snapshot.task.credential_revision)
             || record.session_status != "authenticated"
+            || record.credential_state != "active"
+            || record
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+            || record.view.permission_state != "allowed"
+            || record
+                .credential_expires_at
+                .is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            || self
+                .store
+                .meta(&authorization_epoch_reference(
+                    &record.view.panel_origin,
+                    &record.installation_id,
+                    &record.view.account_id,
+                ))?
+                .and_then(|s| s.parse::<u64>().ok())
+                != Some(record.authorization_epoch)
         {
             return Err(fail("connection_conflict"));
         }
@@ -2740,6 +2885,7 @@ fn map_price(value: &Value, reference: bool) -> Result<Option<PriceView>> {
     let status = value["status"].as_str().unwrap_or("unknown");
     let status = match status {
         "configured" => "configured",
+        "partial" if reference => "partial",
         "unpriced_free" if !reference => "unpriced_free",
         "unavailable" => "unavailable",
         _ => "unknown",
@@ -2748,6 +2894,7 @@ fn map_price(value: &Value, reference: bool) -> Result<Option<PriceView>> {
         match value["source"].as_str() {
             Some("official") => "official",
             Some("operator_estimate") => "operator_estimate",
+            Some("configured_reference") => "configured_reference",
             _ => "unknown",
         }
     } else {
@@ -3164,6 +3311,7 @@ mod tests {
             credential_state: "unavailable".into(),
             api_key_id: None,
             authorization_epoch: 1,
+            cleanup_references: vec![],
         };
         store
             .put("connection", &record.view.id, &account, &record)
@@ -3227,6 +3375,271 @@ mod tests {
             maximum_request_bytes: images::MAX_REQUEST_BYTES,
             maximum_results: 1,
             inputs: vec![],
+        }
+    }
+    struct DenyDeleteVault {
+        base: Arc<FakeVault>,
+        deny: std::sync::atomic::AtomicBool,
+    }
+    impl Vault for DenyDeleteVault {
+        fn get(&self, k: &str) -> Result<Zeroizing<Vec<u8>>> {
+            self.base.get(k)
+        }
+        fn put(&self, k: &str, v: &[u8]) -> Result<()> {
+            self.base.put(k, v)
+        }
+        fn delete(&self, k: &str) -> Result<()> {
+            if self.deny.load(Ordering::SeqCst) {
+                Err(fail("vault_unavailable"))
+            } else {
+                self.base.delete(k)
+            }
+        }
+    }
+    #[test]
+    fn denied_secret_delete_cannot_reopen_known_revoked_or_readonly_grants() {
+        for state in ["revoked", "readonly", "expired", "remote-revoked"] {
+            let (_dir, original, vault, mut record, install) = setup();
+            let adapter = Arc::new(DenyDeleteVault {
+                base: vault.clone(),
+                deny: std::sync::atomic::AtomicBool::new(true),
+            });
+            let service = Service::new(
+                original.store.clone(),
+                adapter.clone(),
+                original.paths.clone(),
+            )
+            .unwrap();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let old_reference = record.credential_reference.clone().unwrap();
+            let binding = HelperBinding {
+                id: uuid(),
+                client: ClientKind::Codex,
+                origin: record.view.panel_origin.clone(),
+                account_id: record.view.account_id.clone(),
+                installation_id: record.installation_id.clone(),
+                provider_id: record.view.provider_id.clone(),
+                credential_revision: record.view.credential_revision.clone().unwrap(),
+                secret_reference: old_reference.clone(),
+                enabled: true,
+                expires_at: None,
+                authorization_epoch: record.authorization_epoch,
+            };
+            service
+                .store
+                .put("binding", &binding.id, &binding.account_id, &binding)
+                .unwrap();
+            if state == "remote-revoked" {
+                service
+                    .disable_inference_before_cleanup(&mut record, "revoked")
+                    .unwrap();
+            } else {
+                let mut cache = service.account_cache(&record).unwrap();
+                if state == "readonly" {
+                    cache.inference_allowed = false;
+                } else {
+                    cache.keys[0].state = state.into();
+                }
+                service.apply_known_key_state(&mut record, &cache).unwrap();
+            }
+            let current = service.record(&record.view.id).unwrap();
+            assert_eq!(current.session_status, "vault_unavailable");
+            assert!(current.credential_reference.is_none());
+            assert!(current.view.credential_revision.is_none());
+            assert_ne!(current.view.permission_state, "allowed");
+            assert!(current.cleanup_references.contains(&old_reference));
+            assert!(adapter.get(&old_reference).is_ok());
+            assert!(
+                bound_helper_token(
+                    &binding,
+                    ClientKind::Codex,
+                    &binding.id,
+                    &service.store,
+                    adapter.as_ref(),
+                    chrono::Utc::now().timestamp()
+                )
+                .is_err()
+            );
+            assert!(
+                service
+                    .current_connection(&record.view.id, current.view.revision)
+                    .is_err()
+            );
+            adapter.deny.store(false, Ordering::SeqCst);
+            service.commit_logout(&record.view.id).unwrap();
+            assert_eq!(
+                service.record(&record.view.id).unwrap().session_status,
+                "logged_out"
+            );
+            assert!(
+                service
+                    .record(&record.view.id)
+                    .unwrap()
+                    .cleanup_references
+                    .is_empty()
+            );
+            assert!(adapter.get(&old_reference).is_err());
+        }
+    }
+    #[test]
+    fn forget_gate_between_token_and_claim_prevents_send_without_changing_task() {
+        let (_dir, service, vault, mut record, install) = setup();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+            )
+            .unwrap();
+        let mut snapshot = task_snapshot(&record);
+        snapshot.task.state = "queued".into();
+        snapshot.task.request_id = None;
+        service.persist_task(&snapshot).unwrap();
+        let binding = HelperBinding {
+            id: uuid(),
+            client: ClientKind::Codex,
+            origin: record.view.panel_origin.clone(),
+            account_id: record.view.account_id.clone(),
+            installation_id: record.installation_id.clone(),
+            provider_id: record.view.provider_id.clone(),
+            credential_revision: record.view.credential_revision.clone().unwrap(),
+            secret_reference: record.credential_reference.clone().unwrap(),
+            enabled: true,
+            expires_at: None,
+            authorization_epoch: record.authorization_epoch,
+        };
+        let token = bound_helper_token(
+            &binding,
+            ClientKind::Codex,
+            &binding.id,
+            &service.store,
+            vault.as_ref(),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        assert!(!token.is_empty());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let other = service.clone();
+        let gate = barrier.clone();
+        let install_id = install.id.clone();
+        let thread = std::thread::spawn(move || {
+            let _lock = other.account_gate.lock().unwrap();
+            other
+                .store
+                .set_meta(&format!("installation_forgetting/{install_id}"), "1")
+                .unwrap();
+            gate.wait();
+        });
+        barrier.wait();
+        thread.join().unwrap();
+        assert_eq!(
+            service.claim_image_send(&mut snapshot).unwrap_err().code,
+            "installation_forgetting"
+        );
+        assert_eq!(
+            service.scoped_task(&snapshot.task.id).unwrap().task.state,
+            "queued"
+        );
+        assert!(snapshot.task.request_id.is_none());
+    }
+    #[test]
+    fn preview_protocol_and_bootstrap_enforce_current_actor_and_logout() {
+        let (_dir, service, _vault, record, _install) = setup();
+        let mut output = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = output.into_inner();
+        let mut snapshot = task_snapshot(&record);
+        service.persist_task(&snapshot).unwrap();
+        let received = images::ReceivedImage {
+            id: uuid(),
+            info: images::validate_image(&bytes).unwrap(),
+            bytes,
+        };
+        images::stage_received(&service.store, &snapshot, &[received]).unwrap();
+        let image = images::finish_local_save(&service.store, &snapshot)
+            .unwrap()
+            .remove(0);
+        snapshot.task.image_ids = vec![image.id.clone()];
+        service.persist_task(&snapshot).unwrap();
+        let path = url::Url::parse(&image.preview_url.clone().unwrap())
+            .unwrap()
+            .path()
+            .to_owned();
+        assert!(service.read_preview_asset(&path).is_ok());
+        assert!(!path.contains("Users"));
+        for other_origin in [
+            record.view.panel_origin.clone(),
+            "https://other-panel.example.test".into(),
+        ] {
+            let mut other = record.clone();
+            other.view.id = uuid();
+            other.view.account_id = if other_origin == record.view.panel_origin {
+                "another-account".into()
+            } else {
+                record.view.account_id.clone()
+            };
+            other.view.panel_origin = other_origin;
+            let mut cache = service.account_cache(&record).unwrap();
+            cache.account.id = other.view.account_id.clone();
+            service
+                .store
+                .put("connection", &other.view.id, &other.view.account_id, &other)
+                .unwrap();
+            service
+                .store
+                .put(
+                    "account-cache",
+                    &other.view.id,
+                    &other.view.account_id,
+                    &cache,
+                )
+                .unwrap();
+            service.select_connection(&other.view.id).unwrap();
+            assert!(service.read_preview_asset(&path).is_err());
+            let wrong = url::Url::parse(&images::preview_url(&service.store, &image.id).unwrap())
+                .unwrap()
+                .path()
+                .to_owned();
+            assert!(service.read_preview_asset(&wrong).is_err());
+            let bootstrap = service.bootstrap().unwrap();
+            assert!(bootstrap.tasks.is_empty() && bootstrap.image_history.is_empty());
+        }
+        service.select_connection(&record.view.id).unwrap();
+        assert!(service.read_preview_asset(&path).is_ok());
+        service.commit_logout(&record.view.id).unwrap();
+        assert!(service.read_preview_asset(&path).is_err());
+        let view = service.bootstrap().unwrap();
+        assert!(
+            view.tasks.is_empty()
+                && view.image_history.is_empty()
+                && view.session.account.is_none()
+        );
+        assert!(service.image_for_native_export(&image.id).is_err());
+        assert!(service.read_preview_asset("/../../orbit.sqlite3").is_err());
+    }
+    #[test]
+    fn configured_reference_preserves_partial_unknown_and_decimal_values() {
+        for state in ["partial", "unknown", "configured"] {
+            let mut model = golden()["models_reply"]["data"][0].clone();
+            model["reference_price"] = json!({"source":"configured_reference","status":state,"currency":"USD","meters":[{"meter":"input","unit_size":1000000,"unit_price":"0.000000001230000000"}]});
+            let mapped = map_model(&model, "wire-revision")
+                .unwrap()
+                .official_price
+                .unwrap();
+            assert_eq!(mapped.source, "configured_reference");
+            assert_eq!(mapped.status, state);
+            assert_eq!(
+                mapped.rates[0].unit_price.as_deref(),
+                Some("0.000000001230000000")
+            );
         }
     }
     #[test]
@@ -3736,7 +4149,7 @@ mod tests {
         other.view.id = uuid();
         other.view.account_id = "another".into();
         other.view.label = "another".into();
-        other.session_status = "logged_out".into();
+        other.session_status = "authenticated".into();
         let mut cache = service.account_cache(&record).unwrap();
         cache.account.id = "another".into();
         cache.account.label = "another".into();
