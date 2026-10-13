@@ -1,0 +1,239 @@
+import { expect, test } from "@playwright/test";
+import { bootstrap, task } from "../fixtures";
+import {
+  calls,
+  fixture,
+  pushState,
+  type FixtureControl,
+} from "./native-fixture";
+
+test("unconnected UI, navigation, keyboard, modal focus and narrow container", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "让 AI 工具接入 Orivelle",
+  );
+  await expect(page.getByText("待检测", { exact: true })).toHaveCount(2);
+  await page.screenshot({
+    path: ".cache/evidence/home-unconnected.png",
+    fullPage: true,
+  });
+  const login = page
+    .getByRole("button", { name: "连接账户", exact: true })
+    .last();
+  await login.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(login).toBeFocused();
+  await page.keyboard.press("Control+3");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "选择工具，确认每次切换",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const name of ["首页", "图片工作台", "接入", "设置"]) {
+    await page
+      .getByRole("navigation")
+      .getByRole("link", { name, exact: true })
+      .click();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page.screenshot({
+    path: ".cache/evidence/settings-narrow.png",
+    fullPage: true,
+  });
+});
+
+test("real capability names populate client models and image edit options", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/access");
+  await expect(page.locator("#model-codex option")).toHaveCount(2);
+  await expect(page.locator("#model-claude option")).toHaveCount(2);
+  await expect(
+    page.getByText("合成测试数据 · 不代表真实接入或结算"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("待重启 / 载入未确认", { exact: true }),
+  ).toHaveCount(2);
+  await page.screenshot({
+    path: ".cache/evidence/access-light.png",
+    fullPage: true,
+  });
+  await page.locator("#model-codex").selectOption("synthetic-text");
+  await page.getByRole("button", { name: "预览配置" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("/fixture/config")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "确认应用" })).toBeEnabled();
+  const changed = bootstrap("synthetic-account-a", 2);
+  changed.connections[0]!.revision = 2;
+  await pushState(page, changed);
+  await expect(dialog.getByRole("button", { name: "确认应用" })).toBeDisabled();
+  expect(await calls(page, "apply_client_config")).toBe(0);
+});
+
+test("changing accounts clears prompt and drafts before another submit", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await page.locator("#image-model").selectOption("synthetic-image");
+  await page
+    .locator("#image-prompt")
+    .fill("Private synthetic account A prompt");
+  await pushState(page, bootstrap("synthetic-account-b", 2));
+  await expect(page.locator("#image-prompt")).toHaveValue("");
+  await expect(page.locator("#image-model")).toHaveValue("");
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+test("UTF-8 bound prevents a paid submit and failed paid submission never retries", async ({
+  page,
+}) => {
+  await fixture(page, { paidFailure: true });
+  await page.goto("/#/images");
+  await page.locator("#image-model").selectOption("synthetic-image");
+  await page.locator("#image-prompt").fill("中".repeat(10923));
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeDisabled();
+  expect(await calls(page, "create_image_task")).toBe(0);
+  await page.locator("#image-prompt").fill("Synthetic image prompt");
+  await page.getByRole("button", { name: "生成图片", exact: true }).click();
+  await expect(
+    page.getByText("结果待确认", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByText("费用待确认", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("SYNTHETIC_SECRET_SHOULD_NOT_RENDER"),
+  ).toHaveCount(0);
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "首页", exact: true })
+    .click();
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "图片工作台", exact: true })
+    .click();
+  expect(await calls(page, "create_image_task")).toBe(1);
+  await expect(page.getByRole("button", { name: "重试生成" })).toHaveCount(0);
+});
+
+test("crash-recovered local materials expose only a local saving retry", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  const recovered = task("unconfirmed");
+  recovered.local_save_available = true;
+  state.tasks = [recovered];
+  await fixture(page, { state });
+  await page.goto("/#/images");
+  await page.getByRole("button", { name: "重试本地保存" }).click();
+  await expect(page.locator(".task-header .badge")).toHaveText(
+    "本地结果已保存",
+  );
+  expect(await calls(page, "retry_local_save")).toBe(1);
+  expect(await calls(page, "create_image_task")).toBe(0);
+  await expect(page.getByText("费用待确认", { exact: true })).toBeVisible();
+});
+
+test("deleting one local image never deletes other results of the same task", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  state.tasks = [task()];
+  state.tasks[0]!.image_ids = ["image-1", "image-2"];
+  state.image_history = ["image-1", "image-2"].map((id) => ({
+    id,
+    task_id: "synthetic-task",
+    account_id: "synthetic-account-a",
+    created_at: "2026-10-13",
+    requested_model: "synthetic-image",
+    observed_model: null,
+    mime: "image/png",
+    width: 16,
+    height: 16,
+    bytes: 100,
+    preview_url: null,
+  }));
+  await fixture(page, { state });
+  await page.goto("/#/images");
+  await page.getByRole("tab", { name: "本地历史" }).click();
+  await expect(page.locator(".history-card")).toHaveCount(2);
+  await page
+    .getByRole("button", { name: "删除本地历史", exact: true })
+    .first()
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "确认", exact: true })
+    .click();
+  await expect(page.locator(".history-card")).toHaveCount(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.delete_history,
+    ),
+  ).toEqual({ image_ids: ["image-1"], confirmed: true });
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+test("old revocation confirmation is disabled after credential replacement", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/access");
+  await page
+    .getByRole("button", { name: "撤销本安装推理 key", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("button", { name: "确认", exact: true }),
+  ).toBeEnabled();
+  const changed = bootstrap("synthetic-account-a", 2);
+  changed.connections[0]!.revision = 2;
+  changed.connections[0]!.credential_revision = "new-credential";
+  await pushState(page, changed);
+  await expect(
+    dialog.getByRole("button", { name: "确认", exact: true }),
+  ).toBeDisabled();
+  expect(await calls(page, "revoke_inference_key")).toBe(0);
+});
+
+test("theme, language, wide window and accessible image tabs", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/settings");
+  await page.locator("#setting-theme").selectOption("dark");
+  await expect(page.locator("html")).toHaveClass("dark");
+  await page.locator("#setting-locale").selectOption("en");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "Make Orbit fit your workflow",
+  );
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "Images", exact: true })
+    .click();
+  const create = page.getByRole("tab", { name: "Create", exact: true });
+  await create.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Local history" })).toBeFocused();
+  await page.screenshot({
+    path: ".cache/evidence/images-dark-wide.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});

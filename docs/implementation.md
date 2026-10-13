@@ -1,0 +1,47 @@
+# 实施与安全合同
+
+## 分层与页面
+
+Vue 3、TypeScript、Vite、Pinia、Vue Router、Tailwind CSS、Reka UI 负责界面和交互。Rust 负责远端请求、文件、凭据、配置、图片任务和 SQLite。前端 IPC 仅开放具体领域操作，定义在 `src/shared/contracts.ts`；统一使用 `{ request: ... }`。
+
+首页优先呈现两个桌面客户端接入行，账户和余额保持紧凑。接入页分别选择获准节点和两个客户端模型，预览精确路径、版本、账户、节点、影响和脱敏差异。图片历史在工作台页内。设置包含外观、语言、磁盘、凭据、备份、关闭行为、更新和诊断。窄窗口按容器重排，导航支持 Control/Command + 1–4；弹窗管理焦点并恢复到触发控件。
+
+界面不读取 API key，不提供任意 HTTP、SQL、文件或命令执行入口，不使用 localStorage 保存账户或凭据。渲染任务、图片和预算使用当前账户/Panel origin；模型异步请求绑定连接、节点和凭据 revision，旧请求不得更新新上下文。整个状态采用递增 revision，拒绝旧状态及晚到的命令确认覆盖更新事件。
+
+## 登录、凭据与恢复
+
+Panel 复用现有网页登录、验证、2FA/passkey 与权限服务。独立桌面授权使用系统浏览器、短时单次授权码、state、PKCE、HTTPS 交换和绑定的 loopback callback。回调只携带短时代码、state、issuer，不能携带账户或推理凭据。
+
+安装 Ed25519 身份、备份加密密钥、桌面账户会话和推理 key 分别存入原生系统安全存储；安装证明不能代替用户授权。前端和 SQLite 只取得不含秘密的元信息和引用。不可用、拒绝访问或缺少凭据明确失败，不回落明文。refresh 单次旋转；响应丢失或本地写入失败需重新授权，不重试旧 refresh。
+
+安装关联推理 key 由现有 Panel 发/取服务在业务权限和锁内创建或复用。只读成员仍可查看账户、预算和消费，不能自动取得接入 key。撤销冻结预览时 key revision，服务端在关联/key 锁内匹配，避免撤销后来替换的 key。
+
+退出清除对应账户与推理凭据、禁用 helper 授权，保留安装和备份密钥。删除连接与撤销服务器推理 key 是独立选择。忘记安装须预览 Panel origin、涉及账户和备份，并确认旧备份恢复能力会丢失。目标客户端可能缓存凭据，不能宣称退出 Orbit 立即使它退出登录。
+
+配置备份按完整操作组加密，每个客户端最多 5 组、保留 30 天。恢复使用原备份的账户/origin/安装身份、目标版本、组织策略和当前文件 hash；不依赖当前推理 key。用户明确选择原账户与 Panel。检测第三方修改后停止覆盖；文件、vault 和 helper 绑定采用可恢复 journal，不能声称全局原子事务，也不能声称 hash 阻止所有外部写入竞争。
+
+## 桌面官方合同
+
+Codex 桌面使用用户 `config.toml` 的自定义 provider 和 command credential helper。macOS 为 `~/.codex/config.toml`，Windows 为 `%USERPROFILE%\.codex\config.toml`。用户配置可能影响 CLI/IDE，保存后需完整重启。只修改负责字段与独立 provider，不改 `auth.json` 或 OAuth 身份。[官方接入](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)。
+
+Claude Desktop 使用官方第三方推理配置和 helper；macOS 配置 library 位于 `~/Library/Application Support/Claude-3p/configLibrary/`，Windows 为 `%LOCALAPPDATA%\Claude-3p\configLibrary\`。V2 body schema 有官方依据，profile envelope 与 `_meta.json` 仍需获准的合成导出证据，当前自动 library 写入应阻止。第三方模式作用于整个 Desktop，首期以 Code 为验证重点，保留模式选择、组织策略和原登录资料。[配置](https://claude.com/docs/third-party/claude-desktop/configuration)、[凭据 helper](https://claude.com/docs/third-party/claude-desktop/credential-helper)、[V2 schema](https://claude.com/docs/third-party/claude-desktop/schemas/bootstrap-config-v2.schema.json)。
+
+当前权限能力使用 `openai.responses`、`anthropic.messages`、`openai.images.generations`、`openai.images.edits`。未经实际客户端观测，不承诺非 Claude 上游与 Claude Code 的能力等价、任意别名自动出现、Fast/tier/reasoning 的速度提升。保存配置不自动执行收费推理。
+
+## 图片与账务
+
+只发送一次严格 JSON POST 到生成或编辑接口；完整请求包含 base64 和 JSON，限制为节点准入上限与 64 MiB 中的较小值。提示词最多 32768 UTF-8 字节，单图最多 32 MiB，响应最多 64 MiB。真实 PNG/JPEG/WebP 类型、尺寸、像素、解码、并发、预览缓存与磁盘均有界。本地图片独立存储，SQLite 不保存大量 base64。
+
+任务冻结账户、origin、连接/凭据 revision、节点、模型 revision、参数和输入快照。已发送任务的取消、断线、超时或退出无法证明服务端停止，保留结果待确认。恢复只处理已收到的本地材料和未完成保存，不请求服务器图片结果，也不重放生成。逐图删除仅影响所选本地图片；多图任务的其他结果和服务器账务不受影响。
+
+记录 `X-Orivelle-Request-ID`，经 actor 作用域查 Panel 的统一执行和消费投影。服务端 `result_state`、nullable `outcome`、`charge_state` 和费用分项各自保留，图片到达与 HTTP 200 不能证明结算。金额采用准确十进制字符串；未知、待核账、冲突、缺失和真实零保持不同，不合并混合币种。
+
+价格区分平台销售价、官方参考、运营估价和未知，保持 meter/unit_size。缓存输入是输入子集，不重复累计。旧 `image_count` 明示按张计费；结果张数不能冒充 token。准入预算可能是软约束，不承诺在途并发永不超额。
+
+## 更新、签名与参考
+
+Aplena 参考固定于 `1359d012f3af2e45fb182b16b8c51bbb36bd2e07`。它提供应用签名与独立 updater 签名模式，没有已实现的安装登录身份/vault 方案；不把发布证书当安装用户身份，也不复制私人密钥。其 Morton Li 自签名 macOS 证书不是 Developer ID 或 notarization 证明。[Aplena](https://github.com/Morton-Li/Aplena)。
+
+Updater 固定候选 2.13.3，CLI 2.12.2。更新下载必须 HTTPS、有界，校验跳转、平台、架构、固定可信公钥和受全局签名保护的版本；解包/安装消费同一份已验证字节或封闭 handle。安装前检查任务/helper/journal、数据一致备份和 schema 兼容，失败保留可恢复旧应用和数据。没有正式可信渠道和公钥时保持 disabled，不访问占位地址，也不把测试信任密钥编入正式候选。
+
+CC Switch 仅作路径、格式和技术行为参考，实际检查版本为 4.0.6、MIT、无 Git 元数据。UI 独立设计。当前没有搬入 CC Switch 或 Aplena 的实质代码；后续实质复用须记录必要性、维护边界和版权许可。
