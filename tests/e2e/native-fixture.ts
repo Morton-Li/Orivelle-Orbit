@@ -1,11 +1,16 @@
 import type { Page } from "@playwright/test";
-import type { BootstrapView, ModelView } from "../../src/shared/contracts";
+import type {
+  AuthorizationEvent,
+  BootstrapView,
+  ModelView,
+} from "../../src/shared/contracts";
 import { bootstrap, imageModel, task } from "../fixtures";
 
 export type FixtureControl = {
   counts: Record<string, number>;
   lastRequests: Record<string, Record<string, unknown>>;
   pushState: (state: BootstrapView) => void;
+  pushAuthorization: (event: AuthorizationEvent) => void;
 };
 export async function fixture(
   page: Page,
@@ -57,6 +62,13 @@ export async function fixture(
           current = value;
           emit("orbit://state", value);
         },
+        pushAuthorization(value) {
+          if (current.pending_authorization?.request_id === value.request_id) {
+            current.pending_authorization = null;
+            update();
+          }
+          emit("orbit://authorization", value);
+        },
       };
       function update() {
         current.state_revision++;
@@ -87,6 +99,23 @@ export async function fixture(
           const request = (args.request ?? {}) as Record<string, unknown>;
           control.lastRequests[command] = structuredClone(request);
           if (command === "bootstrap") return structuredClone(current);
+          if (command === "refresh_account") return structuredClone(current);
+          if (command === "start_login") {
+            current.pending_authorization = {
+              request_id: "synthetic-login",
+              expires_at: new Date(Date.now() + 60000).toISOString(),
+            };
+            update();
+            return current.pending_authorization;
+          }
+          if (command === "cancel_login") {
+            testWindow.__ORBIT_TEST__.pushAuthorization({
+              request_id: String(request.request_id),
+              state: "cancelled",
+              error: null,
+            });
+            return structuredClone(current);
+          }
           if (command === "list_models") return models;
           if (command === "update_settings") {
             current.settings = {

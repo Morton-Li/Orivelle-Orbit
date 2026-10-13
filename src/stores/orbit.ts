@@ -5,11 +5,13 @@ import {
   nativeAvailable,
   OrbitError,
   publicFailure,
+  subscribeAuthorization,
   subscribeErrors,
   subscribeState,
 } from "../shared/bridge";
 import type {
   BootstrapView,
+  AuthorizationEvent,
   ClientKind,
   ClientView,
   IpcCommands,
@@ -55,6 +57,8 @@ export function emptyState(): BootstrapView {
     schema_version: 1,
     state_revision: 0,
     source: "local",
+    platform: null,
+    pending_authorization: null,
     session: {
       status: "logged_out",
       panel_origin: null,
@@ -88,13 +92,15 @@ export const useOrbitStore = defineStore("orbit", () => {
   const loginOpen = ref(false);
   const loginPending = ref(false);
   const loginExpiresAt = ref<string | null>(null);
+  const loginRequestId = ref<string | null>(null);
   let unsubscribe: (() => void) | undefined;
   let unsubscribeErrors: (() => void) | undefined;
+  let unsubscribeAuthorization: (() => void) | undefined;
   let modelGeneration = 0;
   let initPromise: Promise<void> | undefined;
   let settingsGeneration = 0;
   const account = computed(() =>
-    state.value.session.status === "authenticated"
+    ["authenticated", "refreshing"].includes(state.value.session.status)
       ? state.value.session.account
       : null,
   );
@@ -115,6 +121,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     () =>
       state.value.session.status === "authenticated" &&
       state.value.session.inference_credential_status === "ready" &&
+      !busy.value.has("refresh-account") &&
       activeConnection.value?.permission_state === "allowed" &&
       !!activeConnection.value.node_id,
   );
@@ -190,6 +197,19 @@ export const useOrbitStore = defineStore("orbit", () => {
       return;
     report(publicFailure(event.error));
   }
+  function acceptAuthorization(event: AuthorizationEvent) {
+    if (event.request_id !== loginRequestId.value) return;
+    loginPending.value = false;
+    loginExpiresAt.value = null;
+    loginRequestId.value = null;
+    if (event.state === "connected") {
+      loginOpen.value = false;
+      notify(t("login.connected"));
+    } else if (event.state === "denied") notify(t("login.denied"), "error");
+    else if (event.state === "expired") notify(t("login.expired"), "error");
+    else if (event.state === "failed") report(publicFailure(event.error));
+    else notify(t("login.cancelled"));
+  }
   function acceptState(next: BootstrapView): boolean {
     if (
       next.schema_version !== 1 ||
@@ -199,14 +219,20 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       return false;
     const before = scope.value;
+    const previousAccountId = account.value?.id;
     state.value = next;
     initialized.value = true;
     locale.value = next.settings.locale;
-    if (next.session.status !== "authorizing") {
-      loginPending.value = false;
-      loginExpiresAt.value = null;
-    }
-    if (next.session.status === "authenticated") loginOpen.value = false;
+    loginPending.value = next.pending_authorization !== null;
+    loginExpiresAt.value = next.pending_authorization?.expires_at ?? null;
+    if (next.pending_authorization)
+      loginRequestId.value = next.pending_authorization.request_id;
+    if (
+      next.session.status === "authenticated" &&
+      !next.pending_authorization &&
+      account.value?.id !== previousAccountId
+    )
+      loginOpen.value = false;
     if (scope.value !== before) {
       modelGeneration++;
       models.value = [];
@@ -218,8 +244,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     const connection = activeConnection.value;
     const capturedScope = scope.value;
     const generation = ++modelGeneration;
-    models.value = [];
     if (!connection || state.value.session.status !== "authenticated") {
+      if (state.value.session.status !== "refreshing") models.value = [];
       modelsLoading.value = false;
       return;
     }
@@ -255,9 +281,31 @@ export const useOrbitStore = defineStore("orbit", () => {
       busy.value.delete(key);
     }
   }
-  async function refresh() {
-    const result = await perform("bootstrap", "bootstrap", {});
-    if (result) acceptState(result);
+  async function refresh(remote = false) {
+    if (busy.value.has("refresh")) return;
+    busy.value.add("refresh");
+    try {
+      const result = await perform("bootstrap", "bootstrap", {});
+      if (result) acceptState(result);
+      const connection = activeConnection.value;
+      if (
+        remote &&
+        connection &&
+        state.value.session.status === "authenticated"
+      ) {
+        const captured = scope.value;
+        const updated = await perform("refresh-account", "refresh_account", {
+          connection_id: connection.id,
+          expected_revision: connection.revision,
+        });
+        if (updated) {
+          acceptState(updated);
+          if (captured === scope.value) await loadModels();
+        }
+      }
+    } finally {
+      busy.value.delete("refresh");
+    }
   }
   async function initialize(): Promise<void> {
     if (initPromise) return initPromise;
@@ -267,7 +315,9 @@ export const useOrbitStore = defineStore("orbit", () => {
       try {
         unsubscribe = await subscribeState(acceptState);
         unsubscribeErrors = await subscribeErrors(acceptError);
-        await refresh();
+        unsubscribeAuthorization =
+          await subscribeAuthorization(acceptAuthorization);
+        await refresh(true);
       } catch (error) {
         report(error);
       } finally {
@@ -281,6 +331,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     unsubscribe = undefined;
     unsubscribeErrors?.();
     unsubscribeErrors = undefined;
+    unsubscribeAuthorization?.();
+    unsubscribeAuthorization = undefined;
   }
   async function login(panelOrigin: string) {
     const result = await perform("login", "start_login", {
@@ -288,10 +340,22 @@ export const useOrbitStore = defineStore("orbit", () => {
     });
     if (result) {
       loginPending.value = true;
+      loginRequestId.value = result.request_id;
       loginExpiresAt.value = result.expires_at;
       await refresh();
     }
     return result;
+  }
+  async function cancelLogin() {
+    const id = loginRequestId.value;
+    if (loginPending.value && id) {
+      const result = await perform("login-cancel", "cancel_login", {
+        request_id: id,
+      });
+      if (!result) return;
+      acceptState(result);
+    }
+    loginOpen.value = false;
   }
   async function selectConnection(id: string) {
     const result = await perform("connection", "select_connection", {
@@ -348,6 +412,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     loginOpen,
     loginPending,
     loginExpiresAt,
+    loginRequestId,
     account,
     activeConnection,
     scope,
@@ -361,12 +426,14 @@ export const useOrbitStore = defineStore("orbit", () => {
     clearNotice,
     acceptState,
     acceptError,
+    acceptAuthorization,
     loadModels,
     perform,
     refresh,
     initialize,
     dispose,
     login,
+    cancelLogin,
     selectConnection,
     selectNode,
     saveSettings,

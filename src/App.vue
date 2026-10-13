@@ -127,8 +127,8 @@ onUnmounted(() => {
         ><button
           class="icon-button"
           :aria-label="t('action.refresh')"
-          :disabled="!store.native || store.busy.has('bootstrap')"
-          @click="store.refresh"
+          :disabled="!store.native || store.busy.has('refresh')"
+          @click="store.refresh(true)"
         >
           <OrbitIcon name="refresh" />
         </button>
@@ -198,7 +198,8 @@ onUnmounted(() => {
           <button
             type="button"
             class="button secondary"
-            @click="store.loginOpen = false"
+            :disabled="store.busy.has('login-cancel')"
+            @click="store.cancelLogin"
           >
             {{ t("action.cancel") }}</button
           ><button

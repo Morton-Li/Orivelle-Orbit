@@ -15,6 +15,7 @@ export function bootstrap(
   const connectionId = `connection-${accountId}`;
   state.state_revision = revision;
   state.source = "synthetic";
+  state.platform = "macos";
   state.session = {
     status: "authenticated",
     panel_origin: "https://panel.invalid",
@@ -23,6 +24,7 @@ export function bootstrap(
       id: accountId,
       label: `Synthetic ${accountId}`,
       email: "fixture@example.invalid",
+      updated_at: "2026-10-13T03:00:00Z",
       member: false,
       wallet: {
         amount: "123456789.123456789",

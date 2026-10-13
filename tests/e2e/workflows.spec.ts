@@ -93,6 +93,102 @@ test("changing accounts clears prompt and drafts before another submit", async (
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
+test("healthy session rotation preserves a draft while disabling submission, and expiry clears it", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await page.locator("#image-model").selectOption("synthetic-image");
+  await page.locator("#image-prompt").fill("Same actor draft during rotation");
+  const rotating = bootstrap("synthetic-account-a", 2);
+  rotating.session.status = "refreshing";
+  await pushState(page, rotating);
+  await expect(page.locator("#image-prompt")).toHaveValue(
+    "Same actor draft during rotation",
+  );
+  await expect(page.locator("#image-model")).toHaveValue("synthetic-image");
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeDisabled();
+  await pushState(page, bootstrap("synthetic-account-a", 3));
+  await expect(page.locator("#image-prompt")).toHaveValue(
+    "Same actor draft during rotation",
+  );
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeEnabled();
+  const expired = bootstrap("synthetic-account-a", 4);
+  expired.session.status = "expired";
+  await pushState(page, expired);
+  await expect(page.locator("#image-prompt")).toHaveValue("");
+  await expect(page.locator("#image-model")).toHaveValue("");
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+test("browser authorization remains pending and supports explicit denial and cancellation", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "连接账户", exact: true })
+    .last()
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("#panel-address").fill("https://panel.invalid");
+  await dialog.getByRole("button", { name: "继续", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "继续", exact: true }),
+  ).toBeDisabled();
+  await expect(dialog.locator("#panel-address")).toBeDisabled();
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.pushAuthorization({
+      request_id: "synthetic-login",
+      state: "denied",
+      error: null,
+    }),
+  );
+  await expect(
+    page.getByText("浏览器授权已拒绝，当前账户保持原状态。"),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "继续", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "继续", exact: true }).click();
+  await expect(dialog.locator("#panel-address")).toBeDisabled();
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await calls(page, "cancel_login")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.pushAuthorization({
+      request_id: "synthetic-login",
+      state: "connected",
+      error: null,
+    }),
+  );
+  await expect(page.locator(".account-summary h2")).toHaveText(
+    "Synthetic synthetic-account-a",
+  );
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
+test("synthetic Windows capabilities never offer an inaccessible hidden background window", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  state.platform = "windows";
+  await fixture(page, { state });
+  await page.goto("/#/settings");
+  await expect(
+    page.locator('#setting-close option[value="keep_running"]'),
+  ).toHaveCount(0);
+  await expect(page.locator("#setting-close option")).toHaveCount(2);
+});
+
 test("Claude import export requires confirmation and never claims configuration was applied", async ({
   page,
 }) => {

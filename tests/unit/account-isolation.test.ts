@@ -5,6 +5,7 @@ const bridge = vi.hoisted(() => ({
   nativeAvailable: () => true,
   subscribeState: vi.fn(async () => () => undefined),
   subscribeErrors: vi.fn(async () => () => undefined),
+  subscribeAuthorization: vi.fn(async () => () => undefined),
 }));
 vi.mock("../../src/shared/bridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/shared/bridge")>()),
@@ -26,6 +27,74 @@ beforeEach(() => {
   bridge.call.mockResolvedValue([]);
 });
 describe("account and revision isolation", () => {
+  it("preserves actor scope and draft models during a healthy refresh but stops new paid actions", async () => {
+    const store = useOrbitStore();
+    bridge.call.mockResolvedValue([imageModel()]);
+    store.acceptState(bootstrap());
+    await Promise.resolve();
+    const before = store.scope;
+    const rotating = bootstrap("synthetic-account-a", 2);
+    rotating.session.status = "refreshing";
+    store.acceptState(rotating);
+    expect(store.scope).toBe(before);
+    expect(store.account?.id).toBe("synthetic-account-a");
+    expect(store.models).toHaveLength(1);
+    expect(store.ready).toBe(false);
+    store.acceptState(bootstrap("synthetic-account-a", 3));
+    expect(store.scope).toBe(before);
+    expect(store.ready).toBe(true);
+    const expired = bootstrap("synthetic-account-a", 4);
+    expired.session.status = "expired";
+    store.acceptState(expired);
+    expect(store.scope).toBe("none");
+    expect(store.models).toHaveLength(0);
+  });
+  it("keeps browser authorization pending through local refresh and rejects stale terminal events", () => {
+    const store = useOrbitStore();
+    const pending = bootstrap();
+    pending.pending_authorization = {
+      request_id: "current-request",
+      expires_at: "2026-10-13T03:10:00Z",
+    };
+    store.acceptState(pending);
+    expect(store.loginPending).toBe(true);
+    store.acceptAuthorization({
+      request_id: "former-request",
+      state: "denied",
+      error: null,
+    });
+    expect(store.loginPending).toBe(true);
+    expect(store.notice).toBeNull();
+    // Native state may arrive before its terminal event; retain the request ID for correlation.
+    store.acceptState(bootstrap("synthetic-account-a", 2));
+    store.acceptAuthorization({
+      request_id: "current-request",
+      state: "denied",
+      error: null,
+    });
+    expect(store.loginPending).toBe(false);
+    expect(store.notice?.text).toContain("授权已拒绝");
+    expect(store.account?.id).toBe("synthetic-account-a");
+  });
+  it("manual refresh queries account data with a frozen revision and never invokes a paid request", async () => {
+    const store = useOrbitStore();
+    const state = bootstrap();
+    bridge.call.mockImplementation((command) =>
+      command === "list_models" ? [imageModel()] : state,
+    );
+    store.acceptState(state);
+    await Promise.resolve();
+    bridge.call.mockClear();
+    await store.refresh(true);
+    expect(bridge.call).toHaveBeenCalledWith("refresh_account", {
+      connection_id: state.active_connection_id,
+      expected_revision: 1,
+    });
+    expect(
+      bridge.call.mock.calls.some(([name]) => name === "create_image_task"),
+    ).toBe(false);
+    expect(store.models).toHaveLength(1);
+  });
   it("ignores delayed native errors for a former account or connection revision", () => {
     const store = useOrbitStore();
     store.acceptState(bootstrap());

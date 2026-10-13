@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   BootstrapView,
+  AuthorizationEvent,
   ImageInputsEvent,
   IpcCommands,
   ScopedErrorEvent,
@@ -86,6 +87,36 @@ export async function subscribeErrors(
         message: failure.message,
         retryable: failure.retryable,
       },
+    });
+  });
+}
+export async function subscribeAuthorization(
+  callback: (event: AuthorizationEvent) => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen<AuthorizationEvent>("orbit://authorization", (event) => {
+    const payload = event.payload;
+    if (
+      !payload ||
+      typeof payload.request_id !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(payload.request_id) ||
+      !["connected", "denied", "expired", "failed", "cancelled"].includes(
+        payload.state,
+      )
+    )
+      return;
+    const failure =
+      payload.error === null ? null : publicFailure(payload.error);
+    callback({
+      request_id: payload.request_id,
+      state: payload.state,
+      error: failure
+        ? {
+            code: failure.code,
+            message: failure.message,
+            retryable: failure.retryable,
+          }
+        : null,
     });
   });
 }

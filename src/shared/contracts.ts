@@ -72,6 +72,7 @@ export type AccountView = {
   id: string;
   label: string;
   email: string | null;
+  updated_at: string | null;
   member: boolean;
   wallet: Money | null;
   budget: {
@@ -86,6 +87,7 @@ export type SessionView = {
     | "logged_out"
     | "authorizing"
     | "authenticated"
+    | "refreshing"
     | "expired"
     | "revoked"
     | "vault_unavailable";
@@ -268,6 +270,8 @@ export type BootstrapView = {
   schema_version: 1;
   state_revision: number;
   source: "local" | "remote" | "synthetic";
+  platform: "macos" | "windows" | null;
+  pending_authorization: LoginStart | null;
   session: SessionView;
   connections: ConnectionView[];
   installations: InstallationView[];
@@ -322,6 +326,11 @@ export type ConfigResult = {
   backup_group_id: string | null;
 };
 export type LoginStart = { request_id: string; expires_at: string };
+export type AuthorizationEvent = {
+  request_id: string;
+  state: "connected" | "denied" | "expired" | "failed" | "cancelled";
+  error: PublicError | null;
+};
 export type DiagnosticsPreview = {
   id: string;
   text: string;
@@ -352,6 +361,11 @@ export type ForgetInstallationPreview = {
 export interface IpcCommands {
   bootstrap: { args: Record<string, never>; result: BootstrapView };
   start_login: { args: { panel_origin: string }; result: LoginStart };
+  cancel_login: { args: { request_id: string }; result: BootstrapView };
+  refresh_account: {
+    args: { connection_id: string; expected_revision: number };
+    result: BootstrapView;
+  };
   logout: { args: { connection_id: string }; result: BootstrapView };
   select_connection: { args: { connection_id: string }; result: BootstrapView };
   select_node: {
