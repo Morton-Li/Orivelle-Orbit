@@ -21,4 +21,4 @@ npm 使用项目 `.npmrc` 中的 npmmirror；锁文件内 npmjs 下载地址按 
 
 图片请求复用 Edge 严格 JSON 合同。异常后不自动重发；已收到的本地保存材料可以仅重试本地保存。没有服务器图片结果恢复、生成去重、幂等或成功结果重放。执行记录和结算状态以 Panel 为权威，金额以十进制字符串展示。
 
-详见 [实施与安全合同](docs/implementation.md)、[验证记录与环境门禁](docs/validation.md)。正式签名、发布、公钥与更新渠道配置另行授权。
+详见 [实施与安全合同](docs/implementation.md)、[验证记录与环境门禁](docs/validation.md)、[原生检查与候选打包](docs/build-candidates.md)。正式签名、发布、公钥与更新渠道配置另行授权。
