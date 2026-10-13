@@ -1,0 +1,12 @@
+[package]
+name = "orbit-credential-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+[dependencies]
+orbit-core = { path = "../orbit-core" }
+serde_json.workspace = true
+fs2.workspace = true
+[features]
+system-integration = []
