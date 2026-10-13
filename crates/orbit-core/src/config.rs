@@ -1,0 +1,967 @@
+use crate::{
+    dto::ClientKind,
+    error::{Result, fail},
+    identity::{HelperBinding, Installation, sha256, uuid},
+    store::{Store, private_file},
+    vault::Vault,
+};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chacha20poly1305::{
+    AeadCore, KeyInit, XChaCha20Poly1305, XNonce,
+    aead::{Aead, OsRng, Payload},
+};
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
+use toml_edit::{DocumentMut, Item, Table, value};
+
+pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+pub struct FileChange {
+    pub path: String,
+    pub before: Option<Vec<u8>>,
+    pub after: Option<Vec<u8>>,
+}
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+struct Operation {
+    files: Vec<FileChange>,
+    #[zeroize(skip)]
+    enable_binding: Option<String>,
+    #[zeroize(skip)]
+    disable_bindings: Vec<String>,
+    #[zeroize(skip)]
+    #[serde(default)]
+    grants_before: Vec<HelperBinding>,
+    #[zeroize(skip)]
+    #[serde(default)]
+    grants_after: Vec<HelperBinding>,
+    #[serde(default)]
+    restore: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Journal {
+    pub id: String,
+    pub client: ClientKind,
+    pub account_id: String,
+    #[serde(default)]
+    pub account_label: String,
+    pub installation: Installation,
+    pub created_at: String,
+    pub expires_at: String,
+    pub phase: String,
+    pub paths: Vec<String>,
+    pub nonce: String,
+    #[serde(default)]
+    pub ciphertext: String,
+}
+impl std::fmt::Debug for Journal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Journal")
+            .field("id", &self.id)
+            .field("phase", &self.phase)
+            .finish_non_exhaustive()
+    }
+}
+pub struct ConfigEngine<'a> {
+    pub store: &'a Store,
+    pub vault: &'a dyn Vault,
+    pub allowed_roots: Vec<PathBuf>,
+}
+pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(fail("configuration_unreadable")),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_CONFIG_BYTES
+    {
+        return Err(fail("configuration_unreadable"));
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .and_then(|f| f.take(MAX_CONFIG_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|_| fail("configuration_unreadable"))?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(fail("configuration_unreadable"));
+    }
+    Ok(Some(bytes))
+}
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| fail("invalid_path"))?;
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(fail("configuration_conflict"));
+    }
+    let mut staged =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| fail("local_save_failed"))?;
+    private_file(staged.path())?;
+    staged
+        .write_all(bytes)
+        .and_then(|_| staged.as_file().sync_all())
+        .map_err(|_| fail("local_save_failed"))?;
+    staged
+        .persist(path)
+        .map_err(|_| fail("local_save_failed"))?;
+    #[cfg(unix)]
+    File::open(parent)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| fail("local_save_failed"))?;
+    Ok(())
+}
+fn equal_current(file: &FileChange, expected: &Option<Vec<u8>>) -> Result<bool> {
+    Ok(read_file(Path::new(&file.path))? == *expected)
+}
+impl ConfigEngine<'_> {
+    fn validate_path(&self, path: &Path) -> Result<()> {
+        if !path.is_absolute() {
+            return Err(fail("invalid_path"));
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| fail("invalid_path"))?
+            .canonicalize()
+            .map_err(|_| fail("invalid_path"))?;
+        if !self
+            .allowed_roots
+            .iter()
+            .any(|root| root.canonicalize().is_ok_and(|r| parent.starts_with(r)))
+        {
+            return Err(fail("path_outside_scope"));
+        }
+        if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(())
+    }
+    fn lock(&self, client: ClientKind) -> Result<File> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(
+                self.store
+                    .root
+                    .join("locks")
+                    .join(format!("{}.lock", client.as_str())),
+            )
+            .map_err(|_| fail("configuration_busy"))?;
+        file.try_lock_exclusive()
+            .map_err(|_| fail("configuration_busy"))?;
+        Ok(file)
+    }
+    fn cipher(&self, installation: &Installation) -> Result<XChaCha20Poly1305> {
+        let key = self.vault.get(&installation.backup_reference)?;
+        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| fail("vault_unavailable"))
+    }
+    fn aad(journal: &Journal) -> String {
+        format!(
+            "orbit-config-v1\n{}\n{}\n{}\n{}\n",
+            journal.id,
+            journal.installation.origin,
+            journal.installation.id,
+            journal.client.as_str()
+        )
+    }
+    fn decrypt(&self, journal: &Journal) -> Result<Operation> {
+        let nonce = URL_SAFE_NO_PAD
+            .decode(&journal.nonce)
+            .map_err(|_| fail("backup_invalid"))?;
+        if nonce.len() != 24 {
+            return Err(fail("backup_invalid"));
+        }
+        let ciphertext = URL_SAFE_NO_PAD
+            .decode(&journal.ciphertext)
+            .map_err(|_| fail("backup_invalid"))?;
+        let plain = zeroize::Zeroizing::new(
+            self.cipher(&journal.installation)?
+                .decrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: &ciphertext,
+                        aad: Self::aad(journal).as_bytes(),
+                    },
+                )
+                .map_err(|_| fail("backup_invalid"))?,
+        );
+        serde_json::from_slice(&plain).map_err(|_| fail("backup_invalid"))
+    }
+    pub fn prepare(
+        &self,
+        client: ClientKind,
+        account: &str,
+        installation: &Installation,
+        files: Vec<FileChange>,
+        enable_binding: Option<String>,
+        disable_bindings: Vec<String>,
+    ) -> Result<Journal> {
+        if files.is_empty() || files.len() > 8 {
+            return Err(fail("invalid_configuration"));
+        }
+        for file in &files {
+            self.validate_path(Path::new(&file.path))?;
+            if !equal_current(file, &file.before)? {
+                return Err(fail("configuration_conflict"));
+            }
+        }
+        let now = chrono::Utc::now();
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let retention = self.store.settings()?.backup_retention_days.min(30);
+        let mut journal = Journal {
+            id: uuid(),
+            client,
+            account_id: account.into(),
+            account_label: account.into(),
+            installation: installation.clone(),
+            created_at: now.to_rfc3339(),
+            expires_at: (now + chrono::Duration::days(retention as i64)).to_rfc3339(),
+            phase: "prepared".into(),
+            paths: files.iter().map(|f| f.path.clone()).collect(),
+            nonce: URL_SAFE_NO_PAD.encode(nonce),
+            ciphertext: String::new(),
+        };
+        let operation = Operation {
+            files,
+            enable_binding,
+            disable_bindings,
+            grants_before: Vec::new(),
+            grants_after: Vec::new(),
+            restore: false,
+        };
+        let mut operation = operation;
+        for id in operation
+            .disable_bindings
+            .iter()
+            .chain(operation.enable_binding.iter())
+        {
+            let before = self
+                .store
+                .get::<HelperBinding>("binding", id)?
+                .ok_or_else(|| fail("binding_disabled"))?;
+            let mut after = before.clone();
+            after.enabled = operation.enable_binding.as_ref() == Some(id);
+            operation.grants_before.push(before);
+            operation.grants_after.push(after);
+        }
+        self.persist_operation(&mut journal, &operation)?;
+        Ok(journal)
+    }
+    fn persist_operation(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        // A rewritten encrypted operation always gets a fresh nonce.
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        journal.nonce = URL_SAFE_NO_PAD.encode(nonce);
+        let plain = zeroize::Zeroizing::new(
+            serde_json::to_vec(&operation).map_err(|_| fail("serialization_failed"))?,
+        );
+        journal.ciphertext = URL_SAFE_NO_PAD.encode(
+            self.cipher(&journal.installation)?
+                .encrypt(
+                    &nonce,
+                    Payload {
+                        msg: &plain,
+                        aad: Self::aad(&journal).as_bytes(),
+                    },
+                )
+                .map_err(|_| fail("backup_invalid"))?,
+        );
+        self.store
+            .put("journal", &journal.id, &journal.account_id, journal)?;
+        Ok(())
+    }
+    fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        let mut grants = Vec::new();
+        for desired in &operation.grants_after {
+            let mut current = self
+                .store
+                .get::<HelperBinding>("binding", &desired.id)?
+                .ok_or_else(|| fail("binding_disabled"))?;
+            if current.client != desired.client
+                || current.origin != desired.origin
+                || current.account_id != desired.account_id
+                || current.installation_id != desired.installation_id
+                || current.provider_id != desired.provider_id
+                || current.credential_revision != desired.credential_revision
+                || current.secret_reference != desired.secret_reference
+                || current.authorization_epoch != desired.authorization_epoch
+            {
+                return Err(fail("configuration_conflict"));
+            }
+            current.enabled = desired.enabled;
+            current.expires_at = match (current.expires_at, desired.expires_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+            if current.enabled
+                && crate::identity::bound_helper_token(
+                    &current,
+                    current.client,
+                    &current.id,
+                    self.store,
+                    self.vault,
+                    chrono::Utc::now().timestamp(),
+                )
+                .is_err()
+            {
+                if operation.restore {
+                    current.enabled = false;
+                } else {
+                    return Err(fail("credential_missing"));
+                }
+            }
+            grants.push(current);
+        }
+        // Inspect every file before any repair write. External changes stop the whole recovery.
+        for file in &operation.files {
+            self.validate_path(Path::new(&file.path))?;
+            if !equal_current(file, &file.before)? && !equal_current(file, &file.after)? {
+                journal.phase = "conflict".into();
+                self.store
+                    .put("journal", &journal.id, &journal.account_id, journal)?;
+                return Err(fail("configuration_conflict"));
+            }
+        }
+        journal.phase = "publishing".into();
+        self.store
+            .put("journal", &journal.id, &journal.account_id, journal)?;
+        for file in &operation.files {
+            if equal_current(file, &file.after)? {
+                continue;
+            }
+            if !equal_current(file, &file.before)? {
+                journal.phase = "conflict".into();
+                self.store
+                    .put("journal", &journal.id, &journal.account_id, journal)?;
+                return Err(fail("configuration_conflict"));
+            }
+            match &file.after {
+                Some(bytes) => atomic_write(Path::new(&file.path), bytes)?,
+                None => {
+                    if Path::new(&file.path).exists() {
+                        fs::remove_file(&file.path).map_err(|_| fail("local_save_failed"))?;
+                    }
+                }
+            }
+            if !equal_current(file, &file.after)? {
+                return Err(fail("configuration_readback_failed"));
+            }
+        }
+        for id in &operation.disable_bindings {
+            if let Some(mut b) = self.store.get::<HelperBinding>("binding", id)? {
+                b.enabled = false;
+                self.store.put("binding", id, &b.account_id, &b)?;
+            }
+        }
+        if operation.grants_after.is_empty() {
+            if let Some(id) = &operation.enable_binding {
+                let mut b = self
+                    .store
+                    .get::<HelperBinding>("binding", id)?
+                    .ok_or_else(|| fail("binding_disabled"))?;
+                b.enabled = true;
+                self.store.put("binding", id, &b.account_id, &b)?;
+            }
+        }
+        for grant in grants {
+            self.store
+                .put("binding", &grant.id, &grant.account_id, &grant)?;
+        }
+        journal.phase = "committed".into();
+        self.store
+            .put("journal", &journal.id, &journal.account_id, journal)?;
+        self.store
+            .put("backup", &journal.id, &journal.account_id, journal)?;
+        self.prune_backups(journal.client)?;
+        Ok(())
+    }
+    pub fn apply(&self, id: &str) -> Result<Journal> {
+        let mut journal = self
+            .store
+            .get::<Journal>("journal", id)?
+            .ok_or_else(|| fail("preview_expired"))?;
+        let _lock = self.lock(journal.client)?;
+        if journal.phase != "prepared" {
+            return Err(fail("configuration_conflict"));
+        }
+        let operation = self.decrypt(&journal)?;
+        for file in &operation.files {
+            if !equal_current(file, &file.before)? {
+                return Err(fail("configuration_conflict"));
+            }
+        }
+        self.publish(&mut journal, &operation)?;
+        Ok(journal)
+    }
+    pub fn recover(&self, id: &str) -> Result<Journal> {
+        let mut journal = self
+            .store
+            .get::<Journal>("journal", id)?
+            .ok_or_else(|| fail("backup_invalid"))?;
+        let _lock = self.lock(journal.client)?;
+        if journal.phase == "conflict" {
+            return Err(fail("configuration_conflict"));
+        }
+        if journal.phase == "committed" {
+            return Ok(journal);
+        }
+        if journal.phase != "publishing" {
+            return Err(fail("preview_expired"));
+        }
+        let operation = self.decrypt(&journal)?;
+        self.publish(&mut journal, &operation)?;
+        Ok(journal)
+    }
+    pub fn prepare_restore(&self, id: &str) -> Result<Journal> {
+        let journal = self
+            .store
+            .get::<Journal>("backup", id)?
+            .ok_or_else(|| fail("backup_invalid"))?;
+        if chrono::DateTime::parse_from_rfc3339(&journal.expires_at)
+            .map_err(|_| fail("backup_invalid"))?
+            <= chrono::Utc::now()
+        {
+            return Err(fail("backup_expired"));
+        }
+        let original = self.decrypt(&journal)?;
+        let mut files = Vec::new();
+        for file in &original.files {
+            if !equal_current(file, &file.after)? {
+                return Err(fail("configuration_conflict"));
+            }
+            files.push(FileChange {
+                path: file.path.clone(),
+                before: file.after.clone(),
+                after: file.before.clone(),
+            });
+        }
+        let mut restored = self.prepare(
+            journal.client,
+            &journal.account_id,
+            &journal.installation,
+            files,
+            None,
+            original.enable_binding.clone().into_iter().collect(),
+        )?;
+        let mut operation = self.decrypt(&restored)?;
+        operation.restore = true;
+        operation.grants_after = original.grants_before.clone();
+        operation.grants_before = operation
+            .grants_after
+            .iter()
+            .map(|b| {
+                self.store
+                    .get::<HelperBinding>("binding", &b.id)?
+                    .ok_or_else(|| fail("binding_disabled"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        restored.account_label = journal.account_label;
+        self.persist_operation(&mut restored, &operation)?;
+        Ok(restored)
+    }
+    pub fn prune_backups(&self, client: ClientKind) -> Result<()> {
+        let settings = self.store.settings()?;
+        let mut backups = self
+            .store
+            .list::<Journal>("backup", None)?
+            .into_iter()
+            .filter(|b| b.client == client)
+            .collect::<Vec<_>>();
+        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        for (index, backup) in backups.into_iter().enumerate() {
+            let expired = chrono::DateTime::parse_from_rfc3339(&backup.expires_at)
+                .map_or(true, |at| at <= chrono::Utc::now());
+            if expired || index >= settings.backup_max_groups.min(5) as usize {
+                self.store.delete("backup", &backup.id)?;
+                if self
+                    .store
+                    .get::<Journal>("journal", &backup.id)?
+                    .is_some_and(|j| j.phase == "committed")
+                {
+                    self.store.delete("journal", &backup.id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+pub fn codex_patch(
+    original: Option<&[u8]>,
+    base_url: &str,
+    model: &str,
+    helper: &Path,
+    binding: &str,
+) -> Result<Vec<u8>> {
+    crate::identity::validate_uuid(binding)?;
+    if !helper.is_absolute() || model.is_empty() || model.len() > 255 {
+        return Err(fail("invalid_configuration"));
+    }
+    let url = url::Url::parse(base_url).map_err(|_| fail("invalid_configuration"))?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return Err(fail("invalid_configuration"));
+    }
+    let text = std::str::from_utf8(original.unwrap_or_default())
+        .map_err(|_| fail("invalid_configuration"))?;
+    let mut doc = text
+        .parse::<DocumentMut>()
+        .map_err(|_| fail("invalid_configuration"))?;
+    doc["model"] = value(model);
+    doc["model_provider"] = value("orivelle_orbit");
+    if !doc.as_table().contains_key("model_providers") {
+        doc["model_providers"] = Item::Table(Table::new());
+    }
+    if !doc["model_providers"].is_table() {
+        return Err(fail("invalid_configuration"));
+    }
+    if doc["model_providers"].get("orivelle_orbit").is_none() {
+        doc["model_providers"]["orivelle_orbit"] = Item::Table(Table::new());
+    }
+    let provider = doc["model_providers"]["orivelle_orbit"]
+        .as_table_mut()
+        .ok_or_else(|| fail("invalid_configuration"))?;
+    provider["name"] = value("Orivelle Orbit");
+    provider["base_url"] = value(base_url);
+    provider["wire_api"] = value("responses");
+    for key in [
+        "env_key",
+        "experimental_bearer_token",
+        "requires_openai_auth",
+    ] {
+        provider.remove(key);
+    }
+    if provider.get("auth").is_some_and(|i| !i.is_table()) {
+        return Err(fail("invalid_configuration"));
+    }
+    let mut auth = provider
+        .get("auth")
+        .and_then(Item::as_table)
+        .cloned()
+        .unwrap_or_default();
+    auth["command"] = value(helper.to_str().ok_or_else(|| fail("invalid_path"))?);
+    let mut args = toml_edit::Array::new();
+    args.push("codex");
+    args.push(binding);
+    auth["args"] = value(args);
+    auth["timeout_ms"] = value(5000);
+    auth["refresh_interval_ms"] = value(300000);
+    provider["auth"] = Item::Table(auth);
+    Ok(doc.to_string().into_bytes())
+}
+pub fn claude_import_diagnostic(
+    base_url: &str,
+    helper: &Path,
+    binding: &str,
+    model: &str,
+) -> Result<serde_json::Value> {
+    crate::identity::validate_uuid(binding)?;
+    let command = helper.to_str().ok_or_else(|| fail("invalid_path"))?;
+    if !helper.is_absolute()
+        || command.contains('"')
+        || command.contains('%')
+        || command.chars().any(char::is_control)
+    {
+        return Err(fail("invalid_configuration"));
+    }
+    let url = url::Url::parse(base_url).map_err(|_| fail("invalid_remote_url"))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || model.is_empty()
+        || model.len() > 256
+        || model.chars().any(char::is_control)
+    {
+        return Err(fail("invalid_configuration"));
+    }
+    let mut credential = serde_json::json!({"kind":"helper-script","args":["claude",binding],"ttlSec":3600,"timeoutSec":5,"silentRefreshEnabled":true,"authScheme":"bearer"});
+    #[cfg(windows)]
+    {
+        credential["commandWindows"] = serde_json::json!(command);
+    }
+    #[cfg(not(windows))]
+    {
+        credential["command"] = serde_json::json!(command);
+    }
+    Ok(
+        serde_json::json!({"$schemaVersion":2,"inference":{"provider":"gateway","baseUrl":base_url,"credential":credential},"models":{"list":[model],"discoveryEnabled":false}}),
+    )
+}
+pub fn configuration_hash(bytes: Option<&[u8]>) -> Option<String> {
+    bytes.map(sha256)
+}
+pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String> {
+    fn document(bytes: &[u8]) -> Result<DocumentMut> {
+        std::str::from_utf8(bytes)
+            .map_err(|_| fail("invalid_configuration"))?
+            .parse::<DocumentMut>()
+            .map_err(|_| fail("invalid_configuration"))
+    }
+    fn field(doc: &DocumentMut, path: &[&str]) -> Option<String> {
+        let mut item = doc.as_item();
+        for part in path {
+            item = item.get(part)?;
+        }
+        Some(item.to_string().trim().to_string())
+    }
+    fn safe(path: &[&str], value: Option<String>, previous: bool) -> String {
+        match value {
+            None => "<absent>".into(),
+            Some(value) => {
+                if previous
+                    && path.iter().any(|p| *p == "auth")
+                    && path.last().is_some_and(|p| ["command", "args"].contains(p))
+                {
+                    return "<redacted previous helper value>".into();
+                }
+                if previous && path.last() == Some(&"base_url") {
+                    let wrapped = format!("value={value}");
+                    let suspicious = wrapped
+                        .parse::<DocumentMut>()
+                        .ok()
+                        .and_then(|d| d.get("value").and_then(Item::as_str).map(str::to_owned))
+                        .and_then(|s| url::Url::parse(&s).ok())
+                        .is_none_or(|u| {
+                            !u.username().is_empty()
+                                || u.password().is_some()
+                                || u.query().is_some()
+                                || u.fragment().is_some()
+                        });
+                    if suspicious {
+                        return "<redacted previous URL value>".into();
+                    }
+                }
+                if path
+                    .iter()
+                    .any(|p| ["env_key", "experimental_bearer_token"].contains(p))
+                    || value.contains("orv_sk_")
+                    || value.contains("sk-")
+                    || value.to_ascii_lowercase().contains("bearer ")
+                {
+                    "<redacted>".into()
+                } else {
+                    value
+                }
+            }
+        }
+    }
+    let before = document(before.unwrap_or_default())?;
+    let after = document(after)?;
+    let paths: Vec<Vec<&str>> = vec![
+        vec!["model"],
+        vec!["model_provider"],
+        vec!["model_providers", "orivelle_orbit", "name"],
+        vec!["model_providers", "orivelle_orbit", "base_url"],
+        vec!["model_providers", "orivelle_orbit", "wire_api"],
+        vec!["model_providers", "orivelle_orbit", "env_key"],
+        vec![
+            "model_providers",
+            "orivelle_orbit",
+            "experimental_bearer_token",
+        ],
+        vec!["model_providers", "orivelle_orbit", "requires_openai_auth"],
+        vec!["model_providers", "orivelle_orbit", "auth", "command"],
+        vec!["model_providers", "orivelle_orbit", "auth", "args"],
+        vec!["model_providers", "orivelle_orbit", "auth", "timeout_ms"],
+        vec![
+            "model_providers",
+            "orivelle_orbit",
+            "auth",
+            "refresh_interval_ms",
+        ],
+    ];
+    let mut out = String::new();
+    for path in paths {
+        let old = field(&before, &path);
+        let new = field(&after, &path);
+        if old != new {
+            out.push_str(&format!(
+                "{}\n- {}\n+ {}\n",
+                path.join("."),
+                safe(&path, old, true),
+                safe(&path, new, false)
+            ));
+        }
+    }
+    Ok(out)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::FakeVault;
+    #[test]
+    fn encrypted_multi_file_recovery_stops_on_external_modification() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("owned")).unwrap();
+        let vault = FakeVault::default();
+        let installation = Installation::create("https://panel.test", &vault).unwrap();
+        let a = dir.path().join("a.toml");
+        let b = dir.path().join("b.json");
+        fs::write(&a, b"secret-original").unwrap();
+        fs::write(&b, b"original-b").unwrap();
+        let engine = ConfigEngine {
+            store: &store,
+            vault: &vault,
+            allowed_roots: vec![dir.path().to_path_buf()],
+        };
+        let j = engine
+            .prepare(
+                ClientKind::Codex,
+                "a",
+                &installation,
+                vec![
+                    FileChange {
+                        path: a.display().to_string(),
+                        before: Some(b"secret-original".to_vec()),
+                        after: Some(b"new-a".to_vec()),
+                    },
+                    FileChange {
+                        path: b.display().to_string(),
+                        before: Some(b"original-b".to_vec()),
+                        after: Some(b"new-b".to_vec()),
+                    },
+                ],
+                None,
+                vec![],
+            )
+            .unwrap();
+        assert!(
+            !serde_json::to_string(&j)
+                .unwrap()
+                .contains("secret-original")
+        );
+        let mut authorized = j.clone();
+        authorized.phase = "publishing".into();
+        store
+            .put(
+                "journal",
+                &authorized.id,
+                &authorized.account_id,
+                &authorized,
+            )
+            .unwrap();
+        fs::write(&a, b"new-a").unwrap();
+        fs::write(&b, b"external-b").unwrap();
+        assert_eq!(
+            engine.recover(&j.id).unwrap_err().code,
+            "configuration_conflict"
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"new-a");
+        assert_eq!(fs::read(&b).unwrap(), b"external-b");
+    }
+    #[test]
+    fn restore_preserves_exact_original_and_toml_unowned_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("owned")).unwrap();
+        let vault = FakeVault::default();
+        let install = Installation::create("https://panel.test", &vault).unwrap();
+        let path = dir.path().join("config.toml");
+        let original = b"# user comment\nweb_search = 'disabled'\n";
+        fs::write(&path, original).unwrap();
+        let patched = codex_patch(
+            Some(original),
+            "https://edge.test/v1",
+            "model",
+            Path::new("/fixture/orbit-helper"),
+            &uuid(),
+        )
+        .unwrap();
+        assert!(
+            std::str::from_utf8(&patched)
+                .unwrap()
+                .contains("# user comment")
+        );
+        assert!(!std::str::from_utf8(&patched).unwrap().contains("api_key"));
+        let engine = ConfigEngine {
+            store: &store,
+            vault: &vault,
+            allowed_roots: vec![dir.path().to_path_buf()],
+        };
+        let j = engine
+            .prepare(
+                ClientKind::Codex,
+                "a",
+                &install,
+                vec![FileChange {
+                    path: path.display().to_string(),
+                    before: Some(original.to_vec()),
+                    after: Some(patched),
+                }],
+                None,
+                vec![],
+            )
+            .unwrap();
+        engine.apply(&j.id).unwrap();
+        let restore = engine.prepare_restore(&j.id).unwrap();
+        engine.apply(&restore.id).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+    fn grant(
+        vault: &FakeVault,
+        install: &Installation,
+        name: &str,
+        enabled: bool,
+    ) -> HelperBinding {
+        let binding = HelperBinding {
+            id: uuid(),
+            client: ClientKind::Codex,
+            origin: install.origin.clone(),
+            account_id: "a".into(),
+            installation_id: install.id.clone(),
+            provider_id: "openai".into(),
+            credential_revision: name.into(),
+            secret_reference: format!("fixture-{name}"),
+            enabled,
+            expires_at: None,
+            authorization_epoch: 1,
+        };
+        vault
+            .put(
+                &binding.secret_reference,
+                &serde_json::to_vec(&crate::identity::InferenceSecret {
+                    origin: install.origin.clone(),
+                    account_id: "a".into(),
+                    installation_id: install.id.clone(),
+                    provider_id: "openai".into(),
+                    credential_revision: name.into(),
+                    token: "orv_sk_public_synthetic".into(),
+                    expires_at: None,
+                    authorization_epoch: 1,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        binding
+    }
+    #[test]
+    fn restores_original_grant_without_reviving_logged_out_authorization() {
+        for revoked in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            let vault = FakeVault::default();
+            let install = Installation::create("https://panel.test", &vault).unwrap();
+            let a = grant(&vault, &install, "key-a", true);
+            let b = grant(&vault, &install, "key-b", false);
+            store
+                .set_meta(
+                    &crate::identity::authorization_epoch_reference(
+                        &install.origin,
+                        &install.id,
+                        "a",
+                    ),
+                    "1",
+                )
+                .unwrap();
+            for binding in [&a, &b] {
+                store.put("binding", &binding.id, "a", binding).unwrap();
+            }
+            let path = dir.path().join("config.toml");
+            fs::write(&path, b"model='a'\n").unwrap();
+            let engine = ConfigEngine {
+                store: &store,
+                vault: &vault,
+                allowed_roots: vec![dir.path().to_path_buf()],
+            };
+            let applied = engine
+                .prepare(
+                    ClientKind::Codex,
+                    "a",
+                    &install,
+                    vec![FileChange {
+                        path: path.display().to_string(),
+                        before: Some(b"model='a'\n".to_vec()),
+                        after: Some(b"model='b'\n".to_vec()),
+                    }],
+                    Some(b.id.clone()),
+                    vec![a.id.clone()],
+                )
+                .unwrap();
+            engine.apply(&applied.id).unwrap();
+            assert!(
+                !store
+                    .get::<HelperBinding>("binding", &a.id)
+                    .unwrap()
+                    .unwrap()
+                    .enabled
+            );
+            if revoked {
+                vault.delete(&a.secret_reference).unwrap();
+            }
+            let restore = engine.prepare_restore(&applied.id).unwrap();
+            engine.apply(&restore.id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"model='a'\n");
+            assert_eq!(
+                store
+                    .get::<HelperBinding>("binding", &a.id)
+                    .unwrap()
+                    .unwrap()
+                    .enabled,
+                !revoked
+            );
+            assert!(
+                !store
+                    .get::<HelperBinding>("binding", &b.id)
+                    .unwrap()
+                    .unwrap()
+                    .enabled
+            );
+        }
+    }
+    #[test]
+    fn prepared_preview_is_never_auto_published_by_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let vault = FakeVault::default();
+        let install = Installation::create("https://panel.test", &vault).unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"model='original'\n").unwrap();
+        let engine = ConfigEngine {
+            store: &store,
+            vault: &vault,
+            allowed_roots: vec![dir.path().to_path_buf()],
+        };
+        let preview = engine
+            .prepare(
+                ClientKind::Codex,
+                "a",
+                &install,
+                vec![FileChange {
+                    path: path.display().to_string(),
+                    before: Some(b"model='original'\n".to_vec()),
+                    after: Some(b"model='new'\n".to_vec()),
+                }],
+                None,
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(
+            engine.recover(&preview.id).unwrap_err().code,
+            "preview_expired"
+        );
+        assert_eq!(fs::read(path).unwrap(), b"model='original'\n");
+    }
+    #[test]
+    fn preview_diff_contains_actual_owned_changes_and_redacts_old_secrets() {
+        let original=b"model='old'\n[model_providers.orivelle_orbit]\ncustom_unowned='keep'\nexperimental_bearer_token='original-secret'\n[model_providers.orivelle_orbit.auth]\ncwd='/user/owned'\n";
+        let after = codex_patch(
+            Some(original),
+            "https://edge.test/v1",
+            "new",
+            Path::new("/private/orbit/bin/orbit-credential-helper"),
+            &uuid(),
+        )
+        .unwrap();
+        let diff = codex_redacted_diff(Some(original), &after).unwrap();
+        assert!(diff.contains("auth.command"));
+        assert!(diff.contains("/private/orbit/bin/orbit-credential-helper"));
+        assert!(diff.contains("auth.args"));
+        assert!(diff.contains("experimental_bearer_token"));
+        assert!(!diff.contains("original-secret"));
+        let after = std::str::from_utf8(&after).unwrap();
+        assert!(after.contains("custom_unowned"));
+        assert!(after.contains("cwd"));
+    }
+}
