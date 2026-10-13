@@ -116,6 +116,58 @@ describe("account and revision isolation", () => {
     ).toBe(false);
     expect(store.models).toHaveLength(1);
   });
+  it("recovers a first account-cache miss with an origin-bound read while paid actions stay disabled", async () => {
+    const store = useOrbitStore();
+    const initial = bootstrap();
+    initial.session.account = null;
+    const refreshed = bootstrap("synthetic-account-a", 2);
+    const response = deferred<typeof refreshed>();
+    bridge.call.mockImplementation((command) => {
+      if (command === "refresh_account") return response.promise;
+      if (command === "list_models") return [imageModel()];
+      return initial;
+    });
+    store.acceptState(initial);
+    expect(store.activeConnection).toBeNull();
+    expect(store.ready).toBe(false);
+    const reading = store.refresh(true);
+    await vi.waitFor(() =>
+      expect(bridge.call).toHaveBeenCalledWith("refresh_account", {
+        connection_id: initial.active_connection_id,
+        expected_revision: 1,
+      }),
+    );
+    expect(store.ready).toBe(false);
+    response.resolve(refreshed);
+    await reading;
+    expect(store.account?.id).toBe("synthetic-account-a");
+    expect(store.ready).toBe(true);
+    expect(
+      bridge.call.mock.calls.some(([name]) => name === "create_image_task"),
+    ).toBe(false);
+  });
+  it("does not recover an account read through an expired session, another origin or a mismatched cached actor", async () => {
+    for (const mismatch of ["expired", "origin", "actor"]) {
+      setActivePinia(createPinia());
+      const store = useOrbitStore();
+      const state = bootstrap();
+      state.session.account = null;
+      if (mismatch === "expired") state.session.status = "expired";
+      if (mismatch === "origin")
+        state.session.panel_origin = "https://other.invalid";
+      if (mismatch === "actor")
+        state.session.account = bootstrap(
+          "synthetic-account-b",
+        ).session.account;
+      bridge.call.mockReset();
+      bridge.call.mockResolvedValue(state);
+      store.acceptState(state);
+      await store.refresh(true);
+      expect(bridge.call).toHaveBeenCalledTimes(1);
+      expect(bridge.call).toHaveBeenCalledWith("bootstrap", {});
+      expect(store.ready).toBe(false);
+    }
+  });
   it("ignores delayed native errors for a former account or connection revision", () => {
     const store = useOrbitStore();
     store.acceptState(bootstrap());

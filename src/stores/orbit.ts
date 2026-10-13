@@ -296,7 +296,18 @@ export const useOrbitStore = defineStore("orbit", () => {
     try {
       const result = await perform("bootstrap", "bootstrap", {});
       if (result) acceptState(result);
-      const connection = activeConnection.value;
+      const session = state.value.session;
+      // A successful authorization can precede its first account response.
+      // Recover that read without allowing paid actions or rendering another actor.
+      const connection =
+        activeConnection.value ??
+        (session.status === "authenticated" && !session.account
+          ? (state.value.connections.find(
+              (candidate) =>
+                candidate.id === state.value.active_connection_id &&
+                candidate.panel_origin === session.panel_origin,
+            ) ?? null)
+          : null);
       if (
         remote &&
         connection &&
