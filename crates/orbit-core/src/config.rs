@@ -41,6 +41,9 @@ struct Operation {
     grants_after: Vec<HelperBinding>,
     #[serde(default)]
     restore: bool,
+    #[zeroize(skip)]
+    #[serde(default)]
+    source_journal_id: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Journal {
@@ -54,6 +57,10 @@ pub struct Journal {
     pub expires_at: String,
     pub phase: String,
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub target_version: Option<String>,
+    #[serde(default)]
+    pub target_bundle_id: Option<String>,
     pub nonce: String,
     #[serde(default)]
     pub ciphertext: String,
@@ -159,11 +166,14 @@ impl ConfigEngine<'_> {
     }
     fn aad(journal: &Journal) -> String {
         format!(
-            "orbit-config-v1\n{}\n{}\n{}\n{}\n",
+            "orbit-config-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             journal.id,
             journal.installation.origin,
             journal.installation.id,
-            journal.client.as_str()
+            journal.client.as_str(),
+            journal.account_id,
+            journal.target_version.as_deref().unwrap_or(""),
+            journal.target_bundle_id.as_deref().unwrap_or("")
         )
     }
     fn decrypt(&self, journal: &Journal) -> Result<Operation> {
@@ -220,6 +230,8 @@ impl ConfigEngine<'_> {
             expires_at: (now + chrono::Duration::days(retention as i64)).to_rfc3339(),
             phase: "prepared".into(),
             paths: files.iter().map(|f| f.path.clone()).collect(),
+            target_version: None,
+            target_bundle_id: None,
             nonce: URL_SAFE_NO_PAD.encode(nonce),
             ciphertext: String::new(),
         };
@@ -230,6 +242,7 @@ impl ConfigEngine<'_> {
             grants_before: Vec::new(),
             grants_after: Vec::new(),
             restore: false,
+            source_journal_id: None,
         };
         let mut operation = operation;
         for id in operation
@@ -271,7 +284,32 @@ impl ConfigEngine<'_> {
             .put("journal", &journal.id, &journal.account_id, journal)?;
         Ok(())
     }
+    pub fn freeze_target(
+        &self,
+        journal: &mut Journal,
+        version: Option<String>,
+        bundle_id: Option<String>,
+    ) -> Result<()> {
+        let operation = self.decrypt(journal)?;
+        journal.target_version = version;
+        journal.target_bundle_id = bundle_id;
+        self.persist_operation(journal, &operation)
+    }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        if let Some(id) = &operation.source_journal_id {
+            let source = self
+                .store
+                .get::<Journal>("journal", id)?
+                .ok_or_else(|| fail("backup_invalid"))?;
+            if source.client != journal.client
+                || source.account_id != journal.account_id
+                || source.installation.id != journal.installation.id
+                || source.installation.origin != journal.installation.origin
+                || !["publishing", "conflict", "committed"].contains(&source.phase.as_str())
+            {
+                return Err(fail("backup_invalid"));
+            }
+        }
         let mut grants = Vec::new();
         for desired in &operation.grants_after {
             let mut current = self
@@ -371,10 +409,8 @@ impl ConfigEngine<'_> {
         }
         journal.phase = "committed".into();
         self.store
-            .put("journal", &journal.id, &journal.account_id, journal)?;
-        self.store
-            .put("backup", &journal.id, &journal.account_id, journal)?;
-        self.prune_backups(journal.client)?;
+            .commit_configuration(journal, operation.source_journal_id.as_deref())?;
+        self.prune_backups_locked(journal.client)?;
         Ok(())
     }
     pub fn apply(&self, id: &str) -> Result<Journal> {
@@ -405,6 +441,14 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         if journal.phase == "committed" {
+            let operation = self.decrypt(&journal)?;
+            for file in &operation.files {
+                if !equal_current(file, &file.after)? {
+                    return Err(fail("configuration_conflict"));
+                }
+            }
+            self.store
+                .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
             return Ok(journal);
         }
         if journal.phase != "publishing" {
@@ -415,10 +459,13 @@ impl ConfigEngine<'_> {
         Ok(journal)
     }
     pub fn prepare_restore(&self, id: &str) -> Result<Journal> {
-        let journal = self
-            .store
-            .get::<Journal>("backup", id)?
-            .ok_or_else(|| fail("backup_invalid"))?;
+        let journal =
+            self.store
+                .get::<Journal>("backup", id)?
+                .or(self.store.get::<Journal>("journal", id)?.filter(|j| {
+                    ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
+                }))
+                .ok_or_else(|| fail("backup_invalid"))?;
         if chrono::DateTime::parse_from_rfc3339(&journal.expires_at)
             .map_err(|_| fail("backup_invalid"))?
             <= chrono::Utc::now()
@@ -428,12 +475,13 @@ impl ConfigEngine<'_> {
         let original = self.decrypt(&journal)?;
         let mut files = Vec::new();
         for file in &original.files {
-            if !equal_current(file, &file.after)? {
+            let current = read_file(Path::new(&file.path))?;
+            if current != file.after && (journal.phase == "committed" || current != file.before) {
                 return Err(fail("configuration_conflict"));
             }
             files.push(FileChange {
                 path: file.path.clone(),
-                before: file.after.clone(),
+                before: current,
                 after: file.before.clone(),
             });
         }
@@ -447,6 +495,7 @@ impl ConfigEngine<'_> {
         )?;
         let mut operation = self.decrypt(&restored)?;
         operation.restore = true;
+        operation.source_journal_id = Some(journal.id.clone());
         operation.grants_after = original.grants_before.clone();
         operation.grants_before = operation
             .grants_after
@@ -458,10 +507,16 @@ impl ConfigEngine<'_> {
             })
             .collect::<Result<Vec<_>>>()?;
         restored.account_label = journal.account_label;
+        restored.target_version = journal.target_version;
+        restored.target_bundle_id = journal.target_bundle_id;
         self.persist_operation(&mut restored, &operation)?;
         Ok(restored)
     }
     pub fn prune_backups(&self, client: ClientKind) -> Result<()> {
+        let _lock = self.lock(client)?;
+        self.prune_backups_locked(client)
+    }
+    fn prune_backups_locked(&self, client: ClientKind) -> Result<()> {
         let settings = self.store.settings()?;
         let mut backups = self
             .store
@@ -478,7 +533,7 @@ impl ConfigEngine<'_> {
                 if self
                     .store
                     .get::<Journal>("journal", &backup.id)?
-                    .is_some_and(|j| j.phase == "committed")
+                    .is_some_and(|j| ["committed", "restored"].contains(&j.phase.as_str()))
                 {
                     self.store.delete("journal", &backup.id)?;
                 }

@@ -305,6 +305,29 @@ impl Store {
         Self::advance(&tx)?;
         tx.commit().map_err(|_| fail("database_unavailable"))
     }
+    pub fn commit_configuration(
+        &self,
+        journal: &crate::config::Journal,
+        source: Option<&str>,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(journal).map_err(|_| fail("serialization_failed"))?;
+        if journal.phase != "committed" || payload.len() > 24 * 1024 * 1024 {
+            return Err(fail("backup_invalid"));
+        }
+        let mut db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
+        let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
+        for kind in ["journal", "backup"] {
+            tx.execute("INSERT INTO records(kind,id,scope,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET scope=excluded.scope,payload=excluded.payload",params![kind,journal.id,journal.account_id,payload]).map_err(|_|fail("database_unavailable"))?;
+        }
+        if let Some(source) = source {
+            let changed=tx.execute("UPDATE records SET payload=json_set(payload,'$.phase','restored') WHERE kind='journal' AND id=?1 AND scope=?2 AND json_extract(payload,'$.installation.id')=?3 AND json_extract(payload,'$.installation.origin')=?4",params![source,journal.account_id,journal.installation.id,journal.installation.origin]).map_err(|_|fail("database_unavailable"))?;
+            if changed != 1 {
+                return Err(fail("backup_invalid"));
+            }
+        }
+        Self::advance(&tx)?;
+        tx.commit().map_err(|_| fail("database_unavailable"))
+    }
     pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
         let raw: Option<String> = self
             .db
@@ -373,7 +396,7 @@ impl Store {
         let mut records = vec![];
         let mut size = 0usize;
         {
-            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind='backup' THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','settings','client-state') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
+            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind IN ('backup','journal') THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','journal','settings','client-state') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
             for row in stmt
                 .query_map([], |r| {
                     Ok((

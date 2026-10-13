@@ -119,12 +119,24 @@ pub struct Service {
 }
 impl Service {
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
-        let clients = detect_clients(&paths);
+        let mut clients = detect_clients(&paths);
+        for client in &mut clients {
+            if let Some(old) = store.get::<ClientView>("client-state", client.client.as_str())? {
+                client.configuration_state = old.configuration_state;
+                client.configuration_revision = old.configuration_revision;
+                client.loaded_state = if client.configuration_state == "saved" {
+                    "restart_required"
+                } else {
+                    "unconfirmed"
+                }
+                .into();
+            }
+        }
         store.set_meta("preview_runtime_nonce", &uuid())?;
         for client in &clients {
             store.put("client-state", client.client.as_str(), "local", client)?;
         }
-        Ok(Arc::new(Self {
+        let service = Arc::new(Self {
             store,
             vault,
             http: Http::new()?,
@@ -142,7 +154,9 @@ impl Service {
             image_memory_workers: Arc::new(Semaphore::new(2)),
             session_locks: Mutex::new(HashMap::new()),
             received_memory: Mutex::new(HashMap::new()),
-        }))
+        });
+        service.coordinate_configuration_recovery()?;
+        Ok(service)
     }
     pub fn observe(&self, observer: Observer) -> Result<()> {
         *self
@@ -392,7 +406,15 @@ impl Service {
             session.status = "vault_unavailable".into();
         }
         let installation_records = snapshot.list::<Installation>("installation", None)?;
-        for j in snapshot.list::<Journal>("backup", None)? {
+        let mut backup_candidates = snapshot.list::<Journal>("backup", None)?;
+        for j in snapshot.list::<Journal>("journal", None)? {
+            if ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
+                && !backup_candidates.iter().any(|b| b.id == j.id)
+            {
+                backup_candidates.push(j);
+            }
+        }
+        for j in backup_candidates {
             if installation_records
                 .iter()
                 .any(|i| i.id == j.installation.id && i.origin == j.installation.origin)
@@ -413,7 +435,7 @@ impl Service {
                     created_at: j.created_at,
                     expires_at: j.expires_at.clone(),
                     file_count: j.paths.len() as u32,
-                    state: if j.phase == "conflict" {
+                    state: if ["publishing", "conflict"].contains(&j.phase.as_str()) {
                         "conflict"
                     } else if chrono::DateTime::parse_from_rfc3339(&j.expires_at)
                         .is_ok_and(|at| at > chrono::Utc::now())
@@ -658,73 +680,10 @@ impl Service {
             )
             .await?;
         let (account_id, session) = response.into_session(&installation)?;
-        let existing = self
-            .store
-            .list::<ConnectionRecord>("connection", Some(&account_id))?
-            .into_iter()
-            .find(|r| r.view.panel_origin == installation.origin);
-        let id = existing
-            .as_ref()
-            .map(|r| r.view.id.clone())
-            .unwrap_or_else(uuid);
-        let previous_revision = existing.as_ref().map_or(0, |r| r.view.revision);
-        let mut record = ConnectionRecord {
-            view: ConnectionView {
-                id: id.clone(),
-                label: account_id.clone(),
-                panel_origin: installation.origin.clone(),
-                account_id: account_id.clone(),
-                node_id: existing.as_ref().and_then(|r| r.view.node_id.clone()),
-                node_label: None,
-                edge_base_url: None,
-                provider_id: "openai".into(),
-                revision: previous_revision + 1,
-                credential_revision: None,
-                permission_state: "unavailable".into(),
-            },
-            installation_id: installation.id.clone(),
-            session_reference: format!(
-                "account/{}/{}/session",
-                installation.id,
-                sha256(account_id.as_bytes())
-            ),
-            credential_reference: None,
-            session_status: "authenticated".into(),
-            expires_at: session.expires_at,
-            session_expires_at: Some(parse_timestamp(&session.session_expires_at)?),
-            refresh_attempt: None,
-            credential_expires_at: None,
-            credential_state: "unavailable".into(),
-            api_key_id: None,
-            authorization_epoch: 0,
-            cleanup_references: existing
-                .as_ref()
-                .map(|r| r.cleanup_references.clone())
-                .unwrap_or_default(),
-        };
         let ticket = session.credential_delivery_ticket.clone();
-        {
-            let _gate = self
-                .account_gate
-                .lock()
-                .map_err(|_| fail("state_unavailable"))?;
-            if self.login_epoch.load(Ordering::SeqCst) != epoch {
-                return Err(fail("authorization_cancelled"));
-            }
-            self.ensure_installation_available(&installation.id)?;
-            if self
-                .store
-                .installation(&installation.origin)?
-                .is_none_or(|i| i.id != installation.id)
-            {
-                return Err(fail("installation_identity_mismatch"));
-            }
-            record.authorization_epoch = self.advance_authorization_epoch(&record)?;
-            self.save_session(&record, session)?;
-            self.store
-                .disable_bindings(&account_id, &installation.origin)?;
-            self.store.put("connection", &id, &account_id, &record)?;
-        }
+        let mut record =
+            self.commit_authorization(&installation, account_id.clone(), session, epoch)?;
+        let id = record.view.id.clone();
         if let Some(ticket) = ticket {
             let session = self.session(&record)?;
             let body = Zeroizing::new(
@@ -772,6 +731,103 @@ impl Service {
         );
         let _ = socket.write_all(response.as_bytes()).await;
         Ok(())
+    }
+    fn commit_authorization(
+        &self,
+        installation: &Installation,
+        account_id: String,
+        session: ProofSession,
+        epoch: u64,
+    ) -> Result<ConnectionRecord> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        if self.login_epoch.load(Ordering::SeqCst) != epoch {
+            return Err(fail("authorization_cancelled"));
+        }
+        self.ensure_installation_available(&installation.id)?;
+        if self
+            .store
+            .installation(&installation.origin)?
+            .is_none_or(|i| i.id != installation.id)
+        {
+            return Err(fail("installation_identity_mismatch"));
+        }
+        let existing = self
+            .store
+            .list::<ConnectionRecord>("connection", Some(&account_id))?
+            .into_iter()
+            .find(|r| r.view.panel_origin == installation.origin);
+        let id = existing
+            .as_ref()
+            .map(|r| r.view.id.clone())
+            .unwrap_or_else(uuid);
+        let previous_revision = existing.as_ref().map_or(0, |r| r.view.revision);
+        let mut record = ConnectionRecord {
+            view: ConnectionView {
+                id: id.clone(),
+                label: account_id.clone(),
+                panel_origin: installation.origin.clone(),
+                account_id: account_id.clone(),
+                node_id: existing.as_ref().and_then(|r| r.view.node_id.clone()),
+                node_label: None,
+                edge_base_url: None,
+                provider_id: "openai".into(),
+                revision: previous_revision + 1,
+                credential_revision: None,
+                permission_state: "unavailable".into(),
+            },
+            installation_id: installation.id.clone(),
+            session_reference: format!(
+                "account/{}/{}/session",
+                installation.id,
+                sha256(account_id.as_bytes())
+            ),
+            credential_reference: None,
+            session_status: "authenticated".into(),
+            expires_at: session.expires_at,
+            session_expires_at: Some(parse_timestamp(&session.session_expires_at)?),
+            refresh_attempt: None,
+            credential_expires_at: None,
+            credential_state: "unavailable".into(),
+            api_key_id: None,
+            authorization_epoch: 0,
+            cleanup_references: existing
+                .as_ref()
+                .map(|r| r.cleanup_references.clone())
+                .unwrap_or_default(),
+        };
+        if let Some(old) = existing
+            .as_ref()
+            .and_then(|r| r.credential_reference.as_ref())
+        {
+            if !record.cleanup_references.contains(old) {
+                record.cleanup_references.push(old.clone());
+            }
+        }
+        if let Some(old) = existing.as_ref().map(|r| &r.session_reference) {
+            if old != &record.session_reference && !record.cleanup_references.contains(old) {
+                record.cleanup_references.push(old.clone());
+            }
+        }
+        record.authorization_epoch = self.advance_authorization_epoch(&record)?;
+        record.session_status = "authorizing".into();
+        self.store.put("connection", &id, &account_id, &record)?;
+        if let Err(error) = self.save_session(&record, session) {
+            record.session_status = "vault_unavailable".into();
+            self.store.put("connection", &id, &account_id, &record)?;
+            return Err(error);
+        }
+        record.session_status = "authenticated".into();
+        record
+            .cleanup_references
+            .retain(|r| r != &record.session_reference);
+        self.store
+            .disable_bindings(&account_id, &installation.origin)?;
+        self.store.put("connection", &id, &account_id, &record)?;
+        let _ = self.cleanup_pending(&mut record)?;
+        Ok(record)
     }
     fn accept_credential(
         &self,
@@ -826,9 +882,12 @@ impl Service {
         let bytes =
             Zeroizing::new(serde_json::to_vec(&secret).map_err(|_| fail("serialization_failed"))?);
         self.vault.put(&reference, &bytes)?;
+        record.cleanup_references.retain(|r| r != &reference);
         if let Some(old) = record.credential_reference.take() {
             if old != reference {
-                let _ = self.vault.delete(&old);
+                if !record.cleanup_references.contains(&old) {
+                    record.cleanup_references.push(old);
+                }
             }
         }
         record.credential_reference = Some(reference);
@@ -844,6 +903,7 @@ impl Service {
             &record.view.account_id,
             record,
         )?;
+        let _ = self.cleanup_pending(record)?;
         Ok(())
     }
     async fn fresh_session(
@@ -1030,6 +1090,7 @@ impl Service {
         let failed = !record.cleanup_references.is_empty();
         if failed {
             record.session_status = "vault_unavailable".into();
+            record.view.permission_state = "unavailable".into();
         }
         self.store.put(
             "connection",
@@ -1539,6 +1600,77 @@ impl Service {
             allowed_roots: self.paths.configuration_roots.clone(),
         }
     }
+    fn pending_configuration_recovery(&self, client: ClientKind) -> Result<bool> {
+        for journal in self.store.list::<Journal>("journal", None)? {
+            if journal.client == client
+                && (["publishing", "conflict"].contains(&journal.phase.as_str())
+                    || journal.phase == "committed"
+                        && self.store.get::<Journal>("backup", &journal.id)?.is_none())
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    fn coordinate_configuration_recovery(&self) -> Result<()> {
+        for journal in self.store.list::<Journal>("journal", None)? {
+            if !["publishing", "conflict", "committed"].contains(&journal.phase.as_str())
+                || journal.phase == "committed"
+                    && self.store.get::<Journal>("backup", &journal.id)?.is_some()
+            {
+                continue;
+            }
+            let target = self
+                .clients
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?
+                .iter()
+                .find(|c| c.client == journal.client)
+                .cloned()
+                .ok_or_else(|| fail("client_unsupported"))?;
+            let qualified = self.paths.writes_authorized
+                && journal.client == ClientKind::Codex
+                && target.installed
+                && target.platform_supported
+                && target.managed == "no"
+                && target.version.is_some()
+                && target.version == journal.target_version
+                && target.bundle_id.is_some()
+                && target.bundle_id == journal.target_bundle_id
+                && self
+                    .store
+                    .installation(&journal.installation.origin)?
+                    .is_some_and(|i| i.id == journal.installation.id)
+                && self
+                    .ensure_installation_available(&journal.installation.id)
+                    .is_ok();
+            let recovered = qualified
+                && journal.phase != "conflict"
+                && self.config_engine().recover(&journal.id).is_ok();
+            for client in self
+                .clients
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?
+                .iter_mut()
+                .filter(|c| c.client == journal.client)
+            {
+                client.configuration_state = if recovered { "saved" } else { "conflict" }.into();
+                client.loaded_evidence = None;
+                client.connection_evidence = None;
+                client.loaded_state = if recovered {
+                    "restart_required"
+                } else {
+                    "unconfirmed"
+                }
+                .into();
+                client.connection_state = "not_tested".into();
+                client.manual_steps.push(if recovered {"已协调此前用户确认的整组本地操作；尚需重启，未证明加载或连通。"} else {"整组配置操作尚待恢复：先核验安装、版本、托管策略及安全存储并协调外部修改；同客户端新应用已阻止。"}.into());
+                self.store
+                    .put("client-state", client.client.as_str(), "local", client)?;
+            }
+        }
+        Ok(())
+    }
     pub fn preview_client_config(
         &self,
         id: &str,
@@ -1592,7 +1724,9 @@ impl Service {
         };
         let mut journal_id = None;
         let mut import_candidate = None;
-        if !self.paths.writes_authorized {
+        if self.pending_configuration_recovery(client)? {
+            preview.blocking_reason = Some("configuration_recovery_required".into());
+        } else if !self.paths.writes_authorized {
             preview.blocking_reason = Some("integration_authorization_required".into());
         } else if !target.installed || !target.platform_supported || target.version.is_none() {
             preview.blocking_reason = Some("client_unsupported".into());
@@ -1707,8 +1841,11 @@ impl Service {
                     previous,
                 )?;
                 journal.account_label = cache.account.label.clone();
-                self.store
-                    .put("journal", &journal.id, &record.view.account_id, &journal)?;
+                self.config_engine().freeze_target(
+                    &mut journal,
+                    target.version.clone(),
+                    target.bundle_id.clone(),
+                )?;
                 journal_id = Some(journal.id);
                 preview.can_apply = true;
             }
@@ -1924,6 +2061,10 @@ impl Service {
         let backup = self
             .store
             .get::<Journal>("backup", backup_id)?
+            .or(self
+                .store
+                .get::<Journal>("journal", backup_id)?
+                .filter(|j| ["publishing", "conflict", "committed"].contains(&j.phase.as_str())))
             .ok_or_else(|| fail("backup_invalid"))?;
         let install = self
             .store
@@ -2665,6 +2806,22 @@ impl Service {
             .ok_or_else(|| fail("preview_expired"))?;
         crate::config::atomic_write(path, diagnostics.text.as_bytes())
     }
+    fn installation_journals(&self, installation: &Installation) -> Result<Vec<Journal>> {
+        let mut groups = HashMap::new();
+        for kind in ["journal", "backup"] {
+            for journal in self.store.list::<Journal>(kind, None)? {
+                if journal.installation.id == installation.id
+                    && journal.installation.origin == installation.origin
+                    && (kind == "backup"
+                        || ["publishing", "conflict", "committed"]
+                            .contains(&journal.phase.as_str()))
+                {
+                    groups.insert(journal.id.clone(), journal);
+                }
+            }
+        }
+        Ok(groups.into_values().collect())
+    }
     pub fn preview_forget_installation(&self, id: &str) -> Result<ForgetInstallationPreview> {
         validate_uuid(id)?;
         let _gate = self
@@ -2677,28 +2834,17 @@ impl Service {
             .into_iter()
             .find(|i| i.id == id)
             .ok_or_else(|| fail("installation_identity_mismatch"))?;
+        let backup_records = self.installation_journals(&installation)?;
         let mut accounts = self
             .store
             .list::<ConnectionRecord>("connection", None)?
             .into_iter()
             .filter(|r| r.installation_id == id && r.view.panel_origin == installation.origin)
             .map(|r| r.view.label)
-            .chain(
-                self.store
-                    .list::<Journal>("backup", None)?
-                    .into_iter()
-                    .filter(|b| b.installation.id == id)
-                    .map(|b| b.account_label),
-            )
+            .chain(backup_records.iter().map(|b| b.account_label.clone()))
             .collect::<Vec<_>>();
         accounts.sort();
         accounts.dedup();
-        let backup_records = self
-            .store
-            .list::<Journal>("backup", None)?
-            .into_iter()
-            .filter(|b| b.installation.id == id)
-            .collect::<Vec<_>>();
         let mut account_ids = self
             .store
             .list::<ConnectionRecord>("connection", None)?
@@ -2779,12 +2925,7 @@ impl Service {
                         && r.view.panel_origin == entry.view.panel_origin
                 })
                 .collect::<Vec<_>>();
-            let current_backups = self
-                .store
-                .list::<Journal>("backup", None)?
-                .into_iter()
-                .filter(|b| b.installation.id == installation.id)
-                .collect::<Vec<_>>();
+            let current_backups = self.installation_journals(&installation)?;
             let mut backup_ids = current_backups
                 .iter()
                 .map(|b| b.id.clone())
@@ -3397,6 +3538,130 @@ mod tests {
         }
     }
     #[test]
+    fn reauthorization_without_delivery_preserves_complete_secret_cleanup_and_same_ref_reuse() {
+        for denied in [false, true] {
+            let (_dir, original, vault, mut record, install) = setup();
+            let adapter = Arc::new(DenyDeleteVault {
+                base: vault.clone(),
+                deny: std::sync::atomic::AtomicBool::new(denied),
+            });
+            let service = Service::new(
+                original.store.clone(),
+                adapter.clone(),
+                original.paths.clone(),
+            )
+            .unwrap();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let old = record.credential_reference.clone().unwrap();
+            assert!(
+                service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            let (_, session) =
+                serde_json::from_value::<TokenResponse>(golden()["token_reply"]["data"].clone())
+                    .unwrap()
+                    .into_session(&install)
+                    .unwrap();
+            let renewed = service
+                .commit_authorization(&install, record.view.account_id.clone(), session, 0)
+                .unwrap();
+            assert!(renewed.credential_reference.is_none());
+            assert!(renewed.authorization_epoch > record.authorization_epoch);
+            assert_eq!(renewed.view.id, record.view.id);
+            if denied {
+                assert_eq!(renewed.session_status, "vault_unavailable");
+                assert!(renewed.cleanup_references.contains(&old));
+                assert!(adapter.get(&old).is_ok());
+            } else {
+                assert!(adapter.get(&old).is_err());
+                assert!(renewed.cleanup_references.is_empty());
+            }
+            adapter.deny.store(false, Ordering::SeqCst);
+            service.commit_logout(&record.view.id).unwrap();
+            assert!(adapter.get(&old).is_err());
+            assert!(
+                service
+                    .record(&record.view.id)
+                    .unwrap()
+                    .cleanup_references
+                    .is_empty()
+            );
+        }
+        let (_dir, service, vault, mut record, install) = setup();
+        let delivery = golden()["credential_reply"]["data"].clone();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(delivery.clone()).unwrap(),
+            )
+            .unwrap();
+        let reference = record.credential_reference.clone().unwrap();
+        record.cleanup_references.push(reference.clone());
+        service
+            .store
+            .put(
+                "connection",
+                &record.view.id,
+                &record.view.account_id,
+                &record,
+            )
+            .unwrap();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(delivery).unwrap(),
+            )
+            .unwrap();
+        assert!(record.cleanup_references.is_empty());
+        assert!(vault.get(&reference).is_ok());
+        service.commit_logout(&record.view.id).unwrap();
+        assert!(vault.get(&reference).is_err());
+    }
+    #[test]
+    fn pruned_restore_source_is_rejected_before_original_files_are_changed() {
+        let (_dir, service, _vault, record, install) = setup();
+        let path = service.paths.codex_config.clone();
+        std::fs::write(&path, b"model='before'\n").unwrap();
+        let journal = service
+            .config_engine()
+            .prepare(
+                ClientKind::Codex,
+                &record.view.account_id,
+                &install,
+                vec![FileChange {
+                    path: path.display().to_string(),
+                    before: Some(b"model='before'\n".to_vec()),
+                    after: Some(b"model='after'\n".to_vec()),
+                }],
+                None,
+                vec![],
+            )
+            .unwrap();
+        service.config_engine().apply(&journal.id).unwrap();
+        let restore = service
+            .config_engine()
+            .prepare_restore(&journal.id)
+            .unwrap();
+        service.store.delete("backup", &journal.id).unwrap();
+        service.store.delete("journal", &journal.id).unwrap();
+        assert_eq!(
+            service.config_engine().apply(&restore.id).unwrap_err().code,
+            "backup_invalid"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"model='after'\n");
+    }
+    #[test]
     fn denied_secret_delete_cannot_reopen_known_revoked_or_readonly_grants() {
         for state in ["revoked", "readonly", "expired", "remote-revoked"] {
             let (_dir, original, vault, mut record, install) = setup();
@@ -3640,6 +3905,130 @@ mod tests {
                 mapped.rates[0].unit_price.as_deref(),
                 Some("0.000000001230000000")
             );
+        }
+    }
+    #[test]
+    fn service_rebuild_coordinates_only_authorized_publishing_and_repairs_backup_projection() {
+        for mode in [
+            "publishing",
+            "external-conflict",
+            "committed-gap",
+            "prepared",
+            "forgetting",
+        ] {
+            let (_dir, old, vault, record, install) = setup();
+            let path = old.paths.codex_config.clone();
+            let other = path.parent().unwrap().join("secondary.toml");
+            std::fs::write(&path, b"model='old'\n").unwrap();
+            std::fs::write(&other, b"model='old-aux'\n").unwrap();
+            let mut target = old.clients.lock().unwrap()[0].clone();
+            target.installed = true;
+            target.platform_supported = true;
+            target.managed = "no".into();
+            target.version = Some("synthetic-version-1".into());
+            target.bundle_id = Some("synthetic.codex".into());
+            let engine = old.config_engine();
+            let mut journal = engine
+                .prepare(
+                    ClientKind::Codex,
+                    &record.view.account_id,
+                    &install,
+                    vec![
+                        FileChange {
+                            path: path.display().to_string(),
+                            before: Some(b"model='old'\n".to_vec()),
+                            after: Some(b"model='new'\n".to_vec()),
+                        },
+                        FileChange {
+                            path: other.display().to_string(),
+                            before: Some(b"model='old-aux'\n".to_vec()),
+                            after: Some(b"model='new-aux'\n".to_vec()),
+                        },
+                    ],
+                    None,
+                    vec![],
+                )
+                .unwrap();
+            engine
+                .freeze_target(
+                    &mut journal,
+                    target.version.clone(),
+                    target.bundle_id.clone(),
+                )
+                .unwrap();
+            if mode == "committed-gap" {
+                engine.apply(&journal.id).unwrap();
+                old.store.delete("backup", &journal.id).unwrap();
+            } else if mode != "prepared" {
+                journal.phase = "publishing".into();
+                old.store
+                    .put("journal", &journal.id, &record.view.account_id, &journal)
+                    .unwrap();
+                std::fs::write(
+                    &path,
+                    if mode == "external-conflict" {
+                        b"model='external'\n".as_slice()
+                    } else {
+                        b"model='new'\n".as_slice()
+                    },
+                )
+                .unwrap();
+            }
+            if mode == "forgetting" {
+                old.store
+                    .set_meta(&format!("installation_forgetting/{}", install.id), "1")
+                    .unwrap();
+            }
+            let mut paths = old.paths.clone();
+            paths.writes_authorized = true;
+            paths.fixture_clients = Some(vec![target]);
+            let rebuilt = Service::new(old.store.clone(), vault, paths).unwrap();
+            if ["publishing", "committed-gap"].contains(&mode) {
+                assert_eq!(std::fs::read(&path).unwrap(), b"model='new'\n");
+                assert_eq!(std::fs::read(&other).unwrap(), b"model='new-aux'\n");
+                assert!(
+                    rebuilt
+                        .store
+                        .get::<Journal>("backup", &journal.id)
+                        .unwrap()
+                        .is_some()
+                );
+                assert!(
+                    !rebuilt
+                        .pending_configuration_recovery(ClientKind::Codex)
+                        .unwrap()
+                );
+            } else if mode == "prepared" {
+                assert_eq!(std::fs::read(&path).unwrap(), b"model='old'\n");
+                assert!(
+                    rebuilt
+                        .store
+                        .get::<Journal>("backup", &journal.id)
+                        .unwrap()
+                        .is_none()
+                );
+            } else {
+                assert_eq!(std::fs::read(&other).unwrap(), b"model='old-aux'\n");
+                assert!(
+                    rebuilt
+                        .pending_configuration_recovery(ClientKind::Codex)
+                        .unwrap()
+                );
+                let view = rebuilt.bootstrap().unwrap();
+                assert!(
+                    view.backups
+                        .iter()
+                        .any(|b| b.id == journal.id && b.state == "conflict")
+                );
+                assert_eq!(
+                    view.clients
+                        .iter()
+                        .find(|c| c.client == ClientKind::Codex)
+                        .unwrap()
+                        .configuration_state,
+                    "conflict"
+                );
+            }
         }
     }
     #[test]
@@ -4201,38 +4590,48 @@ mod tests {
     }
     #[tokio::test]
     async fn forget_last_connection_installation_still_retained_backup_only() {
-        let (_d, service, vault, record, install) = setup();
-        let path = service.paths.codex_config.clone();
-        std::fs::write(&path, b"model='old'\n").unwrap();
-        let journal = service
-            .config_engine()
-            .prepare(
-                ClientKind::Codex,
-                &record.view.account_id,
-                &install,
-                vec![FileChange {
-                    path: path.display().to_string(),
-                    before: Some(b"model='old'\n".to_vec()),
-                    after: Some(b"model='new'\n".to_vec()),
-                }],
-                None,
-                vec![],
-            )
-            .unwrap();
-        service.config_engine().apply(&journal.id).unwrap();
-        service.store.delete("connection", &record.view.id).unwrap();
-        service.store.set_meta("active_connection", "").unwrap();
-        let bootstrap = service.bootstrap().unwrap();
-        assert_eq!(bootstrap.installations.len(), 1);
-        assert_eq!(bootstrap.backups.len(), 1);
-        let preview = service.preview_forget_installation(&install.id).unwrap();
-        assert_eq!(preview.backup_group_count, 1);
-        let after = service
-            .forget_installation(&preview.id, true, true)
-            .await
-            .unwrap();
-        assert!(after.installations.is_empty());
-        assert!(after.backups.is_empty());
-        assert!(vault.get(&install.backup_reference).is_err());
+        for phase in ["committed", "publishing", "conflict"] {
+            let (_d, service, vault, record, install) = setup();
+            let path = service.paths.codex_config.clone();
+            std::fs::write(&path, b"model='old'\n").unwrap();
+            let mut journal = service
+                .config_engine()
+                .prepare(
+                    ClientKind::Codex,
+                    &record.view.account_id,
+                    &install,
+                    vec![FileChange {
+                        path: path.display().to_string(),
+                        before: Some(b"model='old'\n".to_vec()),
+                        after: Some(b"model='new'\n".to_vec()),
+                    }],
+                    None,
+                    vec![],
+                )
+                .unwrap();
+            if phase == "committed" {
+                service.config_engine().apply(&journal.id).unwrap();
+            } else {
+                journal.phase = phase.into();
+                service
+                    .store
+                    .put("journal", &journal.id, &journal.account_id, &journal)
+                    .unwrap();
+            }
+            service.store.delete("connection", &record.view.id).unwrap();
+            service.store.set_meta("active_connection", "").unwrap();
+            let bootstrap = service.bootstrap().unwrap();
+            assert_eq!(bootstrap.installations.len(), 1);
+            assert_eq!(bootstrap.backups.len(), 1);
+            let preview = service.preview_forget_installation(&install.id).unwrap();
+            assert_eq!(preview.backup_group_count, 1);
+            let after = service
+                .forget_installation(&preview.id, true, true)
+                .await
+                .unwrap();
+            assert!(after.installations.is_empty());
+            assert!(after.backups.is_empty());
+            assert!(vault.get(&install.backup_reference).is_err());
+        }
     }
 }

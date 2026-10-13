@@ -20,6 +20,8 @@ pub struct SystemPaths {
     pub configuration_roots: Vec<PathBuf>,
     pub writes_authorized: bool,
     pub isolated: bool,
+    #[cfg(test)]
+    pub fixture_clients: Option<Vec<ClientView>>,
 }
 impl SystemPaths {
     pub fn isolated(root: &Path) -> Result<Self> {
@@ -41,6 +43,8 @@ impl SystemPaths {
             configuration_roots: vec![client],
             writes_authorized: false,
             isolated: true,
+            #[cfg(test)]
+            fixture_clients: None,
         })
     }
     /// Called only by a build with the explicitly authorized system-integration feature.
@@ -67,6 +71,8 @@ impl SystemPaths {
             configuration_roots: vec![codex, claude],
             writes_authorized: true,
             isolated: false,
+            #[cfg(test)]
+            fixture_clients: None,
         })
     }
     pub fn ensure_configuration_parent(&self, client: ClientKind) -> Result<()> {
@@ -165,6 +171,12 @@ fn bounded_command(mut command: Command) -> Option<Vec<u8>> {
     }
 }
 pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
+    #[cfg(test)]
+    if paths.isolated {
+        if let Some(clients) = &paths.fixture_clients {
+            return clients.clone();
+        }
+    }
     let mut clients = vec![
         base_view(ClientKind::Codex, paths),
         base_view(ClientKind::Claude, paths),
