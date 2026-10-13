@@ -144,6 +144,9 @@ onUnmounted(() => {
         {{ t("common.desktopRequired") }}
       </div>
       <main id="main-content" class="page-container" tabindex="-1">
+        <p v-if="store.state.maintenance_active" class="info-box" role="status">
+          {{ t("common.updateMaintenance") }}
+        </p>
         <RouterView />
       </main>
     </div>

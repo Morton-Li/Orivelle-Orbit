@@ -23,7 +23,10 @@ const update = ref<UpdateView | null>(null);
 const installOpen = ref(false);
 const updateBusy = computed(() => store.busy.has("update"));
 const settingsDisabled = computed(
-  () => !store.native || store.busy.has("settings"),
+  () =>
+    !store.native ||
+    store.state.maintenance_active ||
+    store.busy.has("settings"),
 );
 const installationId = ref("");
 watch(

@@ -272,6 +272,7 @@ export type BootstrapView = {
   source: "local" | "remote" | "synthetic";
   platform: "macos" | "windows" | null;
   pending_authorization: LoginStart | null;
+  maintenance_active: boolean;
   session: SessionView;
   connections: ConnectionView[];
   installations: InstallationView[];

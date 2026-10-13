@@ -51,6 +51,7 @@ const current = computed(() => {
 const allowed = computed(
   () =>
     current.value &&
+    !store.state.maintenance_active &&
     props.preview?.can_apply &&
     (props.preview.operation === "restore" || store.ready) &&
     !configBusy.value,

@@ -48,6 +48,8 @@ const zh = {
   "login.denied": "浏览器授权已拒绝，当前账户保持原状态。",
   "login.expired": "浏览器授权已过期，请重新连接。",
   "login.cancelled": "已取消本次浏览器授权。",
+  "common.updateMaintenance":
+    "正在准备安装更新，新的图片请求与配置变更已暂停。",
   "home.balanceUnknown": "额度暂不可确认",
   "home.accountReady": "账户已连接",
   "home.permissionDenied": "当前账户无自动取得接入凭据的权限",
@@ -301,6 +303,8 @@ const en: Record<keyof typeof zh, string> = {
     "Browser authorization was denied. The current account is unchanged.",
   "login.expired": "Browser authorization expired. Connect again.",
   "login.cancelled": "Browser authorization cancelled.",
+  "common.updateMaintenance":
+    "Preparing to install an update. New image requests and configuration changes are paused.",
   "home.balanceUnknown": "Allowance is unconfirmed",
   "home.accountReady": "Account connected",
   "home.permissionDenied":

@@ -59,6 +59,7 @@ export function emptyState(): BootstrapView {
     source: "local",
     platform: null,
     pending_authorization: null,
+    maintenance_active: false,
     session: {
       status: "logged_out",
       panel_origin: null,
@@ -122,6 +123,7 @@ export const useOrbitStore = defineStore("orbit", () => {
       state.value.session.status === "authenticated" &&
       state.value.session.inference_credential_status === "ready" &&
       !busy.value.has("refresh-account") &&
+      !state.value.maintenance_active &&
       activeConnection.value?.permission_state === "allowed" &&
       !!activeConnection.value.node_id,
   );
@@ -270,6 +272,13 @@ export const useOrbitStore = defineStore("orbit", () => {
     command: K,
     request: IpcCommands[K]["args"],
   ): Promise<IpcCommands[K]["result"] | undefined> {
+    if (
+      state.value.maintenance_active &&
+      !["bootstrap", "list_models", "prepare_diagnostics"].includes(command)
+    ) {
+      notify(t("common.updateMaintenance"));
+      return undefined;
+    }
     if (busy.value.has(key)) return undefined;
     busy.value.add(key);
     try {

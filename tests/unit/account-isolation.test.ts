@@ -27,6 +27,27 @@ beforeEach(() => {
   bridge.call.mockResolvedValue([]);
 });
 describe("account and revision isolation", () => {
+  it("blocks mutations during update maintenance while allowing a local state read", async () => {
+    const store = useOrbitStore();
+    const state = bootstrap();
+    state.maintenance_active = true;
+    bridge.call.mockResolvedValue(state);
+    store.acceptState(state);
+    await Promise.resolve();
+    bridge.call.mockClear();
+    expect(store.ready).toBe(false);
+    await store.perform("restore", "restore_client_config", {
+      preview_id: "fixture",
+      confirmed: true,
+    });
+    await store.perform("settings", "update_settings", {
+      patch: { locale: "en" },
+    });
+    expect(bridge.call).not.toHaveBeenCalled();
+    await store.refresh();
+    expect(bridge.call).toHaveBeenCalledWith("bootstrap", {});
+    expect(store.notice?.text).toContain("准备安装更新");
+  });
   it("preserves actor scope and draft models during a healthy refresh but stops new paid actions", async () => {
     const store = useOrbitStore();
     bridge.call.mockResolvedValue([imageModel()]);

@@ -189,6 +189,35 @@ test("synthetic Windows capabilities never offer an inaccessible hidden backgrou
   await expect(page.locator("#setting-close option")).toHaveCount(2);
 });
 
+test("update maintenance disables image submission and settings without losing a same-account draft", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await page.locator("#image-model").selectOption("synthetic-image");
+  await page
+    .locator("#image-prompt")
+    .fill("Draft retained through maintenance");
+  const state = bootstrap("synthetic-account-a", 2);
+  state.maintenance_active = true;
+  await pushState(page, state);
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator("#image-prompt")).toHaveValue(
+    "Draft retained through maintenance",
+  );
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "设置", exact: true })
+    .click();
+  await expect(page.locator("#setting-theme")).toBeDisabled();
+  await expect(
+    page.getByText("正在准备安装更新，新的图片请求与配置变更已暂停。"),
+  ).toBeVisible();
+  expect(await calls(page, "create_image_task")).toBe(0);
+});
+
 for (const recoverable of [false, true]) {
   test(`conflicted backup offers a gated preview while logged out; recoverable=${recoverable}`, async ({
     page,
