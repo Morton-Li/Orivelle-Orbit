@@ -4,6 +4,8 @@ import {
   call,
   nativeAvailable,
   OrbitError,
+  publicFailure,
+  subscribeErrors,
   subscribeState,
 } from "../shared/bridge";
 import type {
@@ -12,6 +14,7 @@ import type {
   ClientView,
   IpcCommands,
   ModelView,
+  ScopedErrorEvent,
   SettingsView,
   TaskView,
 } from "../shared/contracts";
@@ -86,6 +89,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   const loginPending = ref(false);
   const loginExpiresAt = ref<string | null>(null);
   let unsubscribe: (() => void) | undefined;
+  let unsubscribeErrors: (() => void) | undefined;
   let modelGeneration = 0;
   let initPromise: Promise<void> | undefined;
   let settingsGeneration = 0;
@@ -170,6 +174,22 @@ export const useOrbitStore = defineStore("orbit", () => {
       "error",
     );
   }
+  function acceptError(event: ScopedErrorEvent) {
+    const global =
+      event.account_id === null &&
+      event.connection_id === null &&
+      event.connection_revision === null;
+    const connection = activeConnection.value;
+    if (
+      !global &&
+      (!connection ||
+        event.account_id !== account.value?.id ||
+        event.connection_id !== connection.id ||
+        event.connection_revision !== connection.revision)
+    )
+      return;
+    report(publicFailure(event.error));
+  }
   function acceptState(next: BootstrapView): boolean {
     if (
       next.schema_version !== 1 ||
@@ -246,6 +266,7 @@ export const useOrbitStore = defineStore("orbit", () => {
       detecting.value = true;
       try {
         unsubscribe = await subscribeState(acceptState);
+        unsubscribeErrors = await subscribeErrors(acceptError);
         await refresh();
       } catch (error) {
         report(error);
@@ -258,6 +279,8 @@ export const useOrbitStore = defineStore("orbit", () => {
   function dispose() {
     unsubscribe?.();
     unsubscribe = undefined;
+    unsubscribeErrors?.();
+    unsubscribeErrors = undefined;
   }
   async function login(panelOrigin: string) {
     const result = await perform("login", "start_login", {
@@ -337,6 +360,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     notify,
     clearNotice,
     acceptState,
+    acceptError,
     loadModels,
     perform,
     refresh,

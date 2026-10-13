@@ -9,7 +9,11 @@ export type FixtureControl = {
 };
 export async function fixture(
   page: Page,
-  options: { state?: BootstrapView; paidFailure?: boolean } = {},
+  options: {
+    state?: BootstrapView;
+    paidFailure?: boolean;
+    claudeImport?: boolean;
+  } = {},
 ) {
   const state = options.state ?? bootstrap();
   const text: ModelView = {
@@ -21,7 +25,7 @@ export async function fixture(
     sales_price: null,
   };
   await page.addInitScript(
-    ({ initial, models, initialTask, paidFailure }) => {
+    ({ initial, models, initialTask, paidFailure, claudeImport }) => {
       // Test-only in-memory IPC. This is injected by Playwright and is never included in the application bundle.
       const testWindow = window as unknown as {
         isTauri: boolean;
@@ -159,10 +163,15 @@ export async function fixture(
               redacted_diff:
                 "- model = old\n+ model = synthetic-text\n+ helper binding = [redacted]",
               expires_at: new Date(Date.now() + 60000).toISOString(),
-              can_apply: true,
-              blocking_reason: null,
+              can_apply: !claudeImport || request.client !== "claude",
+              can_export_import: claudeImport && request.client === "claude",
+              blocking_reason:
+                claudeImport && request.client === "claude"
+                  ? "claude_library_schema_unverified"
+                  : null,
             };
           }
+          if (command === "export_claude_import") return { saved: true };
           throw { code: "unsupported_fixture_command", retryable: false };
         },
       };
@@ -172,6 +181,7 @@ export async function fixture(
       models: [imageModel(), text],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
+      claudeImport: options.claudeImport ?? false,
     },
   );
 }

@@ -93,6 +93,47 @@ test("changing accounts clears prompt and drafts before another submit", async (
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
+test("Claude import export requires confirmation and never claims configuration was applied", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  state.clients[1]!.configuration_state = "not_configured";
+  state.clients[1]!.loaded_state = "unconfirmed";
+  await fixture(page, { state, claudeImport: true });
+  await page.goto("/#/access");
+  await page.locator("#model-claude").selectOption("synthetic-text");
+  await page.getByRole("button", { name: "预览配置" }).last().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "确认应用" })).toBeDisabled();
+  const exportButton = dialog.getByRole("button", {
+    name: "确认并导出 Claude 导入文件",
+  });
+  await expect(exportButton).toBeEnabled();
+  expect(await calls(page, "export_claude_import")).toBe(0);
+  await exportButton.click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Claude 导入文件已保存。请手动导入并完整重启，配置载入和连接仍待确认。",
+    ),
+  ).toBeVisible();
+  expect(await calls(page, "apply_client_config")).toBe(0);
+  expect(await calls(page, "export_claude_import")).toBe(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.export_claude_import,
+    ),
+  ).toEqual({ preview_id: "synthetic-preview", confirmed: true });
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "首页", exact: true })
+    .click();
+  await expect(page.getByText("配置已保存", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("尚未配置", { exact: true })).toHaveCount(1);
+});
+
 test("UTF-8 bound prevents a paid submit and failed paid submission never retries", async ({
   page,
 }) => {
@@ -224,6 +265,10 @@ test("theme, language, wide window and accessible image tabs", async ({
     .getByRole("link", { name: "Images", exact: true })
     .click();
   const create = page.getByRole("tab", { name: "Create", exact: true });
+  await page.screenshot({
+    path: ".cache/evidence/images-composer-dark-wide.png",
+    fullPage: true,
+  });
   await create.focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Local history" })).toBeFocused();

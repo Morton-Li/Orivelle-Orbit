@@ -178,6 +178,12 @@ export type ImageInputsEvent = {
   connection_revision: number;
   inputs: ImageInput[];
 };
+export type ScopedErrorEvent = {
+  error: PublicError;
+  account_id: string | null;
+  connection_id: string | null;
+  connection_revision: number | null;
+};
 export type TaskView = {
   id: string;
   account_id: string;
@@ -276,6 +282,7 @@ type ConfigPreviewBase = {
   redacted_diff: string;
   expires_at: string;
   can_apply: boolean;
+  can_export_import: boolean;
   blocking_reason: string | null;
 };
 export type ConfigPreview = ConfigPreviewBase &
@@ -376,6 +383,10 @@ export interface IpcCommands {
   apply_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;
+  };
+  export_claude_import: {
+    args: { preview_id: string; confirmed: true };
+    result: { saved: boolean };
   };
   preview_restore: { args: { backup_group_id: string }; result: ConfigPreview };
   restore_client_config: {

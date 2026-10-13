@@ -91,6 +91,11 @@ const zh = {
   "access.selectBackupAccount": "选择明确的原账户与 Panel 地址",
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
+  "access.exportImport": "确认并导出 Claude 导入文件",
+  "access.importHint":
+    "将保存 Claude 官方导入文件，请在目标应用中手动导入并完整重启。此操作不会写入客户端配置，载入和连接仍待确认。",
+  "access.importExported":
+    "Claude 导入文件已保存。请手动导入并完整重启，配置载入和连接仍待确认。",
   "access.previewExpired":
     "预览已过期，或账户、节点、凭据、模型及客户端版本已变化，请重新预览。",
   "access.removeHint":
@@ -336,6 +341,11 @@ const en: Record<keyof typeof zh, string> = {
     "Select the original account and Panel explicitly",
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
+  "access.exportImport": "Confirm and export Claude import file",
+  "access.importHint":
+    "Saves an official Claude import file. Import it in the client and fully restart. This operation does not write the client configuration; loading and connection remain unconfirmed.",
+  "access.importExported":
+    "Claude import file saved. Import it manually and fully restart; loading and connection remain unconfirmed.",
   "access.previewExpired":
     "This preview expired or the account, node, credential, model or client version changed. Create a new preview.",
   "access.removeHint":

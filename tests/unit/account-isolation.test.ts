@@ -4,12 +4,11 @@ const bridge = vi.hoisted(() => ({
   call: vi.fn(),
   nativeAvailable: () => true,
   subscribeState: vi.fn(async () => () => undefined),
+  subscribeErrors: vi.fn(async () => () => undefined),
 }));
-vi.mock("../../src/shared/bridge", () => ({
+vi.mock("../../src/shared/bridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/shared/bridge")>()),
   ...bridge,
-  OrbitError: class extends Error {
-    code = "synthetic_error";
-  },
 }));
 import { useOrbitStore } from "../../src/stores/orbit";
 import { bootstrap, imageModel, task } from "../fixtures";
@@ -27,6 +26,30 @@ beforeEach(() => {
   bridge.call.mockResolvedValue([]);
 });
 describe("account and revision isolation", () => {
+  it("ignores delayed native errors for a former account or connection revision", () => {
+    const store = useOrbitStore();
+    store.acceptState(bootstrap());
+    const event = {
+      account_id: "synthetic-account-a",
+      connection_id: "connection-synthetic-account-a",
+      connection_revision: 1,
+      error: {
+        code: "image_input_invalid",
+        message: "SYNTHETIC_SECRET_SHOULD_NOT_RENDER",
+        retryable: false,
+      },
+    };
+    store.acceptError({ ...event, account_id: "synthetic-account-b" });
+    store.acceptError({ ...event, connection_revision: 0 });
+    expect(store.notice).toBeNull();
+    store.acceptError(event);
+    expect(store.notice?.text).toContain("image_input_invalid");
+    expect(store.notice?.text).not.toContain("SYNTHETIC_SECRET");
+    store.clearNotice();
+    store.acceptState(bootstrap("synthetic-account-b", 2));
+    store.acceptError(event);
+    expect(store.notice).toBeNull();
+  });
   it("ignores late models from a prior account and an older whole-state response", async () => {
     const a = deferred<ModelView[]>();
     const b = deferred<ModelView[]>();

@@ -53,8 +53,32 @@ const allowed = computed(
     current.value &&
     props.preview?.can_apply &&
     (props.preview.operation === "restore" || store.ready) &&
-    !store.busy.has("config-apply"),
+    !configBusy.value,
 );
+const configBusy = computed(
+  () => store.busy.has("config-apply") || store.busy.has("config-export"),
+);
+const exportAllowed = computed(
+  () =>
+    current.value &&
+    props.preview?.operation === "apply" &&
+    props.preview.client === "claude" &&
+    props.preview.can_export_import &&
+    store.ready &&
+    !configBusy.value,
+);
+async function exportImport() {
+  const preview = props.preview;
+  if (!preview || !exportAllowed.value) return;
+  const result = await store.perform("config-export", "export_claude_import", {
+    preview_id: preview.id,
+    confirmed: true,
+  });
+  if (result?.saved) {
+    store.notify(t("access.importExported"), "neutral");
+    emit("close");
+  }
+}
 async function confirm() {
   const preview = props.preview;
   if (!preview || !allowed.value) return;
@@ -86,7 +110,7 @@ async function confirm() {
     wide
     @update:open="
       (value) => {
-        if (!value && !store.busy.has('config-apply')) emit('close');
+        if (!value && !configBusy) emit('close');
       }
     "
   >
@@ -140,14 +164,25 @@ async function confirm() {
       <p v-if="preview.blocking_reason" class="info-box">
         {{ preview.blocking_reason }}
       </p>
+      <p v-if="preview.can_export_import" class="info-box">
+        {{ t("access.importHint") }}
+      </p>
       <div class="dialog-actions">
         <button
           class="button secondary"
-          :disabled="store.busy.has('config-apply')"
+          :disabled="configBusy"
           @click="emit('close')"
         >
           {{ t("action.cancel") }}</button
-        ><button class="button primary" :disabled="!allowed" @click="confirm">
+        ><button
+          v-if="preview.can_export_import"
+          class="button secondary"
+          :disabled="!exportAllowed"
+          @click="exportImport"
+        >
+          {{ t("access.exportImport") }}
+        </button>
+        <button class="button primary" :disabled="!allowed" @click="confirm">
           <OrbitIcon name="check" />{{ t("action.apply") }}
         </button>
       </div></template
