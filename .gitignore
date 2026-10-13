@@ -3,6 +3,7 @@ node_modules/
 dist/
 target/
 runtime/
+/src-tauri/gen/
 playwright-report/
 test-results/
 .DS_Store

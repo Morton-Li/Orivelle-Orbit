@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-image-task"
+description = "Enables the create_image_task command without any pre-configured scope."
+commands.allow = ["create_image_task"]
+
+[[permission]]
+identifier = "deny-create-image-task"
+description = "Denies the create_image_task command without any pre-configured scope."
+commands.deny = ["create_image_task"]
