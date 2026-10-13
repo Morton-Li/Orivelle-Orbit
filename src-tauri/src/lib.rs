@@ -93,6 +93,10 @@ pub fn run() {
             service.observe(Arc::new(move |state| {
                 let _ = handle.emit("orbit://state", state);
             }))?;
+            let handle = app.handle().clone();
+            service.observe_authorization(Arc::new(move |event| {
+                let _ = handle.emit("orbit://authorization", event);
+            }))?;
             app.manage(Native { service });
             Ok(())
         })
@@ -100,6 +104,7 @@ pub fn run() {
             bootstrap,
             refresh_account,
             start_login,
+            cancel_login,
             logout,
             select_connection,
             select_node,

@@ -35,6 +35,11 @@ pub struct RefreshAccount {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CancelLogin {
+    request_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Node {
     connection_id: String,
     node_id: String,
@@ -185,10 +190,16 @@ pub async fn start_login(
     request: Origin,
 ) -> Result<LoginStart> {
     let (view, url) = native.service.start_login(&request.panel_origin).await?;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|_| fail("browser_unavailable"))?;
+    if app.opener().open_url(url, None::<&str>).is_err() {
+        let error = fail("browser_unavailable");
+        native.service.fail_login(&view.request_id, error.clone())?;
+        return Err(error);
+    }
     Ok(view)
+}
+#[tauri::command]
+pub fn cancel_login(native: State<'_, Native>, request: CancelLogin) -> Result<BootstrapView> {
+    native.service.cancel_login(&request.request_id)
 }
 #[tauri::command]
 pub async fn logout(native: State<'_, Native>, request: Connection) -> Result<BootstrapView> {

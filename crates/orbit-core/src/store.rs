@@ -457,7 +457,7 @@ impl Store {
         let mut records = vec![];
         let mut size = 0usize;
         {
-            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind IN ('backup','journal') THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','journal','settings','client-state') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
+            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind IN ('backup','journal') THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','journal','settings','client-state','authorization-pending') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
             for row in stmt
                 .query_map([], |r| {
                     Ok((

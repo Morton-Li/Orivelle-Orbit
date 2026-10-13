@@ -4,6 +4,7 @@ fn main() {
         "bootstrap",
         "refresh_account",
         "start_login",
+        "cancel_login",
         "logout",
         "select_connection",
         "select_node",

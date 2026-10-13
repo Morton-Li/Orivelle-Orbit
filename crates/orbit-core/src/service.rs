@@ -98,6 +98,13 @@ struct ForgetEntry {
     expires_at: i64,
 }
 type Observer = Arc<dyn Fn(BootstrapView) + Send + Sync>;
+type AuthorizationObserver = Arc<dyn Fn(AuthorizationEvent) + Send + Sync>;
+struct PendingAuthorization {
+    view: LoginStart,
+    epoch: u64,
+    cancel: Arc<tokio::sync::Notify>,
+    committed_connection: Option<String>,
+}
 pub struct Service {
     pub store: Arc<Store>,
     pub vault: Arc<dyn Vault>,
@@ -111,6 +118,8 @@ pub struct Service {
     forgets: Mutex<HashMap<String, ForgetEntry>>,
     diagnostics: Mutex<HashMap<String, DiagnosticsPreview>>,
     observer: Mutex<Option<Observer>>,
+    authorization_observer: Mutex<Option<AuthorizationObserver>>,
+    pending_authorization: Mutex<Option<PendingAuthorization>>,
     cancelled: Mutex<HashSet<String>>,
     image_workers: Arc<Semaphore>,
     image_memory_workers: Arc<Semaphore>,
@@ -147,6 +156,7 @@ impl Service {
             }
         }
         store.set_meta("preview_runtime_nonce", &uuid())?;
+        store.delete("authorization-pending", "local")?;
         for client in &clients {
             store.put("client-state", client.client.as_str(), "local", client)?;
         }
@@ -163,6 +173,8 @@ impl Service {
             forgets: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
             observer: Mutex::new(None),
+            authorization_observer: Mutex::new(None),
+            pending_authorization: Mutex::new(None),
             cancelled: Mutex::new(HashSet::new()),
             image_workers: Arc::new(Semaphore::new(2)),
             image_memory_workers: Arc::new(Semaphore::new(2)),
@@ -179,6 +191,155 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))? = Some(observer);
         Ok(())
+    }
+    pub fn observe_authorization(&self, observer: AuthorizationObserver) -> Result<()> {
+        *self
+            .authorization_observer
+            .lock()
+            .map_err(|_| fail("state_unavailable"))? = Some(observer);
+        Ok(())
+    }
+    fn emit_authorization(&self, event: AuthorizationEvent) {
+        let observer = self
+            .authorization_observer
+            .lock()
+            .ok()
+            .and_then(|o| o.clone());
+        if let Some(observer) = observer {
+            observer(event);
+        }
+    }
+    fn abort_pending_locked(&self) -> Result<()> {
+        self.login_epoch.fetch_add(1, Ordering::SeqCst);
+        let pending = self
+            .pending_authorization
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .take();
+        if let Some(pending) = pending {
+            pending.cancel.notify_one();
+            self.store.delete("authorization-pending", "local")?;
+            let event = AuthorizationEvent {
+                request_id: pending.view.request_id,
+                state: if pending.committed_connection.is_some() {
+                    "connected"
+                } else {
+                    "cancelled"
+                }
+                .into(),
+                error: None,
+            };
+            self.store
+                .put("authorization-terminal", "local", "local", &event)?;
+            self.changed();
+            self.emit_authorization(event);
+        }
+        Ok(())
+    }
+    fn finish_authorization(&self, id: &str, result: Result<()>) -> Result<()> {
+        self.complete_authorization(id, result, false)
+    }
+    fn complete_authorization(
+        &self,
+        id: &str,
+        result: Result<()>,
+        signal_cancel: bool,
+    ) -> Result<()> {
+        let event = {
+            let _gate = self
+                .account_gate
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            let mut slot = self
+                .pending_authorization
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            if slot.as_ref().is_none_or(|p| p.view.request_id != id) {
+                return Ok(());
+            }
+            let pending = slot
+                .take()
+                .ok_or_else(|| fail("authorization_unavailable"))?;
+            if pending.committed_connection.is_none() && (signal_cancel || result.is_err()) {
+                self.login_epoch.fetch_add(1, Ordering::SeqCst);
+                pending.cancel.notify_one();
+            }
+            let (state, error) = if pending.committed_connection.is_some() {
+                ("connected", None)
+            } else {
+                match result {
+                    Ok(()) => ("connected", None),
+                    Err(error) => (
+                        match error.code.as_str() {
+                            "authorization_denied" => "denied",
+                            "authorization_expired" => "expired",
+                            "authorization_cancelled" => "cancelled",
+                            _ => "failed",
+                        },
+                        Some(error),
+                    ),
+                }
+            };
+            self.store.delete("authorization-pending", "local")?;
+            let event = AuthorizationEvent {
+                request_id: id.into(),
+                state: state.into(),
+                error,
+            };
+            self.store
+                .put("authorization-terminal", "local", "local", &event)?;
+            event
+        };
+        self.changed();
+        self.emit_authorization(event);
+        Ok(())
+    }
+    /// This local cancellation never revokes or clears an existing active account.
+    pub fn cancel_login(&self, id: &str) -> Result<BootstrapView> {
+        let event = {
+            let _gate = self
+                .account_gate
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            let mut slot = self
+                .pending_authorization
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            if slot.as_ref().is_none_or(|p| p.view.request_id != id) {
+                let terminal = self
+                    .store
+                    .get::<AuthorizationEvent>("authorization-terminal", "local")?;
+                if terminal.is_some_and(|e| e.request_id == id) {
+                    return self.bootstrap();
+                }
+                return Err(fail("authorization_unavailable"));
+            }
+            let pending = slot
+                .take()
+                .ok_or_else(|| fail("authorization_unavailable"))?;
+            let state = if pending.committed_connection.is_some() {
+                "connected"
+            } else {
+                self.login_epoch.fetch_add(1, Ordering::SeqCst);
+                pending.cancel.notify_one();
+                "cancelled"
+            };
+            self.store.delete("authorization-pending", "local")?;
+            let event = AuthorizationEvent {
+                request_id: id.into(),
+                state: state.into(),
+                error: None,
+            };
+            self.store
+                .put("authorization-terminal", "local", "local", &event)?;
+            event
+        };
+        self.changed();
+        self.emit_authorization(event);
+        self.bootstrap()
+    }
+    pub fn fail_login(&self, id: &str, error: PublicError) -> Result<()> {
+        self.complete_authorization(id, Err(error), true)
     }
     fn changed(&self) {
         self.state_revision.fetch_add(1, Ordering::SeqCst);
@@ -524,8 +685,15 @@ impl Service {
         })
     }
     pub async fn start_login(self: &Arc<Self>, panel_origin: &str) -> Result<(LoginStart, String)> {
-        let epoch = self.login_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let origin = canonical_origin(panel_origin)?;
+        let epoch = {
+            let _gate = self
+                .account_gate
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            self.abort_pending_locked()?;
+            self.login_epoch.load(Ordering::SeqCst)
+        };
         let installation = {
             let _gate = self
                 .account_gate
@@ -592,30 +760,46 @@ impl Service {
         let expire = chrono::DateTime::parse_from_rfc3339(&start.expires_at)
             .map_err(|_| fail("invalid_panel_response"))?
             .timestamp();
-        let seconds = (expire - chrono::Utc::now().timestamp()).clamp(1, 600) as u64;
+        if expire <= chrono::Utc::now().timestamp() {
+            return Err(fail("authorization_expired"));
+        }
+        let seconds = (expire - chrono::Utc::now().timestamp()).min(600) as u64;
         let view = LoginStart {
             request_id: start.authorization_request_id.clone(),
             expires_at: start.expires_at,
         };
-        let service = self.clone();
-        tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(seconds),
-                service.finish_login(
-                    listener,
-                    installation,
-                    start.authorization_request_id,
-                    start.proof_nonce,
-                    state,
-                    verifier,
-                    redirect_uri,
-                    epoch,
-                ),
-            )
-            .await;
-            if !matches!(result, Ok(Ok(()))) {
-                service.changed();
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        {
+            let _gate = self
+                .account_gate
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            if self.login_epoch.load(Ordering::SeqCst) != epoch {
+                return Err(fail("authorization_cancelled"));
             }
+            self.store
+                .put("authorization-pending", "local", "local", &view)?;
+            *self
+                .pending_authorization
+                .lock()
+                .map_err(|_| fail("state_unavailable"))? = Some(PendingAuthorization {
+                view: view.clone(),
+                epoch,
+                cancel: cancel.clone(),
+                committed_connection: None,
+            });
+        }
+        self.changed();
+        let service = self.clone();
+        let pending_id = view.request_id.clone();
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                _=cancel.notified()=>Err(fail("authorization_cancelled")),
+                result=tokio::time::timeout(Duration::from_secs(seconds),service.finish_login(listener,installation,
+                    start.authorization_request_id,start.proof_nonce,state,verifier,redirect_uri,epoch)) =>
+                    result.unwrap_or_else(|_|Err(fail("authorization_expired"))),
+            };
+            let _ = service.finish_authorization(&pending_id, result);
         });
         Ok((view, start.authorization_url))
     }
@@ -638,13 +822,30 @@ impl Service {
             return Err(fail("invalid_callback"));
         }
         let mut request = vec![0u8; 8193];
-        let count = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut request))
-            .await
-            .map_err(|_| fail("invalid_callback"))?
-            .map_err(|_| fail("invalid_callback"))?;
-        if count > 8192 {
-            return Err(fail("invalid_callback"));
-        }
+        let count = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut count = 0;
+            loop {
+                if count == request.len() {
+                    return Err(fail("invalid_callback"));
+                }
+                let read = socket
+                    .read(&mut request[count..])
+                    .await
+                    .map_err(|_| fail("invalid_callback"))?;
+                if read == 0 {
+                    return Err(fail("invalid_callback"));
+                }
+                count += read;
+                if count > 8192 {
+                    return Err(fail("invalid_callback"));
+                }
+                if request[..count].windows(4).any(|w| w == b"\r\n\r\n") {
+                    return Ok(count);
+                }
+            }
+        })
+        .await
+        .map_err(|_| fail("invalid_callback"))??;
         let request_text =
             std::str::from_utf8(&request[..count]).map_err(|_| fail("invalid_callback"))?;
         let line = request_text
@@ -683,6 +884,9 @@ impl Service {
             || parameters.len() != 3
         {
             return Err(fail("invalid_callback"));
+        }
+        if parameters.get("error").map(String::as_str) == Some("access_denied") {
+            return Err(fail("authorization_denied"));
         }
         let code = parameters
             .remove("code")
@@ -863,6 +1067,18 @@ impl Service {
             .disable_bindings(&account_id, &installation.origin)?;
         self.store.put("connection", &id, &account_id, &record)?;
         let _ = self.cleanup_pending(&mut record)?;
+        if let Some(pending) = self
+            .pending_authorization
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .as_mut()
+        {
+            if pending.epoch == epoch {
+                pending.committed_connection = Some(record.view.id.clone());
+                self.store.set_meta("active_connection", &record.view.id)?;
+                self.invalidate_evidence()?;
+            }
+        }
         Ok(record)
     }
     fn accept_credential(
@@ -1311,11 +1527,11 @@ impl Service {
         self.bootstrap()
     }
     pub fn select_connection(&self, id: &str) -> Result<BootstrapView> {
-        self.login_epoch.fetch_add(1, Ordering::SeqCst);
         let _gate = self
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        self.abort_pending_locked()?;
         let _ = self.record(id)?;
         self.store.set_meta("active_connection", id)?;
         self.invalidate_evidence()?;
@@ -1510,7 +1726,13 @@ impl Service {
         Ok(())
     }
     pub async fn logout(&self, id: &str) -> Result<BootstrapView> {
-        self.login_epoch.fetch_add(1, Ordering::SeqCst);
+        {
+            let _gate = self
+                .account_gate
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            self.abort_pending_locked()?;
+        }
         let record = self.record(id)?;
         let remote = if let Ok(session) = self.session(&record) {
             let install = self.installation(&record)?;
@@ -3089,7 +3311,7 @@ impl Service {
             }
             self.store
                 .set_meta(&format!("installation_forgetting/{}", installation.id), "1")?;
-            self.login_epoch.fetch_add(1, Ordering::SeqCst);
+            self.abort_pending_locked()?;
             (installation, records)
         };
         for record in records {
@@ -5000,6 +5222,155 @@ mod tests {
                     .updated_at
                     .is_none()
             );
+        }
+    }
+    #[tokio::test]
+    async fn pending_login_cancel_terminal_events_and_late_callbacks_keep_existing_actor() {
+        for mode in ["cancelled", "connected", "denied", "expired", "failed"] {
+            let (_dir, service, vault, record, install) = setup();
+            let events = Arc::new(Mutex::new(Vec::<AuthorizationEvent>::new()));
+            let collected = events.clone();
+            let finished = Arc::new(tokio::sync::Notify::new());
+            let signal = finished.clone();
+            service
+                .observe_authorization(Arc::new(move |event| {
+                    collected.lock().unwrap().push(event);
+                    signal.notify_one();
+                }))
+                .unwrap();
+            let captured = Arc::new(Mutex::new(None::<Value>));
+            let request = captured.clone();
+            let calls = Arc::new(AtomicU64::new(0));
+            let call_count = calls.clone();
+            let mut reply = golden()["start_reply"].clone();
+            reply["data"]["expires_at"] = json!(
+                (chrono::Utc::now()
+                    + chrono::Duration::seconds(if mode == "expired" { 2 } else { 60 }))
+                .to_rfc3339()
+            );
+            service.http.scripted(Arc::new(move |input| {
+                let (request, call_count, reply) =
+                    (request.clone(), call_count.clone(), reply.clone());
+                Box::pin(async move {
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(input.method, Method::POST);
+                    assert!(input.url.ends_with("/authorization-requests"));
+                    let body = serde_json::from_slice::<Value>(&input.body).unwrap();
+                    assert_eq!(body["code_challenge_method"], "S256");
+                    assert!(
+                        body["redirect_uri"]
+                            .as_str()
+                            .unwrap()
+                            .contains("/orivelle-orbit/callback")
+                    );
+                    *request.lock().unwrap() = Some(body);
+                    Ok(crate::network::RemoteResponse {
+                        status: 200,
+                        request_id: None,
+                        bytes: serde_json::to_vec(&reply).unwrap(),
+                    })
+                })
+            }));
+            let (start, _url) = service.start_login(&install.origin).await.unwrap();
+            let epoch = service.login_epoch.load(Ordering::SeqCst);
+            let view = service.bootstrap().unwrap();
+            assert_eq!(
+                view.pending_authorization.unwrap().request_id,
+                start.request_id
+            );
+            assert_eq!(view.session.status, "authenticated");
+            assert_eq!(view.session.account.unwrap().id, record.view.account_id);
+            if mode == "cancelled" {
+                let view = service.cancel_login(&start.request_id).unwrap();
+                assert!(view.pending_authorization.is_none());
+                assert_eq!(view.session.account.unwrap().id, record.view.account_id);
+                let (_, session) = serde_json::from_value::<TokenResponse>(
+                    golden()["token_reply"]["data"].clone(),
+                )
+                .unwrap()
+                .into_session(&install)
+                .unwrap();
+                assert_eq!(
+                    service
+                        .commit_authorization(
+                            &install,
+                            "synthetic-late-account".into(),
+                            session,
+                            epoch
+                        )
+                        .err()
+                        .unwrap()
+                        .code,
+                    "authorization_cancelled"
+                );
+                assert!(
+                    vault
+                        .get(&format!(
+                            "account/{}/{}/session",
+                            install.id,
+                            sha256(b"synthetic-late-account")
+                        ))
+                        .is_err()
+                );
+                assert_eq!(
+                    service.record(&record.view.id).unwrap().view.revision,
+                    record.view.revision
+                );
+            } else if mode == "connected" {
+                let (_, session) = serde_json::from_value::<TokenResponse>(
+                    golden()["token_reply"]["data"].clone(),
+                )
+                .unwrap()
+                .into_session(&install)
+                .unwrap();
+                let connected = service
+                    .commit_authorization(&install, record.view.account_id.clone(), session, epoch)
+                    .unwrap();
+                let view = service.cancel_login(&start.request_id).unwrap();
+                assert!(view.pending_authorization.is_none());
+                assert_eq!(view.session.status, "authenticated");
+                assert_eq!(
+                    service.record(&connected.view.id).unwrap().session_status,
+                    "authenticated"
+                );
+                assert!(vault.get(&connected.session_reference).is_ok());
+            } else if mode == "denied" {
+                let body = captured.lock().unwrap().clone().unwrap();
+                let mut callback = url::Url::parse(body["redirect_uri"].as_str().unwrap()).unwrap();
+                callback
+                    .query_pairs_mut()
+                    .append_pair("state", body["state"].as_str().unwrap())
+                    .append_pair("iss", &install.origin)
+                    .append_pair("error", "access_denied");
+                let mut socket =
+                    tokio::net::TcpStream::connect(("127.0.0.1", callback.port().unwrap()))
+                        .await
+                        .unwrap();
+                let message = format!(
+                    "GET {}?{} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                    callback.path(),
+                    callback.query().unwrap(),
+                    callback.authority()
+                );
+                let mid = message.len() / 2;
+                socket.write_all(&message.as_bytes()[..mid]).await.unwrap();
+                tokio::task::yield_now().await;
+                socket.write_all(&message.as_bytes()[mid..]).await.unwrap();
+            } else if mode == "failed" {
+                service
+                    .fail_login(&start.request_id, fail("browser_unavailable"))
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(4), finished.notified())
+                .await
+                .unwrap();
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].request_id, start.request_id);
+            assert_eq!(events[0].state, mode);
+            assert!(service.bootstrap().unwrap().pending_authorization.is_none());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            service.cancel_login(&start.request_id).unwrap();
         }
     }
     #[tokio::test]
