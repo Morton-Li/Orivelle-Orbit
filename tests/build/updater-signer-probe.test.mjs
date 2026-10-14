@@ -19,9 +19,14 @@ import {
 
 const project = fileURLToPath(new URL("../../", import.meta.url));
 const env = Object.fromEntries(
-  Object.entries(process.env).filter(
-    ([key]) => !/^(ORBIT_RELEASE_|TAURI_SIGNING_|TAURI_PRIVATE_)/i.test(key),
-  ),
+  Object.entries(process.env)
+    .filter(
+      ([key]) => !/^(ORBIT_RELEASE_|TAURI_SIGNING_|TAURI_PRIVATE_)/i.test(key),
+    )
+    .map(([key, value]) => [
+      process.platform === "win32" ? key.toUpperCase() : key,
+      value,
+    ]),
 );
 const limits = { timeout: 500, grace: 100, settle: 1_000 };
 async function workspace(action) {
