@@ -57,6 +57,7 @@ validate:macos-arm64:
   timeout: 30 minutes
   script:
     - node --test tests/build/macos-candidate.test.mjs
+    - node --test tests/build/updater-signer-probe.test.mjs
     - npm run check
     - npm run test:e2e
     - node scripts/native-workflow.mjs check
@@ -74,6 +75,7 @@ validate:windows-x64:
   stage: validate
   timeout: 30 minutes
   script:
+    - node --test tests/build/updater-signer-probe.test.mjs
     - npm run check
     - npm run test:e2e
     - node scripts/native-workflow.mjs check

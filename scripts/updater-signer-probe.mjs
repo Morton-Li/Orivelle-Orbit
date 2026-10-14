@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -17,41 +18,144 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 // Signer stdout can contain a private key. Keep all CLI output bounded and in
 // memory, including on failure; never forward it to the terminal or a log.
-async function captured(binary, args, root, env, timeout = 30_000) {
+export async function captured(binary, args, root, env, limits = {}) {
+  const timeout = limits.timeout ?? 30_000;
+  const grace = limits.grace ?? 200;
+  const settle = limits.settle ?? 2_000;
+  const outputLimit = limits.outputLimit ?? maxOutput;
+  for (const value of [timeout, grace, settle, outputLimit]) {
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new Error("Invalid synthetic tool resource limit.");
+  }
+  if (
+    timeout > 300_000 ||
+    grace > 2_000 ||
+    settle > 5_000 ||
+    outputLimit > maxOutput
+  )
+    throw new Error("Synthetic tool resource limit is too large.");
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
       cwd: root,
       env,
       shell: false,
+      detached: process.platform !== "win32",
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const parts = [];
     let length = 0;
-    let exceeded = false;
-    const timer = setTimeout(() => {
-      exceeded = true;
-      child.kill();
-    }, timeout);
+    let stopping = false;
+    let finished = false;
+    let forceTimer;
+    let settleTimer;
+    const clearTimers = () => {
+      clearTimeout(timer);
+      clearTimeout(forceTimer);
+      clearTimeout(settleTimer);
+    };
+    const fail = () => {
+      if (finished) return;
+      finished = true;
+      clearTimers();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+      parts.length = 0;
+      reject(new Error("Synthetic signer/verifier resource limit exceeded."));
+    };
+    const terminateOwnedTree = (signal) => {
+      if (!Number.isInteger(child.pid) || child.pid <= 0) return;
+      if (process.platform === "win32") {
+        // Only the PID returned by our spawn; no process name, filter or remote.
+        // Prepared Windows tests must separately prove the OS tree-kill behavior.
+        if (env.SYSTEMROOT) {
+          spawnSync(
+            path.join(env.SYSTEMROOT, "System32/taskkill.exe"),
+            ["/PID", String(child.pid), "/T", "/F"],
+            { env, stdio: "ignore", windowsHide: true, timeout: 1_000 },
+          );
+        }
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* bounded failure below */
+        }
+      } else {
+        try {
+          // detached gives this call its own process group. Descendants keeping
+          // our pipes open inherit that group even if their parent has exited.
+          process.kill(-child.pid, signal);
+        } catch (error) {
+          if (error.code !== "ESRCH") {
+            try {
+              child.kill(signal);
+            } catch {
+              /* bounded failure below */
+            }
+          }
+        }
+      }
+    };
+    const stop = () => {
+      if (stopping || finished) return;
+      stopping = true;
+      parts.length = 0;
+      terminateOwnedTree("SIGTERM");
+      forceTimer = setTimeout(() => terminateOwnedTree("SIGKILL"), grace);
+      // close may be withheld by inherited pipes. Always reach finally in time.
+      settleTimer = setTimeout(fail, grace + settle);
+    };
+    const timer = setTimeout(stop, timeout);
     const collect = (chunk) => {
+      if (stopping || finished) return;
       length += chunk.length;
-      if (length > maxOutput) {
-        exceeded = true;
-        child.kill();
-      } else parts.push(chunk);
+      if (length > outputLimit) stop();
+      else parts.push(chunk);
     };
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
     child.on("error", () => {
-      clearTimeout(timer);
+      if (finished) return;
+      finished = true;
+      clearTimers();
+      parts.length = 0;
       reject(new Error("Prepared signer/verifier tool could not start."));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (exceeded)
-        reject(new Error("Synthetic signer/verifier resource limit exceeded."));
-      else resolve({ code, output: Buffer.concat(parts).toString("utf8") });
+      if (finished) return;
+      if (stopping) fail();
+      else {
+        finished = true;
+        clearTimers();
+        resolve({ code, output: Buffer.concat(parts).toString("utf8") });
+      }
     });
   });
+}
+
+export async function prepareProjectDirectory(root, absolute) {
+  const relative = path.relative(root, absolute);
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  )
+    throw new Error("Build cache must remain inside this project.");
+  const existing = await lstat(absolute).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existing && (!existing.isDirectory() || existing.isSymbolicLink()))
+    throw new Error("Build cache must be a project directory.");
+  await mkdir(absolute, { recursive: true, mode: 0o700 });
+  const resolved = await realpath(absolute);
+  if (
+    !resolved.startsWith(`${root}${path.sep}`) ||
+    (await lstat(absolute)).isSymbolicLink()
+  )
+    throw new Error("Build cache must remain inside this project.");
 }
 
 async function publicBox(file) {
@@ -71,6 +175,7 @@ export async function runSyntheticSignerProbe({
   cli,
   source,
   verifyFrozenSource,
+  captureLimits = {},
 }) {
   const packageJson = JSON.parse(
     await readFile(
@@ -97,6 +202,8 @@ export async function runSyntheticSignerProbe({
   );
   // A failed new attempt must never leave an older success as its current result.
   await rm(manifestPath, { force: true });
+  const targetDirectory = path.join(root, "runtime/target-signer-probe");
+  await prepareProjectDirectory(root, targetDirectory);
   const directory = await mkdtemp(path.join(tempRoot, "signer-probe-"));
   let report;
   try {
@@ -121,6 +228,7 @@ export async function runSyntheticSignerProbe({
         [cli, ...args],
         root,
         env,
+        captureLimits,
       );
       if (result.code !== 0)
         throw new Error("Locked CLI synthetic signing step failed.");
@@ -168,6 +276,7 @@ export async function runSyntheticSignerProbe({
         ],
         root,
         env,
+        captureLimits,
       );
       if (
         rejected.code === 0 ||
@@ -210,9 +319,9 @@ export async function runSyntheticSignerProbe({
       {
         ...env,
         ORBIT_SYNTHETIC_UPDATER_FIXTURE: fixture,
-        CARGO_TARGET_DIR: path.join(root, "runtime/target-signer-probe"),
+        CARGO_TARGET_DIR: targetDirectory,
       },
-      300_000,
+      { ...captureLimits, timeout: captureLimits.timeout ?? 300_000 },
     );
     if (
       verified.code !== 0 ||

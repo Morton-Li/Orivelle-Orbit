@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import {
   access,
   lstat,
-  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -19,7 +18,10 @@ import {
   inspectMacApp,
   verifySource,
 } from "./candidate-evidence.mjs";
-import { runSyntheticSignerProbe } from "./updater-signer-probe.mjs";
+import {
+  prepareProjectDirectory,
+  runSyntheticSignerProbe,
+} from "./updater-signer-probe.mjs";
 
 const root = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const mode = process.argv[2] ?? "preflight";
@@ -146,6 +148,7 @@ for (const directory of [
   "runtime",
   "runtime/cargo-home",
   "runtime/target",
+  "runtime/target-signer-probe",
   "runtime/tmp",
   "runtime/logs",
   "runtime/candidates",
@@ -153,21 +156,7 @@ for (const directory of [
   ".cache/npm",
 ]) {
   const absolute = path.join(root, directory);
-  const existing = await lstat(absolute).catch((error) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) {
-    throw new Error("Build cache must be a project directory.");
-  }
-  await mkdir(absolute, { recursive: true, mode: 0o700 });
-  const resolved = await realpath(absolute);
-  if (
-    !resolved.startsWith(`${root}${path.sep}`) ||
-    (await lstat(absolute)).isSymbolicLink()
-  ) {
-    throw new Error("Build cache must remain inside this project.");
-  }
+  await prepareProjectDirectory(root, absolute);
 }
 async function run(binary, args) {
   await new Promise((resolve, reject) => {
