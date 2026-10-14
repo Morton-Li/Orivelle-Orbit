@@ -1,5 +1,6 @@
 //! Orbit's native services. Secrets never appear in its public IPC DTOs.
 pub const SCHEMA_VERSION: u32 = 1;
+pub mod clipboard;
 pub mod config;
 pub mod dto;
 pub mod error;
