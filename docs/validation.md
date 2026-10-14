@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | 前端语义 | format、零 warning lint、typecheck、23/23 单元测试、生产 build 与排除测试 fixture 检查通过；包括参考价来源/缺失语义、同账户正常刷新保留草稿、首次账户缓存缺失后的只读恢复 | 真实 IPC 和目标客户端 |
 | 浏览器界面 | Chrome 隔离 profile 15/15 通过；深浅色、390/1280/1600 宽度、键盘、弹窗焦点、无重发、单图删除、旧确认失效、授权拒绝/取消、会话刷新与过期、维护限制、无登录的冲突恢复预览；视觉复核已完成 | 原生窗口、安全存储、桌面应用接入 |
-| Rust/native | 已有 CLT clang21 + SDK15.4：core57/helper1 fake 回归、rustfmt、默认和嵌入 helper 的 system-integration typed cargo check通过；撤销删除拒绝、旧资产作用域、10001条身份元数据、并发磁盘配额、恢复、授权终态、只读账务刷新、进程锁和更新维护锁有专项证据 | 真实系统 vault/客户端文件；不能将编译 feature 当成真实集成 |
+| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core66/helper1 fake 回归、rustfmt、默认和嵌入 helper 的 system-integration typed cargo check通过；图片复制/另存为晚作用域、原图片hash和维护互斥已补专项；原撤销、配额、恢复、授权、账务及锁回归继续通过 | 真实系统 vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
 | Panel | 阶段整合树独立复核六组2884项：2861 passed / 23 existing skipped、36897 assertions；隔离 MySQL8.4.11专项15/15，241 assertions；前端240/240及完整quality通过 | 后续其他任务推进的 develop 不属于此测试快照；真实 native/客户端/生产；未执行远端 GitLab pipeline |
 | Edge | 本任务没有修改；合同以现有源码/测试核查 | 真实客户端与 fake gateway 的当前联调 |
 | macOS arm64 | 当前 Mac release helper/GUI、`.app` 与 ZIP 构建成功；实际单 arm64、minOS15.0/SDK15.4、helper 完整内嵌、前端 custom-protocol 内嵌；未运行 GUI | macOS 15、原生真实运行和完整客户端流程 |
@@ -34,7 +34,15 @@
 
 平台验证必须在 Windows 11 25H2 x64 和 macOS 15+ Apple Silicon 上分别记录编译、运行、配置、系统安全存储、拖放/文件/复制、两个真实桌面应用的模型选择、流式/工具/辅助模型和错误流程。CLI、跨编译、浏览器、Ubuntu或 fake vault 都不能替代这些验收。
 
-前一源码阶段证据为 `.cache/evidence/frontend-final-check.log`、`ui-final-e2e.log`（23 unit / 15 browser）；首次账户缓存缺失专项另存 `frontend-cache-recovery-check.log`。深色创作与历史截图均有独立文件。Rust 证据为 `runtime/logs/native-core-tests.log`、`native-tauri-check.log`、`native-tauri-system-check.log`（57 core / 1 helper）；本次候选阶段没有修改 Rust/应用 TS 源码。最终源码 SHA 与收尾检查绑定记录保存在未跟踪任务记录和项目证据目录。Panel 整合证据为其任务 worktree `storage/framework/testing/orbit-integration-evidence/summary.json`、`six-groups.json`、`quality.json`、`mysql-direct.log` 与 JUnit/events；旧 `orbit-evidence/` 保留。日志与缓存不入 Git。
+## 尚待完成的实现
+
+2026-10-14 对完整需求的补充审计发现，下列缺口仍有项目内代码工作，不能仅列为环境验收：managed policy 的实际来源采集尚未实现，检测保持 `unknown`，自动配置因此受阻；客户端载入/连接证据目前没有生产采集入口；尚无供两个 Desktop 使用的主/辅助模型、流式、工具和错误场景 fake gateway；更新替换后的 journal、启动校验及应用/数据库回退尚未闭环。Claude profile envelope 与 `_meta.json` 仍缺获准的合成导出资料，自动 library 写入继续关闭。
+
+锁定 Tauri CLI 的实际合成签名与同一 Rust verifier 的版本绑定验证也待补齐。合成密钥只能用于项目测试，不能进入候选 release trust；相关测试不等于正式证书、真实安装或更新验收。
+
+2026-10-14 图片出口阶段：`feature/orbit-image-export-safety` 从候选阶段本地 develop `43022f006ad991bc5adaf0d8ce809f779cb5c40f` 建立。独立 reviewer 发现并关闭复制/另存为的晚写入和合法文件替换问题；最终 66 core + 1 helper、rustfmt、helper 编译、default/system-integration typed check通过。证据为 `runtime/logs/native-image-export-final-{tests,fmt,helper-build,default-check,system-check}.log`。新测试只使用 FakeSink/FakeVault 和项目内文件，覆盖解码/读取后的退出、账户/origin/连接/revision/epoch变化、过期、忘记安装、删除、维护、hash及写入锁序；未运行 GUI、真实 helper、系统剪贴板、vault 或文件对话框。8e95 的 Mac ZIP 不含本阶段修复，不能用作新代码的候选证明。
+
+前一源码阶段证据为 `.cache/evidence/frontend-final-check.log`、`ui-final-e2e.log`（23 unit / 15 browser）；首次账户缓存缺失专项另存 `frontend-cache-recovery-check.log`。深色创作与历史截图均有独立文件。此前 Rust 证据为 `runtime/logs/native-core-tests.log`、`native-tauri-check.log`、`native-tauri-system-check.log`（57 core / 1 helper）；8e95 首个候选构建阶段没有修改 Rust/应用 TS 源码。最终源码 SHA 与收尾检查绑定记录保存在未跟踪任务记录和项目证据目录。Panel 整合证据为其任务 worktree `storage/framework/testing/orbit-integration-evidence/summary.json`、`six-groups.json`、`quality.json`、`mysql-direct.log` 与 JUnit/events；旧 `orbit-evidence/` 保留。日志与缓存不入 Git。
 
 2026-10-14 Mac 候选证据：`runtime/logs/macos-candidate-build-20261014.log` 首次 release、`macos-first-bundle-build-20261014.log` 首次 `.app`、`macos-verified-bundle-build-20261014.log` 含完整包/ZIP 回读的重建、`macos-candidate-evidence-tests-20261014.log` 的6/6专项，以及 `candidate-manifest.json`。最终提交后再次构建，完整 SHA 以最后 manifest 的 `source_head` 为准；归档为 `runtime/candidates/Orivelle-Orbit-0.1.0-macos-arm64-candidate.zip`。没有启动 helper/GUI、访问真实 vault、修改真实客户端或运行付费请求。
 
