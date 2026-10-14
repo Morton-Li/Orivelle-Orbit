@@ -56,6 +56,7 @@ validate:macos-arm64:
   stage: validate
   timeout: 30 minutes
   script:
+    - node --test tests/build/macos-candidate.test.mjs
     - npm run check
     - npm run test:e2e
     - node scripts/native-workflow.mjs check
@@ -95,6 +96,7 @@ candidate:macos-arm64:
     expire_in: 14 days
     paths:
       - runtime/target/aarch64-apple-darwin/release/bundle/macos/
+      - runtime/candidates/
       - runtime/logs/candidate-manifest.json
 
 candidate:windows-x64:
