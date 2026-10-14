@@ -315,17 +315,6 @@ pub fn exclusive_helper_lock(root: &Path) -> Result<File> {
     lock.try_lock_exclusive().map_err(|_| fail("update_busy"))?;
     Ok(lock)
 }
-pub fn prepare_schema_backup(store: &Store, version: &str) -> Result<PathBuf> {
-    version_parts(version)?;
-    let path = store
-        .root
-        .join("updates")
-        .join(format!("schema-v1-before-{version}.sqlite3"));
-    store.consistent_backup(&path)?;
-    store.set_meta("update_prepared_schema", "1")?;
-    store.set_meta("update_prepared_version", version)?;
-    Ok(path)
-}
 pub fn extract_macos_artifact(artifact: &VerifiedArtifact, root: &Path) -> Result<PathBuf> {
     private_directory(root)?;
     if fs::read_dir(root)

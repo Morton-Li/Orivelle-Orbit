@@ -16,11 +16,20 @@
 node scripts/native-workflow.mjs preflight
 npm run check
 node scripts/native-workflow.mjs check
+node scripts/native-workflow.mjs signer-probe
 node scripts/native-workflow.mjs candidate
 node scripts/native-workflow.mjs bundle
 ```
 
 `preflight` 只核工具、宿主和项目路径。`check` 执行 rustfmt、core/helper 的隔离测试以及默认 Tauri cargo check；此构建拒绝真实 vault。
+
+`signer-probe` 要求已提交、干净的 tracked 源码，实际调用锁定 CLI 2.12.2：在项目私有临时目录生成两对合成密钥，签署小型假产物（分别带 `--app-version` 和不带版本），随后显式运行 `updater_cli` 的 Rust verifier 测试。正例使用原签名、版本和相同字节；负例包括字节、公钥、版本、无版本签名、trusted comment、编码和空产物，CLI 另须拒绝 TAB/CR/LF 版本。普通 `cargo test` 将该入口标为 ignored；两个 CI native validate job 显式运行 probe，不能把 ignored 当作已执行。
+
+所有 signer stdout/stderr 在内存中有界捕获，不写日志；合成私钥不放 argv，不读取用户签名密钥，不使用系统证书。临时目录在成功和失败后删除，测试编译使用独立 `runtime/target-signer-probe/`；候选仍无 release trust。成功摘要 `runtime/logs/synthetic-updater-signer-probe.json` 仅包含版本、公开 hash、状态和源码前后一致检查。失败的新尝试先移除旧成功摘要，不能用旧记录代表新运行。
+
+专用 target 复用项目目录门禁，已有 symlink/junction 会在启动工具前被拒绝。超时或输出超量后停止保留输出，只终止本次 owned process group，强制结束后仍以有限 settle 进入清理，不无限等待继承 pipe。2026-10-14 Mac 故障夹具4/4通过：符号链接、不退出的 signer、父进程退出后子进程仍持 pipe、输出超量；并验证临时密钥和旧成功摘要被删除、既有 sibling 保留。命令 `node --test tests/build/updater-signer-probe.test.mjs`，证据 `runtime/logs/signer-probe-failure-tests.log`。Windows 仅按 owned PID 调用系统 [taskkill /T /F](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill)，环境名规范化；进程树及故障行为仍需实际 Windows 验证。
+
+2026-10-14 已在办公 Mac 实际通过该 probe，首轮源码 `cdb6f2d50dd2b67329604cb948a72b4108f14231` 前后一致；软件签名的合成产物为96字节、版本0.2.0，Rust显式测试通过，临时目录残留0。首轮摘要与日志单独保存在 `.cache/evidence/synthetic-updater-signer-probe-cdb6{.json,-run.log}`；阶段收尾重新执行后，最新源码和结果以 `runtime/logs/synthetic-updater-signer-probe.json` 为准。这证明锁定 CLI 与版本/字节 verifier 的互通，未验证正式签名、目标架构、安装或更新。CLI 的写钥与签名格式依据固定源码：[generate](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-cli/src/signer/generate.rs)、[版本签名](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-cli/src/helpers/updater_signature.rs)。
 
 `candidate` 先构建带 `system-integration` 的固定 helper，再通过 `ORBIT_BUNDLED_HELPER_PATH` 把同一二进制及 SHA-256 嵌入 GUI。构建脚本检查项目内普通文件、大小和目标架构；运行时部署使用独占 helper 锁、私有稳定路径、原子写入和读回校验。helper 与桌面程序都只在构建时生成；脚本不会启动它们。
 

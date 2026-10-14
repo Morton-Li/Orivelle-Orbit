@@ -557,18 +557,25 @@ pub async fn install_update(
     if native.service.paths.isolated {
         return Err(fail("integration_authorization_required"));
     }
-    let _maintenance = native.service.begin_maintenance()?;
-    let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
-    let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
-    let _ = updates::prepare_schema_backup(&native.service.store, &artifact.candidate().version)?;
-    install_verified_candidate(&app, &native.service, artifact).await
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        Err(fail("windows_update_recovery_unverified"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _maintenance = native.service.begin_maintenance()?;
+        let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
+        let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
+        install_verified_candidate(&app, &native.service, artifact).await
+    }
 }
+#[cfg(not(target_os = "windows"))]
 async fn install_verified_candidate(
     app: &AppHandle,
     service: &Service,
     artifact: updates::VerifiedArtifact,
 ) -> Result<UpdateView> {
-    let candidate = artifact.candidate().clone();
     #[cfg(target_os = "macos")]
     {
         let exe = std::env::current_exe().map_err(|_| fail("update_install_failed"))?;
@@ -579,56 +586,18 @@ async fn install_verified_candidate(
         let parent = current.parent().ok_or_else(|| fail("invalid_path"))?;
         let staging = parent.join(format!(".orbit-update-{}", orbit_core::identity::uuid()));
         let bundle = updates::extract_macos_artifact(&artifact, &staging)?;
-        updates::validate_macos_bundle(&bundle, &candidate.version)?;
-        let staged = parent.join(format!(
-            ".orbit-staged-{}.app",
-            orbit_core::identity::uuid()
-        ));
-        std::fs::rename(&bundle, &staged).map_err(|_| fail("update_staging_failed"))?;
-        updates::swap_macos_bundle(current, &staged)?;
-        service
-            .store
-            .set_meta("update_previous_bundle", &staged.display().to_string())?;
-        service
-            .store
-            .set_meta("update_installed_version", &candidate.version)?;
+        let prepared = orbit_core::update_recovery::prepare_macos(
+            &service.store,
+            current,
+            &bundle,
+            &artifact,
+        )?;
+        prepared.swap()?;
         app.restart();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use tauri_plugin_updater::UpdaterExt;
-        let trust = updates::compiled_trust().ok_or_else(|| fail("update_disabled"))?;
-        let updater = app
-            .updater_builder()
-            .pubkey(trust.public_key)
-            .endpoints(vec![
-                url::Url::parse(trust.endpoint).map_err(|_| fail("invalid_update_channel"))?,
-            ])
-            .map_err(|_| fail("invalid_update_channel"))?
-            .build()
-            .map_err(|_| fail("update_unavailable"))?;
-        let update = updater
-            .check()
-            .await
-            .map_err(|_| fail("update_unavailable"))?
-            .ok_or_else(|| fail("update_not_available"))?;
-        if update.version != candidate.version {
-            return Err(fail("update_artifact_changed"));
-        }
-        update
-            .install(artifact.into_bytes())
-            .map_err(|_| fail("update_install_failed"))?;
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (app, service, candidate, artifact);
-        return Err(fail("platform_unsupported"));
+        let _ = (app, service, artifact);
+        Err(fail("platform_unsupported"))
     }
-    #[allow(unreachable_code)]
-    Ok(UpdateView {
-        status: "verified".into(),
-        current_version: updates::CURRENT_VERSION.into(),
-        version: Some(candidate.version.clone()),
-        reason: Some("更新已安装，等待启动后 schema 验证。".into()),
-    })
 }

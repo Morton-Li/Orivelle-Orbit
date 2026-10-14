@@ -247,6 +247,7 @@ pub fn bound_helper_token(
     vault: &dyn Vault,
     now: i64,
 ) -> Result<zeroize::Zeroizing<String>> {
+    crate::update_recovery::ensure_ready(&store.root)?;
     if store
         .meta(&format!(
             "installation_forgetting/{}",
@@ -269,6 +270,7 @@ pub fn bound_helper_token(
         return Err(fail("binding_disabled"));
     }
     let token = helper_token(binding, client, id, vault, now)?;
+    crate::update_recovery::ensure_ready(&store.root)?;
     let latest = store
         .meta(&authorization_epoch_reference(
             &binding.origin,

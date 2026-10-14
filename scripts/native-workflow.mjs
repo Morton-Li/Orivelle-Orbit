@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import {
   access,
   lstat,
-  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -19,11 +18,17 @@ import {
   inspectMacApp,
   verifySource,
 } from "./candidate-evidence.mjs";
+import {
+  prepareProjectDirectory,
+  runSyntheticSignerProbe,
+} from "./updater-signer-probe.mjs";
 
 const root = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const mode = process.argv[2] ?? "preflight";
-if (!["preflight", "check", "candidate", "bundle"].includes(mode)) {
-  throw new Error("Use preflight, check, candidate or bundle.");
+if (
+  !["preflight", "check", "signer-probe", "candidate", "bundle"].includes(mode)
+) {
+  throw new Error("Use preflight, check, signer-probe, candidate or bundle.");
 }
 const target =
   process.platform === "darwin" && process.arch === "arm64"
@@ -65,6 +70,7 @@ for (const key of Object.keys(inheritedEnv)) {
   if (
     normalized.startsWith("ORBIT_RELEASE_") ||
     normalized.startsWith("TAURI_SIGNING_") ||
+    normalized.startsWith("TAURI_PRIVATE_") ||
     normalized.startsWith("APPLE_") ||
     normalized.startsWith("NPM_CONFIG_") ||
     normalized.startsWith("CARGO_REGISTRIES_") ||
@@ -142,6 +148,7 @@ for (const directory of [
   "runtime",
   "runtime/cargo-home",
   "runtime/target",
+  "runtime/target-signer-probe",
   "runtime/tmp",
   "runtime/logs",
   "runtime/candidates",
@@ -149,21 +156,7 @@ for (const directory of [
   ".cache/npm",
 ]) {
   const absolute = path.join(root, directory);
-  const existing = await lstat(absolute).catch((error) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) {
-    throw new Error("Build cache must be a project directory.");
-  }
-  await mkdir(absolute, { recursive: true, mode: 0o700 });
-  const resolved = await realpath(absolute);
-  if (
-    !resolved.startsWith(`${root}${path.sep}`) ||
-    (await lstat(absolute)).isSymbolicLink()
-  ) {
-    throw new Error("Build cache must remain inside this project.");
-  }
+  await prepareProjectDirectory(root, absolute);
 }
 async function run(binary, args) {
   await new Promise((resolve, reject) => {
@@ -213,6 +206,24 @@ if (mode === "preflight") {
     "orbit-credential-helper",
   ]);
   await run(cargo, ["check", "--locked", "-p", "orivelle-orbit"]);
+} else if (mode === "signer-probe") {
+  const cli = path.join(root, "node_modules/@tauri-apps/cli/tauri.js");
+  await access(cli);
+  const source = freezeSource(inspect);
+  console.log(
+    JSON.stringify(
+      await runSyntheticSignerProbe({
+        root,
+        env,
+        cargo,
+        cli,
+        source,
+        verifyFrozenSource: () => verifySource(source, inspect),
+      }),
+      null,
+      2,
+    ),
+  );
 } else {
   const source = freezeSource(inspect);
   const cli = path.join(root, "node_modules/@tauri-apps/cli/tauri.js");

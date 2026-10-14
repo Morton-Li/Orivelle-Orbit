@@ -12,5 +12,6 @@ pub mod runtime_lock;
 pub mod service;
 pub mod store;
 pub mod system;
+pub mod update_recovery;
 pub mod updates;
 pub mod vault;
