@@ -26,9 +26,17 @@ node scripts/native-workflow.mjs bundle
 
 `bundle` 在 macOS 生成 `.app`，不挂载 DMG、不放入 Applications。Windows 生成当前用户 NSIS 安装候选，需先从获准镜像准备完整 NSIS 3.11 和固定 0.5.3 plugin 到项目的 `runtime/target/.tauri/NSIS/`；缺文件或 plugin 校验和不符即停止，避免 Tauri 自行从 GitHub补下载。候选 NSIS 使用 `webviewInstallMode=skip`，要求测试环境已有 WebView2；正式安装的运行时交付另做审查，不能把这个候选当成可分发安装包。
 
+macOS 同时生成 `runtime/candidates/Orivelle-Orbit-0.1.0-macos-arm64-candidate.zip`（名称随版本变化）。归档只包含 `.app`，排除扩展属性、资源 fork 和 ACL；在项目临时目录解包，再核对全部文件、目录、权限和内容摘要，验证后清理该临时副本。原 `.app` 和 ZIP 保留在项目内，未执行或安装。
+
 Tauri `useLocalToolsDir` 将工具缓存限定到项目 target，行为以锁定 CLI 源码为据：[配置](https://v2.tauri.app/reference/config/#bundleconfig)、[2.12.2 NSIS 实现](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.2/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs)。当前没有 Windows 打包或系统运行证据。
 
-产物摘要位于 `runtime/logs/candidate-manifest.json`，包含源码 SHA、tracked dirty、宿主/工具版本、helper 和 executable 的大小/SHA-256，明确记录未启动、无正式签名、无实际集成验收。必须在提交后的干净 tracked 树重建摘要，才能绑定最终候选；`AGENT.md` 和测试缓存不入 Git。
+产物摘要位于 `runtime/logs/candidate-manifest.json`。构建前要求已提交、干净的 tracked 树，记录 HEAD/tree；完成包检查后再次核对，变化时拒绝生成有效摘要。文件负责人在构建期间保持源码冻结；任务记录和测试缓存不入 Git。
+
+摘要包含宿主/工具版本、helper/主程序大小与 SHA-256；macOS 增加 bundle identifier、版本、最低系统、完整包清单/摘要、ZIP 摘要及解包一致性结果。包清单按路径排序，包含文件/目录类型、POSIX 权限、文件大小与内容 hash；整体 hash 为该清单 JSON 的 SHA-256，不包含时间戳或系统额外属性。它证明本次候选的内容与构建提交对应，正式发布信任仍需签名与渠道流程。
+
+锁定 CLI 2.12.2 的 `--no-sign` 会跳过 macOS 的 keychain、证书签名和公证分支，也跳过 updater 签名：[固定实现](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-bundler/src/bundle/macos/app.rs#L115)。实际 Mach-O 仍有编译链接器产生的 ad-hoc 签名，未设置 TeamIdentifier，Info.plist/资源未封印；这不能证明发布者身份或安全存储的升级连续性。正式证书、公钥与更新渠道未启用。
+
+Mac 证据模块的专项回归命令为 `node --test tests/build/macos-candidate.test.mjs`。覆盖资源/权限变化、可执行文件替换、标识/版本/最低系统不符、路径与 symlink、构建前 dirty 和中途提交变化；Mac CI 运行这些检查并保留 ZIP。实际 `.app`、架构、helper 嵌入和归档回读另行静态核实，均不会启动 Orbit 或 helper。
 
 ## CI 与验收
 

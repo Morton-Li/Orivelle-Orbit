@@ -1,17 +1,24 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import {
   access,
   lstat,
   mkdir,
+  mkdtemp,
   readFile,
   realpath,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  digest as fileDigest,
+  freezeSource,
+  inspectMacApp,
+  verifySource,
+} from "./candidate-evidence.mjs";
 
 const root = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const mode = process.argv[2] ?? "preflight";
@@ -61,6 +68,7 @@ for (const key of Object.keys(inheritedEnv)) {
     normalized.startsWith("APPLE_") ||
     normalized.startsWith("NPM_CONFIG_") ||
     normalized.startsWith("CARGO_REGISTRIES_") ||
+    normalized.startsWith("DITTO") ||
     [
       "RUSTC_WRAPPER",
       "RUSTC_WORKSPACE_WRAPPER",
@@ -136,6 +144,7 @@ for (const directory of [
   "runtime/target",
   "runtime/tmp",
   "runtime/logs",
+  "runtime/candidates",
   ".cache",
   ".cache/npm",
 ]) {
@@ -173,20 +182,9 @@ async function run(binary, args) {
   });
 }
 async function digest(file) {
-  const metadata = await lstat(file);
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.size > 512 * 1024 ** 2
-  ) {
-    throw new Error("Candidate artifact is not a bounded regular file.");
-  }
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
   return {
     path: path.relative(root, file),
-    bytes: metadata.size,
-    sha256: hash.digest("hex"),
+    ...(await fileDigest(file)),
   };
 }
 const preflight = {
@@ -216,6 +214,7 @@ if (mode === "preflight") {
   ]);
   await run(cargo, ["check", "--locked", "-p", "orivelle-orbit"]);
 } else {
+  const source = freezeSource(inspect);
   const cli = path.join(root, "node_modules/@tauri-apps/cli/tauri.js");
   await access(cli);
   const toolPackage = JSON.parse(
@@ -305,16 +304,130 @@ if (mode === "preflight") {
     "release",
     `orivelle-orbit${suffix}`,
   );
+  const helperEvidence = await digest(helper);
+  const executableEvidence = await digest(executable);
+  let appEvidence = null;
+  let archiveEvidence = null;
+  if (mode === "bundle" && process.platform === "darwin") {
+    const config = JSON.parse(
+      await readFile(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
+    );
+    const app = path.join(
+      env.CARGO_TARGET_DIR,
+      target,
+      "release/bundle/macos",
+      `${config.productName}.app`,
+    );
+    const expected = {
+      identifier: config.identifier,
+      version: config.version,
+      minimum: config.bundle.macOS.minimumSystemVersion,
+    };
+    const metadata = async (file) =>
+      JSON.parse(
+        inspect("/usr/bin/plutil", ["-convert", "json", "-o", "-", file]),
+      );
+    appEvidence = await inspectMacApp({
+      project: root,
+      app,
+      executable: executableEvidence,
+      expected,
+      metadata,
+    });
+    const archive = path.join(
+      root,
+      "runtime/candidates",
+      `Orivelle-Orbit-${config.version}-macos-arm64-candidate.zip`,
+    );
+    const oldArchive = await lstat(archive).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (oldArchive && (!oldArchive.isFile() || oldArchive.isSymbolicLink()))
+      throw new Error("Candidate archive must be a project regular file.");
+    await run("/usr/bin/ditto", [
+      "-c",
+      "-k",
+      "--keepParent",
+      "--norsrc",
+      "--noextattr",
+      "--noacl",
+      "--noqtn",
+      app,
+      archive,
+    ]);
+    const names = inspect("/usr/bin/unzip", ["-Z1", archive]).split("\n");
+    const base = path.basename(app);
+    if (
+      names.length > 2048 ||
+      names.some(
+        (name) =>
+          !name.startsWith(`${base}/`) ||
+          name.includes("\\") ||
+          name
+            .replace(/\/$/, "")
+            .split("/")
+            .some((part) => !part || part === "." || part === ".."),
+      )
+    )
+      throw new Error("Candidate archive has unexpected paths.");
+    const extracted = await mkdtemp(
+      path.join(env.TMPDIR, "candidate-roundtrip-"),
+    );
+    try {
+      await run("/usr/bin/ditto", [
+        "-x",
+        "-k",
+        "--norsrc",
+        "--noextattr",
+        "--noacl",
+        "--noqtn",
+        archive,
+        extracted,
+      ]);
+      const restored = await inspectMacApp({
+        project: root,
+        app: path.join(extracted, base),
+        executable: executableEvidence,
+        expected,
+        metadata,
+      });
+      const unchanged = await inspectMacApp({
+        project: root,
+        app,
+        executable: executableEvidence,
+        expected,
+        metadata,
+      });
+      if (
+        restored.package_sha256 !== appEvidence.package_sha256 ||
+        unchanged.package_sha256 !== appEvidence.package_sha256
+      )
+        throw new Error(
+          "Candidate archive roundtrip differs from the app bundle.",
+        );
+      archiveEvidence = {
+        ...(await digest(archive)),
+        app_roundtrip_verified: true,
+      };
+    } finally {
+      await rm(extracted, { recursive: true, force: true });
+    }
+  }
+  verifySource(source, inspect);
   const manifest = {
     ...preflight,
-    source_head: inspect("git", ["rev-parse", "HEAD"]),
-    tracked_dirty:
-      inspect("git", ["status", "--porcelain", "--untracked-files=no"]) !== "",
+    source_head: source.head,
+    source_tree: source.tree,
+    source_verified_before_and_after: true,
+    tracked_dirty: false,
     mode,
     release_channel: "disabled",
     formal_signature: false,
-    helper: await digest(helper),
-    executable: await digest(executable),
+    helper: helperEvidence,
+    executable: executableEvidence,
+    app: appEvidence,
+    archive: archiveEvidence,
     actual_native_integration_verified: false,
   };
   await writeFile(
