@@ -173,6 +173,14 @@ foreach ($r in $rules) {
 }
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
+        crate::update_recovery::ensure_ready(root)?;
+        Self::open_inner(root, true)
+    }
+    pub(crate) fn open_for_update_validation(root: &Path) -> Result<Self> {
+        crate::update_recovery::ensure_ready(root)?;
+        Self::open_inner(root, false)
+    }
+    fn open_inner(root: &Path, recover_tasks: bool) -> Result<Self> {
         private_directory(root)?;
         for name in [
             "images",
@@ -188,13 +196,13 @@ impl Store {
         }
         let path = root.join("orbit.sqlite3");
         let mut db = Connection::open(&path).map_err(|_| fail("local_storage_unavailable"))?;
-        db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;").map_err(|_| fail("database_unavailable"))?;
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| fail("database_unavailable"))?;
         if version > 1 {
             return Err(fail("database_schema_newer"));
         }
+        db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;").map_err(|_| fail("database_unavailable"))?;
         if version == 0 {
             let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
             tx.execute_batch("CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,scope TEXT NOT NULL,payload TEXT NOT NULL CHECK(json_valid(payload)),PRIMARY KEY(kind,id)) STRICT; CREATE INDEX records_scope ON records(kind,scope); CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT; PRAGMA user_version=1;").map_err(|_| fail("database_migration_failed"))?;
@@ -222,7 +230,11 @@ impl Store {
             )
             .map_err(|_| fail("database_unavailable"))?;
         // Never replay a network task after a crash or process exit.
-        for mut task in store.list::<TaskView>("task", None)? {
+        for mut task in if recover_tasks {
+            store.list::<TaskView>("task", None)?
+        } else {
+            Vec::new()
+        } {
             if ["queued", "sending", "waiting", "saving"].contains(&task.state.as_str()) {
                 task.state = "unconfirmed".into();
                 task.error = Some(fail("result_unconfirmed"));
@@ -243,6 +255,7 @@ impl Store {
         Ok(store)
     }
     pub fn open_readonly(root: &Path) -> Result<Self> {
+        crate::update_recovery::ensure_ready(root)?;
         let path = root.join("orbit.sqlite3");
         for file in [root, path.as_path()] {
             let metadata = fs::symlink_metadata(file).map_err(|_| fail("binding_disabled"))?;

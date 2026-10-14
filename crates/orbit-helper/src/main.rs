@@ -49,6 +49,7 @@ fn run() -> Result<()> {
         .open(root.join("locks/helper-update.lock"))
         .map_err(|_| fail("binding_disabled"))?;
     lock.try_lock_shared().map_err(|_| fail("update_busy"))?;
+    orbit_core::update_recovery::ensure_ready(&root)?;
     let store = Store::open_readonly(&root)?;
     let binding = store
         .get::<HelperBinding>("binding", &id)?
@@ -65,6 +66,7 @@ fn run() -> Result<()> {
         Box::new(DeniedVault)
     };
     let token = bound_helper_token(&binding, client, &id, &store, vault.as_ref(), chrono_now())?;
+    orbit_core::update_recovery::ensure_ready(&root)?;
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(token.as_bytes())

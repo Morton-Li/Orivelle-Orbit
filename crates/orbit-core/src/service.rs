@@ -195,6 +195,11 @@ pub struct MaintenanceLease<'a> {
 impl Drop for MaintenanceLease<'_> {
     fn drop(&mut self) {
         if let Ok(_gate) = self.service.account_gate.lock() {
+            // A durable pending update owns the database baseline. Do not write
+            // maintenance=0 after prepared or reopen ordinary operations on error.
+            if crate::update_recovery::ensure_ready(&self.service.store.root).is_err() {
+                return;
+            }
             // A storage failure keeps the application closed to mutations until restart.
             if self
                 .service
@@ -235,7 +240,26 @@ pub struct Service {
     received_memory: Mutex<HashMap<String, Vec<images::ReceivedImage>>>,
 }
 impl Service {
+    pub(crate) fn validate_upgrade_store(store: &Store) -> Result<()> {
+        let _ = store.snapshot()?;
+        let _ = store.settings()?;
+        let _ = store.list::<LoginStart>("authorization-pending", None)?;
+        let _ = store.list::<AuthorizationEvent>("authorization-terminal", None)?;
+        let _ = store.list::<ConnectionRecord>("connection", None)?;
+        let _ = store.list::<AccountCache>("account-cache", None)?;
+        let _ = store.list::<Installation>("installation", None)?;
+        let _ = store.list::<HelperBinding>("binding", None)?;
+        let _ = store.list::<ClientView>("client-state", None)?;
+        let _ = store.list::<TaskSnapshot>("task-snapshot", None)?;
+        let _ = store.list::<TaskView>("task", None)?;
+        let _ = store.list::<HistoryImage>("image", None)?;
+        let _ = store.list::<InputRecord>("input", None)?;
+        let _ = store.list::<Journal>("journal", None)?;
+        let _ = store.list::<Journal>("backup", None)?;
+        Ok(())
+    }
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
+        crate::update_recovery::ensure_ready(&store.root)?;
         let mut clients = detect_clients(&paths);
         for client in &mut clients {
             if let Some(old) = store.get::<ClientView>("client-state", client.client.as_str())? {
@@ -303,6 +327,7 @@ impl Service {
         Ok(())
     }
     pub fn ensure_mutations_available(&self) -> Result<()> {
+        crate::update_recovery::ensure_ready(&self.store.root)?;
         if self.maintenance_active.load(Ordering::SeqCst) {
             return Err(fail("update_busy"));
         }
@@ -327,6 +352,7 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
         self.ensure_mutations_available()?;
+        crate::update_recovery::ensure_configuration_idle(&self.store)?;
         if self.active_tasks()?
             || self.mutation_count.load(Ordering::SeqCst) > 0
             || self
