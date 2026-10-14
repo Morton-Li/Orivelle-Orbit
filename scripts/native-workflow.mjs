@@ -19,11 +19,14 @@ import {
   inspectMacApp,
   verifySource,
 } from "./candidate-evidence.mjs";
+import { runSyntheticSignerProbe } from "./updater-signer-probe.mjs";
 
 const root = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const mode = process.argv[2] ?? "preflight";
-if (!["preflight", "check", "candidate", "bundle"].includes(mode)) {
-  throw new Error("Use preflight, check, candidate or bundle.");
+if (
+  !["preflight", "check", "signer-probe", "candidate", "bundle"].includes(mode)
+) {
+  throw new Error("Use preflight, check, signer-probe, candidate or bundle.");
 }
 const target =
   process.platform === "darwin" && process.arch === "arm64"
@@ -65,6 +68,7 @@ for (const key of Object.keys(inheritedEnv)) {
   if (
     normalized.startsWith("ORBIT_RELEASE_") ||
     normalized.startsWith("TAURI_SIGNING_") ||
+    normalized.startsWith("TAURI_PRIVATE_") ||
     normalized.startsWith("APPLE_") ||
     normalized.startsWith("NPM_CONFIG_") ||
     normalized.startsWith("CARGO_REGISTRIES_") ||
@@ -213,6 +217,24 @@ if (mode === "preflight") {
     "orbit-credential-helper",
   ]);
   await run(cargo, ["check", "--locked", "-p", "orivelle-orbit"]);
+} else if (mode === "signer-probe") {
+  const cli = path.join(root, "node_modules/@tauri-apps/cli/tauri.js");
+  await access(cli);
+  const source = freezeSource(inspect);
+  console.log(
+    JSON.stringify(
+      await runSyntheticSignerProbe({
+        root,
+        env,
+        cargo,
+        cli,
+        source,
+        verifyFrozenSource: () => verifySource(source, inspect),
+      }),
+      null,
+      2,
+    ),
+  );
 } else {
   const source = freezeSource(inspect);
   const cli = path.join(root, "node_modules/@tauri-apps/cli/tauri.js");
