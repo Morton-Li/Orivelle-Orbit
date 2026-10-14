@@ -1,4 +1,5 @@
 use orbit_core::{
+    clipboard::{ClipboardImage, ImageClipboardSink},
     dto::*,
     error::{Result, fail},
     service::Service,
@@ -14,6 +15,21 @@ use tauri_plugin_opener::OpenerExt;
 pub struct Native {
     pub service: Arc<Service>,
     pub _instance: orbit_core::runtime_lock::RuntimeLock,
+}
+struct NativeImageClipboard;
+impl ImageClipboardSink for NativeImageClipboard {
+    fn set_image(&mut self, image: ClipboardImage) -> Result<()> {
+        let width = image.width();
+        let height = image.height();
+        let mut clipboard = arboard::Clipboard::new().map_err(|_| fail("clipboard_unavailable"))?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width,
+                height,
+                bytes: std::borrow::Cow::Owned(image.into_bytes()),
+            })
+            .map_err(|_| fail("clipboard_unavailable"))
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -395,7 +411,8 @@ pub async fn save_image_as(
     request: Image,
 ) -> Result<Saved> {
     let service = native.service.clone();
-    let (image, _) = service.image_for_native_export(&request.image_id)?;
+    let plan = service.begin_image_export(&request.image_id)?;
+    let image = plan.image();
     let name = format!(
         "orbit-{}.{}",
         &image.id[..8],
@@ -417,7 +434,7 @@ pub async fn save_image_as(
     if service.paths.isolated && !path.starts_with(&service.store.root) {
         return Err(fail("integration_authorization_required"));
     }
-    tauri::async_runtime::spawn_blocking(move || service.export_image(&request.image_id, &path))
+    tauri::async_runtime::spawn_blocking(move || plan.read()?.save(&path))
         .await
         .map_err(|_| fail("image_worker_failed"))??;
     Ok(Saved { saved: true })
@@ -428,31 +445,9 @@ pub async fn copy_image(native: State<'_, Native>, request: Image) -> Result<Cop
     if service.paths.isolated {
         return Err(fail("integration_authorization_required"));
     }
-    let (_, path) = service.image_for_native_export(&request.image_id)?;
+    let plan = service.begin_image_export(&request.image_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _permit = service.image_memory_permit()?;
-        let bytes = orbit_core::images::bounded_read(&path, orbit_core::images::MAX_IMAGE_BYTES)?;
-        let _ = orbit_core::images::validate_image(&bytes)?;
-        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(|_| fail("invalid_image"))?;
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(orbit_core::images::MAX_DECODE_BYTES);
-        limits.max_image_width = Some(orbit_core::images::MAX_DIMENSION);
-        limits.max_image_height = Some(orbit_core::images::MAX_DIMENSION);
-        reader.limits(limits);
-        let image = reader
-            .decode()
-            .map_err(|_| fail("invalid_image"))?
-            .into_rgba8();
-        let mut clipboard = arboard::Clipboard::new().map_err(|_| fail("clipboard_unavailable"))?;
-        clipboard
-            .set_image(arboard::ImageData {
-                width: image.width() as usize,
-                height: image.height() as usize,
-                bytes: std::borrow::Cow::Owned(image.into_raw()),
-            })
-            .map_err(|_| fail("clipboard_unavailable"))?;
+        plan.decode()?.commit(&mut NativeImageClipboard)?;
         Ok(Copied { copied: true })
     })
     .await

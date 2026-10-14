@@ -1,4 +1,5 @@
 use crate::{
+    clipboard::{ClipboardImage, ImageClipboardSink},
     config::{ConfigEngine, FileChange, Journal, codex_patch, read_file},
     dto::*,
     error::{Result, fail},
@@ -107,6 +108,81 @@ struct PendingAuthorization {
 }
 pub struct MutationLease {
     count: Arc<AtomicU64>,
+}
+struct ImageExportScope {
+    connection_id: String,
+    connection_revision: u64,
+    panel_origin: String,
+    account_id: String,
+    installation_id: String,
+    authorization_epoch: u64,
+}
+/// Single-use native operation frozen before a background worker is queued.
+/// These private fields cannot be constructed from IPC or serialized.
+pub struct ImageExportPlan {
+    service: Arc<Service>,
+    scope: ImageExportScope,
+    image: HistoryImage,
+    source: PathBuf,
+    expected_hash: String,
+    _operation: MutationLease,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+pub struct DecodedImageCopy {
+    plan: ImageExportPlan,
+    pixels: ClipboardImage,
+}
+pub struct ReadImageExport {
+    plan: ImageExportPlan,
+    bytes: Vec<u8>,
+}
+impl ImageExportPlan {
+    pub fn image(&self) -> &HistoryImage {
+        &self.image
+    }
+    pub fn read(self) -> Result<ReadImageExport> {
+        let bytes = images::bounded_read(&self.source, images::MAX_IMAGE_BYTES)?;
+        if sha256(&bytes) != self.expected_hash {
+            return Err(fail("local_image_corrupt"));
+        }
+        let validated = images::validate_image(&bytes)?;
+        if validated.mime != self.image.mime
+            || validated.width != self.image.width
+            || validated.height != self.image.height
+            || bytes.len() as u64 != self.image.bytes
+        {
+            return Err(fail("invalid_image"));
+        }
+        Ok(ReadImageExport { plan: self, bytes })
+    }
+    pub fn decode(self) -> Result<DecodedImageCopy> {
+        let ReadImageExport { plan, bytes } = self.read()?;
+        let pixels = ClipboardImage::decode(&bytes, (plan.image.width, plan.image.height))?;
+        Ok(DecodedImageCopy { plan, pixels })
+    }
+}
+impl DecodedImageCopy {
+    pub fn commit(self, sink: &mut dyn ImageClipboardSink) -> Result<()> {
+        let Self { plan, pixels } = self;
+        plan.service
+            .commit_image_export(&plan, || sink.set_image(pixels))
+    }
+}
+impl ReadImageExport {
+    pub fn save(self, target: &Path) -> Result<()> {
+        let Self { plan, bytes } = self;
+        plan.service.commit_image_export(&plan, || {
+            if !target.is_absolute() || plan.source == target {
+                return Err(fail("invalid_path"));
+            }
+            if plan.service.paths.isolated && !target.starts_with(&plan.service.store.root) {
+                return Err(fail("integration_authorization_required"));
+            }
+            // No plaintext target temporary file is created before the scope check.
+            // Retain the account gate through creation, writing, rename and sync.
+            crate::config::atomic_write(target, &bytes)
+        })
+    }
 }
 impl Drop for MutationLease {
     fn drop(&mut self) {
@@ -3095,24 +3171,150 @@ impl Service {
         self.persist_task(&snapshot)?;
         Ok(snapshot.task)
     }
-    pub fn image_for_native_export(&self, id: &str) -> Result<(HistoryImage, PathBuf)> {
-        let (image, _) = self.scoped_image(id)?;
+    fn image_export_material(&self, id: &str) -> Result<(HistoryImage, PathBuf, String)> {
+        let (image, snapshot) = self.scoped_image(id)?;
         let name = self
             .store
             .get::<String>("image-file", id)?
             .ok_or_else(|| fail("local_image_missing"))?;
-        Ok((image, images::owned_image_path(&self.store, &name)?))
-    }
-    pub fn export_image(&self, id: &str, target: &Path) -> Result<()> {
-        let _operation = self.begin_mutation()?;
-        let _permit = self.image_memory_permit()?;
-        let (_, source) = self.image_for_native_export(id)?;
-        if !target.is_absolute() || source == target {
-            return Err(fail("invalid_path"));
+        let manifest = self
+            .store
+            .get::<images::SaveManifest>("local-save-manifest", &image.task_id)?
+            .ok_or_else(|| fail("local_image_corrupt"))?;
+        let matches = manifest
+            .images
+            .iter()
+            .filter(|item| item.id == id)
+            .collect::<Vec<_>>();
+        if manifest.phase != "completed"
+            || manifest.task_id != image.task_id
+            || manifest.account_id != image.account_id
+            || manifest.panel_origin != snapshot.panel_origin
+            || manifest.images.is_empty()
+            || manifest.images.len() > snapshot.maximum_results as usize
+            || matches.len() != 1
+        {
+            return Err(fail("local_image_corrupt"));
         }
-        let bytes = images::bounded_read(&source, images::MAX_IMAGE_BYTES)?;
-        let _ = images::validate_image(&bytes)?;
-        crate::config::atomic_write(target, &bytes)
+        let material = matches[0];
+        if material.task_id != image.task_id
+            || material.account_id != image.account_id
+            || material.file_name != name
+            || material.mime != image.mime
+            || material.width != image.width
+            || material.height != image.height
+            || material.bytes != image.bytes
+            || material.hash.len() != 64
+            || !material
+                .hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(fail("local_image_corrupt"));
+        }
+        Ok((
+            image,
+            images::owned_image_path(&self.store, &name)?,
+            material.hash.clone(),
+        ))
+    }
+    pub fn begin_image_export(self: &Arc<Self>, id: &str) -> Result<ImageExportPlan> {
+        // Acquire this lease before the account gate; begin_mutation uses that gate.
+        // Retain both leases through decode and the clipboard write so installation
+        // cannot start while a save dialog or export worker is still in flight.
+        let operation = self.begin_mutation()?;
+        let permit = self.image_memory_permit()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
+        let record = self
+            .active_record()?
+            .ok_or_else(|| fail("session_expired"))?;
+        self.validate_image_export_session(&record)?;
+        let (image, source, expected_hash) = self.image_export_material(id)?;
+        Ok(ImageExportPlan {
+            service: self.clone(),
+            scope: ImageExportScope {
+                connection_id: record.view.id,
+                connection_revision: record.view.revision,
+                panel_origin: record.view.panel_origin,
+                account_id: record.view.account_id,
+                installation_id: record.installation_id,
+                authorization_epoch: record.authorization_epoch,
+            },
+            image,
+            source,
+            expected_hash,
+            _operation: operation,
+            _permit: permit,
+        })
+    }
+    fn validate_image_export_session(&self, record: &ConnectionRecord) -> Result<()> {
+        self.ensure_installation_available(&record.installation_id)?;
+        if record.session_status != "authenticated"
+            || record
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+        {
+            return Err(fail("session_expired"));
+        }
+        if self
+            .store
+            .meta(&authorization_epoch_reference(
+                &record.view.panel_origin,
+                &record.installation_id,
+                &record.view.account_id,
+            ))?
+            .and_then(|s| s.parse::<u64>().ok())
+            != Some(record.authorization_epoch)
+        {
+            return Err(fail("connection_conflict"));
+        }
+        Ok(())
+    }
+    fn commit_image_export(
+        &self,
+        plan: &ImageExportPlan,
+        write: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        self.ensure_mutations_available()?;
+        let record = self
+            .active_record()?
+            .ok_or_else(|| fail("session_expired"))?;
+        self.validate_image_export_session(&record)?;
+        let scope = &plan.scope;
+        if record.view.id != scope.connection_id
+            || record.view.revision != scope.connection_revision
+            || record.view.panel_origin != scope.panel_origin
+            || record.view.account_id != scope.account_id
+            || record.installation_id != scope.installation_id
+            || record.authorization_epoch != scope.authorization_epoch
+        {
+            return Err(fail("connection_conflict"));
+        }
+        let (image, source, expected_hash) = self.image_export_material(&plan.image.id)?;
+        if image.task_id != plan.image.task_id
+            || image.account_id != plan.image.account_id
+            || image.mime != plan.image.mime
+            || image.width != plan.image.width
+            || image.height != plan.image.height
+            || image.bytes != plan.image.bytes
+            || source != plan.source
+        {
+            return Err(fail("account_scope_mismatch"));
+        }
+        if expected_hash != plan.expected_hash {
+            return Err(fail("local_image_corrupt"));
+        }
+        // Both native outputs write synchronously while logout, connection selection,
+        // revocation and maintenance are excluded by this same account gate.
+        write()
     }
     pub fn delete_history(&self, ids: &[String], confirmed: bool) -> Result<u32> {
         let _operation = self.begin_mutation()?;
@@ -4016,6 +4218,658 @@ mod tests {
             inputs: vec![],
         }
     }
+    fn export_png(width: u32, height: u32, value: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new_with_quality(
+            &mut bytes,
+            image::codecs::png::CompressionType::Uncompressed,
+            image::codecs::png::FilterType::NoFilter,
+        );
+        image::ImageEncoder::write_image(
+            encoder,
+            &vec![value; width as usize * height as usize * 4],
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap();
+        bytes
+    }
+    fn clipboard_fixture(service: &Service, record: &ConnectionRecord) -> HistoryImage {
+        let bytes = export_png(2, 2, 0);
+        let mut snapshot = task_snapshot(record);
+        service.persist_task(&snapshot).unwrap();
+        let received = images::ReceivedImage {
+            id: uuid(),
+            info: images::validate_image(&bytes).unwrap(),
+            bytes,
+        };
+        images::stage_received(&service.store, &snapshot, &[received]).unwrap();
+        let image = images::finish_local_save(&service.store, &snapshot)
+            .unwrap()
+            .remove(0);
+        snapshot.task.image_ids = vec![image.id.clone()];
+        service.persist_task(&snapshot).unwrap();
+        image
+    }
+    fn export_target(service: &Service, existing: bool) -> PathBuf {
+        let directory = service.store.root.join("export-fixture");
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("result.png");
+        if existing {
+            std::fs::write(&target, b"existing fixture content").unwrap();
+        }
+        target
+    }
+    #[test]
+    fn image_save_commits_exact_received_bytes_once_and_releases_dialog_lease() {
+        for existing in [false, true] {
+            let (_dir, service, _vault, record, _install) = setup();
+            let image = clipboard_fixture(&service, &record);
+            let target = export_target(&service, existing);
+            let plan = service.begin_image_export(&image.id).unwrap();
+            assert_eq!(
+                service.begin_maintenance().err().unwrap().code,
+                "update_busy"
+            );
+            let read = plan.read().unwrap();
+            assert_eq!(
+                service.begin_maintenance().err().unwrap().code,
+                "update_busy"
+            );
+            read.save(&target).unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), export_png(2, 2, 0));
+            assert_eq!(
+                std::fs::read_dir(target.parent().unwrap()).unwrap().count(),
+                1
+            );
+            assert_eq!(service.image_memory_workers.available_permits(), 2);
+            drop(service.begin_maintenance().unwrap());
+            // Cancelling a save dialog drops its single-use plan without output.
+            let cancelled = service.begin_image_export(&image.id).unwrap();
+            assert_eq!(
+                service.begin_maintenance().err().unwrap().code,
+                "update_busy"
+            );
+            drop(cancelled);
+            drop(service.begin_maintenance().unwrap());
+        }
+    }
+    #[test]
+    fn image_save_read_barrier_rejects_late_scope_changes_before_any_target_write() {
+        for existing in [false, true] {
+            for change in [
+                "logout",
+                "account",
+                "origin-same-id",
+                "revision",
+                "reauthorized",
+                "forgetting",
+                "maintenance",
+            ] {
+                let (_dir, service, _vault, mut record, _install) = setup();
+                let image = clipboard_fixture(&service, &record);
+                let target = export_target(&service, existing);
+                let plan = service.begin_image_export(&image.id).unwrap();
+                let (read_tx, read_rx) = std::sync::mpsc::sync_channel(0);
+                let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+                let output = target.clone();
+                let worker = std::thread::spawn(move || {
+                    let read = plan.read().unwrap();
+                    read_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    read.save(&output)
+                });
+                read_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let expected = match change {
+                    "logout" => {
+                        service.commit_logout(&record.view.id).unwrap();
+                        "session_expired"
+                    }
+                    "account" => {
+                        let mut other = record.clone();
+                        other.view.id = uuid();
+                        other.view.account_id = "another-account".into();
+                        let mut cache = service.account_cache(&record).unwrap();
+                        cache.account.id = other.view.account_id.clone();
+                        service
+                            .store
+                            .put("connection", &other.view.id, &other.view.account_id, &other)
+                            .unwrap();
+                        service
+                            .store
+                            .put(
+                                "account-cache",
+                                &other.view.id,
+                                &other.view.account_id,
+                                &cache,
+                            )
+                            .unwrap();
+                        service
+                            .store
+                            .set_meta(
+                                &authorization_epoch_reference(
+                                    &other.view.panel_origin,
+                                    &other.installation_id,
+                                    &other.view.account_id,
+                                ),
+                                "1",
+                            )
+                            .unwrap();
+                        service.select_connection(&other.view.id).unwrap();
+                        "connection_conflict"
+                    }
+                    "revision" => {
+                        service
+                            .select_node(
+                                &record.view.id,
+                                record.view.node_id.as_ref().unwrap(),
+                                record.view.revision,
+                            )
+                            .unwrap();
+                        "connection_conflict"
+                    }
+                    _ => {
+                        let _gate = service.account_gate.lock().unwrap();
+                        match change {
+                            "origin-same-id" => {
+                                record.view.panel_origin =
+                                    "https://other-panel.example.test".into();
+                                record.installation_id = uuid();
+                                service
+                                    .store
+                                    .set_meta(
+                                        &authorization_epoch_reference(
+                                            &record.view.panel_origin,
+                                            &record.installation_id,
+                                            &record.view.account_id,
+                                        ),
+                                        "1",
+                                    )
+                                    .unwrap();
+                                service
+                                    .store
+                                    .put(
+                                        "connection",
+                                        &record.view.id,
+                                        &record.view.account_id,
+                                        &record,
+                                    )
+                                    .unwrap();
+                                "connection_conflict"
+                            }
+                            "reauthorized" => {
+                                record.authorization_epoch =
+                                    service.advance_authorization_epoch(&record).unwrap();
+                                service
+                                    .store
+                                    .put(
+                                        "connection",
+                                        &record.view.id,
+                                        &record.view.account_id,
+                                        &record,
+                                    )
+                                    .unwrap();
+                                "connection_conflict"
+                            }
+                            "forgetting" => {
+                                service
+                                    .store
+                                    .set_meta(
+                                        &format!(
+                                            "installation_forgetting/{}",
+                                            record.installation_id
+                                        ),
+                                        "1",
+                                    )
+                                    .unwrap();
+                                "installation_forgetting"
+                            }
+                            "maintenance" => {
+                                service.maintenance_active.store(true, Ordering::SeqCst);
+                                "update_busy"
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                };
+                release_tx.send(()).unwrap();
+                assert_eq!(
+                    worker.join().unwrap().unwrap_err().code,
+                    expected,
+                    "{change}/{existing}"
+                );
+                if existing {
+                    assert_eq!(std::fs::read(&target).unwrap(), b"existing fixture content");
+                } else {
+                    assert!(!target.exists());
+                }
+                // No transient plaintext target is left by a rejected commit.
+                assert_eq!(
+                    std::fs::read_dir(target.parent().unwrap()).unwrap().count(),
+                    usize::from(existing)
+                );
+                assert_eq!(service.image_memory_workers.available_permits(), 2);
+                assert_eq!(service.mutation_count.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+    #[test]
+    fn image_exports_bind_completed_manifest_and_reject_same_length_valid_replacement() {
+        for output in ["copy", "save"] {
+            for replacement in [export_png(2, 2, 255), export_png(3, 3, 255)] {
+                let (_dir, service, _vault, record, _install) = setup();
+                let image = clipboard_fixture(&service, &record);
+                let plan = service.begin_image_export(&image.id).unwrap();
+                let actual = images::validate_image(&replacement).unwrap();
+                if actual.width == 2 {
+                    assert_eq!(replacement.len() as u64, image.bytes);
+                }
+                assert_eq!(actual.mime, image.mime);
+                std::fs::write(&plan.source, &replacement).unwrap();
+                let mut sink = FakeImageClipboard::default();
+                let target = export_target(&service, false);
+                let result = if output == "copy" {
+                    plan.decode().and_then(|decoded| decoded.commit(&mut sink))
+                } else {
+                    plan.read().and_then(|read| read.save(&target))
+                };
+                assert_eq!(result.unwrap_err().code, "local_image_corrupt");
+                assert!(sink.frames.is_empty());
+                assert!(!target.exists());
+            }
+        }
+        for defect in ["missing", "phase", "duplicate", "metadata"] {
+            let (_dir, service, _vault, record, _install) = setup();
+            let image = clipboard_fixture(&service, &record);
+            let mut manifest = service
+                .store
+                .get::<images::SaveManifest>("local-save-manifest", &image.task_id)
+                .unwrap()
+                .unwrap();
+            if defect == "missing" {
+                service
+                    .store
+                    .delete("local-save-manifest", &image.task_id)
+                    .unwrap();
+            } else {
+                match defect {
+                    "phase" => manifest.phase = "received".into(),
+                    "duplicate" => manifest.images.push(manifest.images[0].clone()),
+                    "metadata" => manifest.images[0].file_name = "another-file.png".into(),
+                    _ => unreachable!(),
+                }
+                service
+                    .store
+                    .put(
+                        "local-save-manifest",
+                        &image.task_id,
+                        &image.account_id,
+                        &manifest,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                service.begin_image_export(&image.id).err().unwrap().code,
+                "local_image_corrupt",
+                "{defect}"
+            );
+        }
+    }
+    #[test]
+    fn image_exports_keep_verified_bytes_and_reject_manifest_changes_at_commit() {
+        for output in ["copy", "save"] {
+            for change_manifest in [false, true] {
+                let (_dir, service, _vault, record, _install) = setup();
+                let image = clipboard_fixture(&service, &record);
+                let plan = service.begin_image_export(&image.id).unwrap();
+                let source = plan.source.clone();
+                let target = export_target(&service, false);
+                let mut sink = FakeImageClipboard::default();
+                let read = plan.read().unwrap();
+                let decoded = if output == "copy" {
+                    Some(ClipboardImage::decode(&read.bytes, (image.width, image.height)).unwrap())
+                } else {
+                    None
+                };
+                let replacement = export_png(2, 2, 255);
+                std::fs::write(&source, &replacement).unwrap();
+                if change_manifest {
+                    let mut manifest = service
+                        .store
+                        .get::<images::SaveManifest>("local-save-manifest", &image.task_id)
+                        .unwrap()
+                        .unwrap();
+                    manifest.images[0].hash = sha256(&replacement);
+                    service
+                        .store
+                        .put(
+                            "local-save-manifest",
+                            &image.task_id,
+                            &image.account_id,
+                            &manifest,
+                        )
+                        .unwrap();
+                }
+                let result = if let Some(pixels) = decoded {
+                    DecodedImageCopy {
+                        plan: read.plan,
+                        pixels,
+                    }
+                    .commit(&mut sink)
+                } else {
+                    read.save(&target)
+                };
+                if change_manifest {
+                    assert_eq!(result.unwrap_err().code, "local_image_corrupt");
+                    assert!(sink.frames.is_empty());
+                    assert!(!target.exists());
+                } else {
+                    result.unwrap();
+                    if output == "copy" {
+                        assert_eq!(sink.frames, vec![(2, 2, vec![0; 16])]);
+                    } else {
+                        assert_eq!(std::fs::read(&target).unwrap(), export_png(2, 2, 0));
+                    }
+                }
+            }
+        }
+    }
+    #[derive(Default)]
+    struct FakeImageClipboard {
+        frames: Vec<(usize, usize, Vec<u8>)>,
+        denied: bool,
+    }
+    impl ImageClipboardSink for FakeImageClipboard {
+        fn set_image(&mut self, image: ClipboardImage) -> Result<()> {
+            if self.denied {
+                return Err(fail("clipboard_unavailable"));
+            }
+            self.frames
+                .push((image.width(), image.height(), image.into_bytes()));
+            Ok(())
+        }
+    }
+    #[test]
+    fn clipboard_copy_uses_bounded_pixels_and_releases_leases_on_success_or_failure() {
+        let (_dir, service, _vault, record, _install) = setup();
+        let image = clipboard_fixture(&service, &record);
+        let mut sink = FakeImageClipboard::default();
+        service
+            .begin_image_export(&image.id)
+            .unwrap()
+            .decode()
+            .unwrap()
+            .commit(&mut sink)
+            .unwrap();
+        assert_eq!(sink.frames, vec![(2, 2, vec![0; 16])]);
+        assert_eq!(service.image_memory_workers.available_permits(), 2);
+        drop(service.begin_maintenance().unwrap());
+        sink.denied = true;
+        assert_eq!(
+            service
+                .begin_image_export(&image.id)
+                .unwrap()
+                .decode()
+                .unwrap()
+                .commit(&mut sink)
+                .unwrap_err()
+                .code,
+            "clipboard_unavailable"
+        );
+        assert_eq!(sink.frames.len(), 1);
+        assert_eq!(service.image_memory_workers.available_permits(), 2);
+        drop(service.begin_maintenance().unwrap());
+        let plan = service.begin_image_export(&image.id).unwrap();
+        std::fs::write(&plan.source, b"invalid synthetic image").unwrap();
+        assert_eq!(plan.decode().err().unwrap().code, "local_image_corrupt");
+        assert_eq!(service.image_memory_workers.available_permits(), 2);
+        drop(service.begin_maintenance().unwrap());
+    }
+    #[test]
+    fn clipboard_copy_late_logout_selection_and_revision_never_reach_sink() {
+        for change in ["logout", "account", "origin", "connection", "revision"] {
+            let (_dir, service, _vault, record, _install) = setup();
+            let image = clipboard_fixture(&service, &record);
+            // Freeze at the IPC entry before queueing the background decode.
+            let plan = service.begin_image_export(&image.id).unwrap();
+            let (decoded_tx, decoded_rx) = std::sync::mpsc::sync_channel(0);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+            let worker = std::thread::spawn(move || {
+                let decoded = plan.decode().unwrap();
+                decoded_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut sink = FakeImageClipboard::default();
+                (decoded.commit(&mut sink), sink)
+            });
+            decoded_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let expected = match change {
+                "logout" => {
+                    service.commit_logout(&record.view.id).unwrap();
+                    "session_expired"
+                }
+                "revision" => {
+                    service
+                        .select_node(
+                            &record.view.id,
+                            record.view.node_id.as_ref().unwrap(),
+                            record.view.revision,
+                        )
+                        .unwrap();
+                    "connection_conflict"
+                }
+                _ => {
+                    let mut other = record.clone();
+                    other.view.id = uuid();
+                    if change == "account" {
+                        other.view.account_id = "another-account".into();
+                    } else if change == "origin" {
+                        other.view.panel_origin = "https://other-panel.example.test".into();
+                        other.installation_id = uuid();
+                    }
+                    let mut cache = service.account_cache(&record).unwrap();
+                    cache.account.id = other.view.account_id.clone();
+                    service
+                        .store
+                        .put("connection", &other.view.id, &other.view.account_id, &other)
+                        .unwrap();
+                    service
+                        .store
+                        .put(
+                            "account-cache",
+                            &other.view.id,
+                            &other.view.account_id,
+                            &cache,
+                        )
+                        .unwrap();
+                    service
+                        .store
+                        .set_meta(
+                            &authorization_epoch_reference(
+                                &other.view.panel_origin,
+                                &other.installation_id,
+                                &other.view.account_id,
+                            ),
+                            &other.authorization_epoch.to_string(),
+                        )
+                        .unwrap();
+                    service.select_connection(&other.view.id).unwrap();
+                    "connection_conflict"
+                }
+            };
+            release_tx.send(()).unwrap();
+            let (result, sink) = worker.join().unwrap();
+            assert_eq!(result.unwrap_err().code, expected, "{change}");
+            assert!(sink.frames.is_empty(), "{change}");
+            assert_eq!(service.image_memory_workers.available_permits(), 2);
+        }
+    }
+    #[test]
+    fn clipboard_copy_rechecks_epoch_expiry_forget_and_history_after_decode() {
+        for change in ["epoch", "reauthorized", "expired", "forgetting", "deleted"] {
+            let (_dir, service, _vault, mut record, _install) = setup();
+            let image = clipboard_fixture(&service, &record);
+            let decoded = service
+                .begin_image_export(&image.id)
+                .unwrap()
+                .decode()
+                .unwrap();
+            let expected = if change == "deleted" {
+                assert_eq!(
+                    service.delete_history(&[image.id.clone()], true).unwrap(),
+                    1
+                );
+                "local_image_missing"
+            } else {
+                let _gate = service.account_gate.lock().unwrap();
+                match change {
+                    "epoch" | "reauthorized" => {
+                        let next = service.advance_authorization_epoch(&record).unwrap();
+                        if change == "reauthorized" {
+                            record.authorization_epoch = next;
+                            service
+                                .store
+                                .put(
+                                    "connection",
+                                    &record.view.id,
+                                    &record.view.account_id,
+                                    &record,
+                                )
+                                .unwrap();
+                        }
+                        "connection_conflict"
+                    }
+                    "expired" => {
+                        record.session_expires_at = Some(chrono::Utc::now().timestamp() - 1);
+                        service
+                            .store
+                            .put(
+                                "connection",
+                                &record.view.id,
+                                &record.view.account_id,
+                                &record,
+                            )
+                            .unwrap();
+                        "session_expired"
+                    }
+                    "forgetting" => {
+                        service
+                            .store
+                            .set_meta(
+                                &format!("installation_forgetting/{}", record.installation_id),
+                                "1",
+                            )
+                            .unwrap();
+                        "installation_forgetting"
+                    }
+                    _ => unreachable!(),
+                }
+            };
+            let mut sink = FakeImageClipboard::default();
+            assert_eq!(
+                decoded.commit(&mut sink).unwrap_err().code,
+                expected,
+                "{change}"
+            );
+            assert!(sink.frames.is_empty(), "{change}");
+        }
+    }
+    #[test]
+    fn clipboard_copy_and_update_maintenance_exclude_each_other() {
+        let (_dir, service, _vault, record, _install) = setup();
+        let image = clipboard_fixture(&service, &record);
+        let plan = service.begin_image_export(&image.id).unwrap();
+        assert_eq!(
+            service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        let decoded = plan.decode().unwrap();
+        assert_eq!(
+            service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        let mut sink = FakeImageClipboard::default();
+        decoded.commit(&mut sink).unwrap();
+        let maintenance = service.begin_maintenance().unwrap();
+        assert_eq!(
+            service.begin_image_export(&image.id).err().unwrap().code,
+            "update_busy"
+        );
+        assert_eq!(sink.frames.len(), 1);
+        drop(maintenance);
+        // Also fail closed if a maintenance gate is discovered at the final
+        // commit (e.g. a persistent storage gate changed by recovery).
+        let decoded = service
+            .begin_image_export(&image.id)
+            .unwrap()
+            .decode()
+            .unwrap();
+        {
+            let _gate = service.account_gate.lock().unwrap();
+            service.maintenance_active.store(true, Ordering::SeqCst);
+        }
+        assert_eq!(decoded.commit(&mut sink).unwrap_err().code, "update_busy");
+        assert_eq!(sink.frames.len(), 1);
+        service.maintenance_active.store(false, Ordering::SeqCst);
+        drop(service.begin_maintenance().unwrap());
+    }
+    #[test]
+    fn clipboard_copy_final_write_is_serialized_with_logout() {
+        struct BlockingSink {
+            entered: std::sync::mpsc::SyncSender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+            sink: FakeImageClipboard,
+        }
+        impl ImageClipboardSink for BlockingSink {
+            fn set_image(&mut self, image: ClipboardImage) -> Result<()> {
+                self.entered.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+                self.sink.set_image(image)
+            }
+        }
+        let (_dir, service, _vault, record, _install) = setup();
+        let image = clipboard_fixture(&service, &record);
+        let decoded = service
+            .begin_image_export(&image.id)
+            .unwrap()
+            .decode()
+            .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let copying = std::thread::spawn(move || {
+            let mut sink = BlockingSink {
+                entered: entered_tx,
+                release: release_rx,
+                sink: FakeImageClipboard::default(),
+            };
+            decoded.commit(&mut sink).unwrap();
+            sink.sink
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
+        let logging_out = service.clone();
+        let connection_id = record.view.id.clone();
+        let logout = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            logging_out.commit_logout(&connection_id).unwrap();
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Do not await logout from inside the sink: release its gate first.
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(copying.join().unwrap().frames.len(), 1);
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        logout.join().unwrap();
+        assert_eq!(
+            service.record(&record.view.id).unwrap().session_status,
+            "logged_out"
+        );
+    }
     struct DenyDeleteVault {
         base: Arc<FakeVault>,
         deny: std::sync::atomic::AtomicBool,
@@ -4385,7 +5239,7 @@ mod tests {
                 && view.image_history.is_empty()
                 && view.session.account.is_none()
         );
-        assert!(service.image_for_native_export(&image.id).is_err());
+        assert!(service.begin_image_export(&image.id).is_err());
         assert!(service.read_preview_asset("/../../orbit.sqlite3").is_err());
     }
     #[test]
