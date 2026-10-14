@@ -34,6 +34,12 @@
 
 平台验证必须在 Windows 11 25H2 x64 和 macOS 15+ Apple Silicon 上分别记录编译、运行、配置、系统安全存储、拖放/文件/复制、两个真实桌面应用的模型选择、流式/工具/辅助模型和错误流程。CLI、跨编译、浏览器、Ubuntu或 fake vault 都不能替代这些验收。
 
+## 尚待完成的实现
+
+2026-10-14 对完整需求的补充审计发现，下列缺口仍有项目内代码工作，不能仅列为环境验收：managed policy 的实际来源采集尚未实现，检测保持 `unknown`，自动配置因此受阻；客户端载入/连接证据目前没有生产采集入口；尚无供两个 Desktop 使用的主/辅助模型、流式、工具和错误场景 fake gateway；更新替换后的 journal、启动校验及应用/数据库回退尚未闭环。Claude profile envelope 与 `_meta.json` 仍缺获准的合成导出资料，自动 library 写入继续关闭。
+
+锁定 Tauri CLI 的实际合成签名与同一 Rust verifier 的版本绑定验证也待补齐。合成密钥只能用于项目测试，不能进入候选 release trust；相关测试不等于正式证书、真实安装或更新验收。
+
 前一源码阶段证据为 `.cache/evidence/frontend-final-check.log`、`ui-final-e2e.log`（23 unit / 15 browser）；首次账户缓存缺失专项另存 `frontend-cache-recovery-check.log`。深色创作与历史截图均有独立文件。Rust 证据为 `runtime/logs/native-core-tests.log`、`native-tauri-check.log`、`native-tauri-system-check.log`（57 core / 1 helper）；本次候选阶段没有修改 Rust/应用 TS 源码。最终源码 SHA 与收尾检查绑定记录保存在未跟踪任务记录和项目证据目录。Panel 整合证据为其任务 worktree `storage/framework/testing/orbit-integration-evidence/summary.json`、`six-groups.json`、`quality.json`、`mysql-direct.log` 与 JUnit/events；旧 `orbit-evidence/` 保留。日志与缓存不入 Git。
 
 2026-10-14 Mac 候选证据：`runtime/logs/macos-candidate-build-20261014.log` 首次 release、`macos-first-bundle-build-20261014.log` 首次 `.app`、`macos-verified-bundle-build-20261014.log` 含完整包/ZIP 回读的重建、`macos-candidate-evidence-tests-20261014.log` 的6/6专项，以及 `candidate-manifest.json`。最终提交后再次构建，完整 SHA 以最后 manifest 的 `source_head` 为准；归档为 `runtime/candidates/Orivelle-Orbit-0.1.0-macos-arm64-candidate.zip`。没有启动 helper/GUI、访问真实 vault、修改真实客户端或运行付费请求。
