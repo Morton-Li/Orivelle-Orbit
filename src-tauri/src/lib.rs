@@ -52,6 +52,19 @@ pub fn run() {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/gui")
             };
             let instance = orbit_core::runtime_lock::RuntimeLock::acquire(&root)?;
+            let executable =
+                std::env::current_exe().map_err(|_| fail("update_recovery_invalid"))?;
+            let bundle = executable
+                .ancestors()
+                .find(|p| p.extension().is_some_and(|e| e == "app"));
+            match orbit_core::update_recovery::boot(&root, bundle, env!("CARGO_PKG_VERSION"))? {
+                orbit_core::update_recovery::BootDisposition::Ready => {}
+                orbit_core::update_recovery::BootDisposition::RestartRequired => {
+                    // Recovery closed all DB handles and restored the old bundle.
+                    // Do not expose a Service from this already mapped new binary.
+                    return Err(fail("update_restart_required").into());
+                }
+            }
             let store = Arc::new(Store::open(&root)?);
             let paths = if authorized {
                 let home = app
@@ -87,9 +100,6 @@ pub fn run() {
                 Arc::new(DeniedVault)
             };
             let service = Service::new(store, vault, paths)?;
-            {
-                let _lock = orbit_core::updates::exclusive_helper_lock(&root)?;
-            }
             let handle = app.handle().clone();
             service.observe(Arc::new(move |state| {
                 let _ = handle.emit("orbit://state", state);
