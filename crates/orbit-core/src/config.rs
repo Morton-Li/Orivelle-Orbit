@@ -61,6 +61,8 @@ pub struct Journal {
     pub target_version: Option<String>,
     #[serde(default)]
     pub target_bundle_id: Option<String>,
+    #[serde(default)]
+    pub target_policy_revision: Option<String>,
     pub nonce: String,
     #[serde(default)]
     pub ciphertext: String,
@@ -77,6 +79,7 @@ pub struct ConfigEngine<'a> {
     pub store: &'a Store,
     pub vault: &'a dyn Vault,
     pub allowed_roots: Vec<PathBuf>,
+    pub(crate) policy_guard: Option<&'a dyn Fn() -> Result<()>>,
 }
 pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {
     let metadata = match fs::symlink_metadata(path) {
@@ -122,6 +125,15 @@ fn equal_current(file: &FileChange, expected: &Option<Vec<u8>>) -> Result<bool> 
     Ok(read_file(Path::new(&file.path))? == *expected)
 }
 impl ConfigEngine<'_> {
+    fn check_policy(&self) -> Result<()> {
+        if let Some(guard) = self.policy_guard {
+            return guard();
+        }
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        Err(fail("managed_policy_unverified"))
+    }
     fn validate_path(&self, path: &Path) -> Result<()> {
         if !path.is_absolute() {
             return Err(fail("invalid_path"));
@@ -161,10 +173,24 @@ impl ConfigEngine<'_> {
         Ok(file)
     }
     fn cipher(&self, installation: &Installation) -> Result<XChaCha20Poly1305> {
+        self.check_policy()?;
         let key = self.vault.get(&installation.backup_reference)?;
         XChaCha20Poly1305::new_from_slice(&key).map_err(|_| fail("vault_unavailable"))
     }
     fn aad(journal: &Journal) -> String {
+        if let Some(revision) = &journal.target_policy_revision {
+            return format!(
+                "orbit-config-v3\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                journal.id,
+                journal.installation.origin,
+                journal.installation.id,
+                journal.client.as_str(),
+                journal.account_id,
+                journal.target_version.as_deref().unwrap_or(""),
+                journal.target_bundle_id.as_deref().unwrap_or(""),
+                revision
+            );
+        }
         format!(
             "orbit-config-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             journal.id,
@@ -208,6 +234,7 @@ impl ConfigEngine<'_> {
         enable_binding: Option<String>,
         disable_bindings: Vec<String>,
     ) -> Result<Journal> {
+        self.check_policy()?;
         if files.is_empty() || files.len() > 8 {
             return Err(fail("invalid_configuration"));
         }
@@ -232,6 +259,7 @@ impl ConfigEngine<'_> {
             paths: files.iter().map(|f| f.path.clone()).collect(),
             target_version: None,
             target_bundle_id: None,
+            target_policy_revision: None,
             nonce: URL_SAFE_NO_PAD.encode(nonce),
             ciphertext: String::new(),
         };
@@ -280,6 +308,7 @@ impl ConfigEngine<'_> {
                 )
                 .map_err(|_| fail("backup_invalid"))?,
         );
+        self.check_policy()?;
         self.store
             .put("journal", &journal.id, &journal.account_id, journal)?;
         Ok(())
@@ -295,7 +324,20 @@ impl ConfigEngine<'_> {
         journal.target_bundle_id = bundle_id;
         self.persist_operation(journal, &operation)
     }
+    pub(crate) fn freeze_policy(&self, journal: &mut Journal, revision: &str) -> Result<()> {
+        if revision.len() != 64
+            || !revision
+                .bytes()
+                .all(|v| v.is_ascii_hexdigit() && !v.is_ascii_uppercase())
+        {
+            return Err(fail("managed_policy_unverified"));
+        }
+        let operation = self.decrypt(journal)?;
+        journal.target_policy_revision = Some(revision.into());
+        self.persist_operation(journal, &operation)
+    }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        self.check_policy()?;
         if let Some(id) = &operation.source_journal_id {
             let source = self
                 .store
@@ -333,6 +375,7 @@ impl ConfigEngine<'_> {
                 (Some(a), None) | (None, Some(a)) => Some(a),
                 (None, None) => None,
             };
+            self.check_policy()?;
             if current.enabled
                 && crate::identity::bound_helper_token(
                     &current,
@@ -363,9 +406,11 @@ impl ConfigEngine<'_> {
             }
         }
         journal.phase = "publishing".into();
+        self.check_policy()?;
         self.store
             .put("journal", &journal.id, &journal.account_id, journal)?;
         for file in &operation.files {
+            self.check_policy()?;
             if equal_current(file, &file.after)? {
                 continue;
             }
@@ -375,6 +420,7 @@ impl ConfigEngine<'_> {
                     .put("journal", &journal.id, &journal.account_id, journal)?;
                 return Err(fail("configuration_conflict"));
             }
+            self.check_policy()?;
             match &file.after {
                 Some(bytes) => atomic_write(Path::new(&file.path), bytes)?,
                 None => {
@@ -390,30 +436,36 @@ impl ConfigEngine<'_> {
         for id in &operation.disable_bindings {
             if let Some(mut b) = self.store.get::<HelperBinding>("binding", id)? {
                 b.enabled = false;
+                self.check_policy()?;
                 self.store.put("binding", id, &b.account_id, &b)?;
             }
         }
         if operation.grants_after.is_empty() {
             if let Some(id) = &operation.enable_binding {
+                self.check_policy()?;
                 let mut b = self
                     .store
                     .get::<HelperBinding>("binding", id)?
                     .ok_or_else(|| fail("binding_disabled"))?;
                 b.enabled = true;
+                self.check_policy()?;
                 self.store.put("binding", id, &b.account_id, &b)?;
             }
         }
         for grant in grants {
+            self.check_policy()?;
             self.store
                 .put("binding", &grant.id, &grant.account_id, &grant)?;
         }
         journal.phase = "committed".into();
+        self.check_policy()?;
         self.store
             .commit_configuration(journal, operation.source_journal_id.as_deref())?;
         self.prune_backups_locked(journal.client)?;
         Ok(())
     }
     pub fn apply(&self, id: &str) -> Result<Journal> {
+        self.check_policy()?;
         let mut journal = self
             .store
             .get::<Journal>("journal", id)?
@@ -432,6 +484,7 @@ impl ConfigEngine<'_> {
         Ok(journal)
     }
     pub fn recover(&self, id: &str) -> Result<Journal> {
+        self.check_policy()?;
         let mut journal = self
             .store
             .get::<Journal>("journal", id)?
@@ -447,6 +500,7 @@ impl ConfigEngine<'_> {
                     return Err(fail("configuration_conflict"));
                 }
             }
+            self.check_policy()?;
             self.store
                 .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
             return Ok(journal);
@@ -459,6 +513,7 @@ impl ConfigEngine<'_> {
         Ok(journal)
     }
     pub fn prepare_restore(&self, id: &str) -> Result<Journal> {
+        self.check_policy()?;
         let journal =
             self.store
                 .get::<Journal>("backup", id)?
@@ -748,6 +803,108 @@ mod tests {
     use super::*;
     use crate::vault::FakeVault;
     #[test]
+    fn legacy_backup_requires_new_guarded_preview_but_can_restore_exact_original_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("owned")).unwrap();
+        let vault = FakeVault::default();
+        let install = Installation::create("https://panel.test", &vault).unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"original").unwrap();
+        let legacy = ConfigEngine {
+            store: &store,
+            vault: &vault,
+            allowed_roots: vec![dir.path().to_path_buf()],
+            policy_guard: None,
+        };
+        let journal = legacy
+            .prepare(
+                ClientKind::Codex,
+                "synthetic",
+                &install,
+                vec![FileChange {
+                    path: path.display().to_string(),
+                    before: Some(b"original".to_vec()),
+                    after: Some(b"changed".to_vec()),
+                }],
+                None,
+                vec![],
+            )
+            .unwrap();
+        assert!(journal.target_policy_revision.is_none());
+        legacy.apply(&journal.id).unwrap();
+        let clear = || Ok(());
+        let current = ConfigEngine {
+            store: &store,
+            vault: &vault,
+            allowed_roots: vec![dir.path().to_path_buf()],
+            policy_guard: Some(&clear),
+        };
+        let mut restore = current.prepare_restore(&journal.id).unwrap();
+        current
+            .freeze_policy(&mut restore, &"a".repeat(64))
+            .unwrap();
+        assert_eq!(
+            restore.target_policy_revision.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+        current.apply(&restore.id).unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"original");
+    }
+    #[test]
+    fn policy_and_identity_metadata_are_authenticated_and_v3_cannot_downgrade_to_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("owned")).unwrap();
+        let vault = FakeVault::default();
+        let install = Installation::create("https://panel.test", &vault).unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"original").unwrap();
+        let guard = || Ok(());
+        let engine = ConfigEngine {
+            store: &store,
+            vault: &vault,
+            allowed_roots: vec![dir.path().to_path_buf()],
+            policy_guard: Some(&guard),
+        };
+        let mut journal = engine
+            .prepare(
+                ClientKind::Codex,
+                "synthetic",
+                &install,
+                vec![FileChange {
+                    path: path.display().to_string(),
+                    before: Some(b"original".to_vec()),
+                    after: Some(b"changed".to_vec()),
+                }],
+                None,
+                vec![],
+            )
+            .unwrap();
+        engine
+            .freeze_target(
+                &mut journal,
+                Some("synthetic-version".into()),
+                Some("synthetic.bundle".into()),
+            )
+            .unwrap();
+        engine.freeze_policy(&mut journal, &"a".repeat(64)).unwrap();
+        assert!(engine.decrypt(&journal).is_ok());
+        for field in ["policy", "downgrade", "version", "bundle"] {
+            let mut changed = journal.clone();
+            match field {
+                "policy" => changed.target_policy_revision = Some("b".repeat(64)),
+                "downgrade" => changed.target_policy_revision = None,
+                "version" => changed.target_version = Some("other".into()),
+                "bundle" => changed.target_bundle_id = Some("other".into()),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                engine.decrypt(&changed).err().unwrap().code,
+                "backup_invalid"
+            );
+        }
+        assert_eq!(fs::read(path).unwrap(), b"original");
+    }
+    #[test]
     fn encrypted_multi_file_recovery_stops_on_external_modification() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("owned")).unwrap();
@@ -761,6 +918,7 @@ mod tests {
             store: &store,
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
+            policy_guard: None,
         };
         let j = engine
             .prepare(
@@ -834,6 +992,7 @@ mod tests {
             store: &store,
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
+            policy_guard: None,
         };
         let j = engine
             .prepare(
@@ -919,6 +1078,7 @@ mod tests {
                 store: &store,
                 vault: &vault,
                 allowed_roots: vec![dir.path().to_path_buf()],
+                policy_guard: None,
             };
             let applied = engine
                 .prepare(
@@ -977,6 +1137,7 @@ mod tests {
             store: &store,
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
+            policy_guard: None,
         };
         let preview = engine
             .prepare(
