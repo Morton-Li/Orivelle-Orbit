@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
+import { connect } from "node:net";
 import test from "node:test";
 import { createDesktopFakeGateway } from "../../scripts/desktop-fake-gateway.mjs";
 
@@ -21,16 +22,18 @@ async function gateway(options, action) {
     assert.equal(server.snapshot().active_requests, 0);
     assert.equal(server.snapshot().active_timers, 0);
     assert.equal(server.snapshot().open_sockets, 0);
+    assert.equal(server.snapshot().live_socket_promises, 0);
   }
 }
 function send(
   server,
   route,
   body,
-  { token = server.fixtureToken, headers = {} } = {},
+  { token = server.fixtureToken, headers = {}, rawBody } = {},
 ) {
   const bytes =
-    body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    rawBody ??
+    (body === undefined ? undefined : Buffer.from(JSON.stringify(body)));
   return new Promise((resolve, reject) => {
     const request = httpRequest(
       server.origin + route,
@@ -213,7 +216,7 @@ for (const protocol of ["responses", "messages"]) {
     async () => {
       await gateway({ protocol }, async (server) => {
         await gateway({ protocol }, async (other) => {
-          assert.notEqual(server.fixtureToken, other.fixtureToken);
+          assert.equal(server.fixtureToken !== other.fixtureToken, true);
           const privatePrompt = "PRIVATE_PROMPT_SENTINEL";
           const bad = await send(
             server,
@@ -278,6 +281,13 @@ for (const protocol of ["responses", "messages"]) {
             1,
           );
           assert.equal(entries.at(-1).data.response.model, aux);
+          for (const entry of entries.filter((entry) =>
+            [
+              "response.output_text.delta",
+              "response.output_text.done",
+            ].includes(entry.name),
+          ))
+            assert.deepEqual(entry.data.logprobs, []);
           assert.deepEqual(
             entries.map((entry) => entry.data.sequence_number),
             entries.map((_, index) => index),
@@ -439,3 +449,188 @@ test("factory rejects mutable/external scope and increased resource budgets befo
       /fixture_invalid/,
     );
 });
+
+async function until(predicate) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("fixture_condition_timeout");
+}
+for (const protocol of ["responses", "messages"]) {
+  test(
+    protocol +
+      " rejects incomplete, foreign, reordered and role-invalid tool history without consuming the real calls",
+    { timeout: 5_000 },
+    async () => {
+      await gateway(
+        { protocol, scenario: "parallel-tools" },
+        async (server) => {
+          const first = JSON.parse(
+            (
+              await send(server, "/v1/" + protocol, {
+                ...bodyFor(protocol),
+                tools: toolsFor(protocol),
+              })
+            ).text,
+          );
+          const valid = continuation(protocol, main, first, false);
+          const variants = [];
+          if (protocol === "responses") {
+            const noHistory = structuredClone(valid);
+            delete noHistory.previous_response_id;
+            noHistory.input = noHistory.input.filter(
+              (item) => item.type === "function_call_output",
+            );
+            variants.push(noHistory);
+            const wrongPrevious = structuredClone(valid);
+            wrongPrevious.previous_response_id = "resp_fixture_foreign";
+            variants.push(wrongPrevious);
+            const reordered = structuredClone(valid);
+            reordered.input.reverse();
+            variants.push(reordered);
+            const badName = structuredClone(valid);
+            badName.input[0].name = "unapproved_tool";
+            variants.push(badName);
+            const missing = structuredClone(valid);
+            missing.input.pop();
+            variants.push(missing);
+            const foreign = structuredClone(valid);
+            foreign.input.at(-1).call_id = "call_fixture_foreign";
+            variants.push(foreign);
+          } else {
+            const badAssistant = structuredClone(valid);
+            badAssistant.messages[0].role = "user";
+            variants.push(badAssistant);
+            const badUser = structuredClone(valid);
+            badUser.messages[1].role = "assistant";
+            variants.push(badUser);
+            const reordered = structuredClone(valid);
+            reordered.messages.reverse();
+            variants.push(reordered);
+            const noHistory = structuredClone(valid);
+            noHistory.messages.shift();
+            variants.push(noHistory);
+            const missing = structuredClone(valid);
+            missing.messages[1].content.pop();
+            variants.push(missing);
+            const foreign = structuredClone(valid);
+            foreign.messages[1].content[0].tool_use_id = "call_fixture_foreign";
+            variants.push(foreign);
+          }
+          for (const variant of variants) {
+            assert.equal(
+              (await send(server, "/v1/" + protocol, variant)).status,
+              409,
+            );
+            assert.equal(server.snapshot().pending_tool_roles, 1);
+          }
+          const last = structuredClone(valid);
+          if (protocol === "responses")
+            last.input = last.input.filter(
+              (item) => item.type === "function_call_output",
+            );
+          assert.equal(
+            (await send(server, "/v1/" + protocol, last)).status,
+            200,
+          );
+          const state = server.snapshot();
+          assert.equal(state.pending_tool_roles, 0);
+          assert.equal(state.request_count, 8);
+          assert.ok(
+            state.records
+              .slice(1, 7)
+              .every(
+                (row) => row.status === 409 && row.success_terminal_count === 0,
+              ),
+          );
+        },
+      );
+    },
+  );
+  test(
+    protocol +
+      " JSON response budget failure releases only undelivered tool state",
+    { timeout: 5_000 },
+    async () => {
+      await gateway(
+        {
+          protocol,
+          scenario: "single-tool",
+          limits: { maxResponseBytes: 256 },
+        },
+        async (server) => {
+          for (let index = 0; index < 2; index++) {
+            const result = await send(server, "/v1/" + protocol, {
+              ...bodyFor(protocol),
+              tools: toolsFor(protocol),
+            });
+            assert.equal(result.status, 500);
+            assert.ok(Buffer.byteLength(result.text) <= 256);
+            assert.equal(server.snapshot().pending_tool_roles, 0);
+          }
+          const state = server.snapshot();
+          assert.equal(state.request_count, 2);
+          assert.ok(
+            state.records.every(
+              (row) =>
+                row.outcome === "fixture_response_limit" &&
+                row.success_terminal_count === 0,
+            ),
+          );
+        },
+      );
+    },
+  );
+  test(
+    protocol +
+      " rejects malformed UTF-8 rather than silently replacing request bytes",
+    { timeout: 5_000 },
+    async () => {
+      await gateway({ protocol }, async (server) => {
+        const rawBody = Buffer.concat([
+          Buffer.from('{"model":"'),
+          Buffer.from([0xc3]),
+          Buffer.from('"}'),
+        ]);
+        assert.equal(
+          (await send(server, "/v1/" + protocol, {}, { rawBody })).status,
+          400,
+        );
+        assert.equal(server.snapshot().request_count, 1);
+        assert.equal(server.snapshot().records[0].success_terminal_count, 0);
+      });
+    },
+  );
+}
+test(
+  "empty and malformed socket churn cannot retain promises or exceed the cumulative connection budget",
+  { timeout: 5_000 },
+  async () => {
+    await gateway({ limits: { maxRequests: 6 } }, async (server) => {
+      const address = new URL(server.origin);
+      for (let index = 0; index < 6; index++) {
+        await new Promise((resolve, reject) => {
+          const socket = connect(
+            { host: "127.0.0.1", port: Number(address.port) },
+            () => {
+              socket.end(index % 2 === 0 ? undefined : "INVALID HTTP\r\n\r\n");
+            },
+          );
+          socket.once("error", reject);
+          socket.once("close", resolve);
+        });
+        await until(() => server.snapshot().live_socket_promises === 0);
+      }
+      await until(() => server.snapshot().closed_reason !== null);
+      const state = server.snapshot();
+      assert.equal(state.accepted_connections, 6);
+      assert.equal(state.request_count, 0);
+      assert.equal(state.active_timers, 0);
+      assert.equal(state.open_sockets, 0);
+      assert.equal(state.live_socket_promises, 0);
+      assert.ok(state.parser_rejected > 0);
+      await assert.rejects(send(server, "/v1/models"));
+    });
+  },
+);

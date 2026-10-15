@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { isDeepStrictEqual } from "node:util";
 
 // This module never forwards a request, executes a tool or contacts an upstream.
 // Its HTTP loopback evidence is not Desktop configuration or HTTPS acceptance.
@@ -232,12 +233,14 @@ function responseEvents(response) {
         output_index: 0,
         content_index: 0,
         delta: part.text,
+        logprobs: [],
       }),
       event("response.output_text.done", {
         item_id: item.id,
         output_index: 0,
         content_index: 0,
         text: part.text,
+        logprobs: [],
       }),
       event("response.content_part.done", {
         item_id: item.id,
@@ -345,6 +348,7 @@ function resultsFor(protocol, body) {
 function validateContinuation(protocol, body, pending, results) {
   if (
     !pending ||
+    !pending.ready ||
     results.length !== pending.calls.length ||
     new Set(results.map((result) => result.id)).size !== results.length ||
     results.some(
@@ -362,40 +366,60 @@ function validateContinuation(protocol, body, pending, results) {
       (item) => item?.type === "function_call",
     );
     if (
-      replayed.length &&
-      (replayed.length !== pending.calls.length ||
-        new Set(replayed.map((item) => item.call_id)).size !==
-          replayed.length ||
-        replayed.some(
-          (item) =>
-            !pending.calls.some(
-              (call) =>
-                call.id === item.call_id &&
-                call.name === item.name &&
-                call.arguments === item.arguments,
-            ),
-        ))
+      (body.previous_response_id === undefined && replayed.length === 0) ||
+      (replayed.length > 0 &&
+        (replayed.length !== pending.calls.length ||
+          new Set(replayed.map((item) => item.call_id)).size !==
+            replayed.length ||
+          replayed.some(
+            (item) =>
+              !pending.calls.some(
+                (call) =>
+                  call.id === item.call_id &&
+                  call.name === item.name &&
+                  call.arguments === item.arguments &&
+                  body.input.indexOf(item) <
+                    body.input.findIndex(
+                      (candidate) =>
+                        candidate?.type === "function_call_output" &&
+                        candidate.call_id === call.id,
+                    ),
+              ),
+          )))
     )
       throw fault("fixture_tool_state_conflict");
   } else {
-    const replayed = body.messages.flatMap((message) =>
-      (Array.isArray(message?.content) ? message.content : []).filter(
+    const turns = body.messages.map((message, index) => ({
+      message,
+      index,
+      calls: (Array.isArray(message?.content) ? message.content : []).filter(
         (block) => block?.type === "tool_use",
       ),
-    );
+      results: (Array.isArray(message?.content) ? message.content : []).filter(
+        (block) => block?.type === "tool_result",
+      ),
+    }));
+    const callTurns = turns.filter((turn) => turn.calls.length > 0);
+    const resultTurns = turns.filter((turn) => turn.results.length > 0);
+    const replayed = callTurns.flatMap((turn) => turn.calls);
     if (
-      replayed.length &&
-      (replayed.length !== pending.calls.length ||
-        new Set(replayed.map((block) => block.id)).size !== replayed.length ||
-        replayed.some(
-          (block) =>
-            !pending.calls.some(
-              (call) =>
-                call.id === block.id &&
-                call.name === block.name &&
-                JSON.stringify(block.input) === call.arguments,
-            ),
-        ))
+      callTurns.length !== 1 ||
+      resultTurns.length !== 1 ||
+      callTurns[0].message.role !== "assistant" ||
+      resultTurns[0].message.role !== "user" ||
+      callTurns[0].index >= resultTurns[0].index ||
+      resultTurns[0].index !== body.messages.length - 1 ||
+      replayed.length !== pending.calls.length ||
+      new Set(replayed.map((block) => block.id)).size !== replayed.length ||
+      replayed.some(
+        (block) =>
+          !pending.calls.some(
+            (call) =>
+              call.id === block.id &&
+              call.name === block.name &&
+              isDeepStrictEqual(block.input, JSON.parse(call.arguments)),
+          ),
+      )
     )
       throw fault("fixture_tool_state_conflict");
   }
@@ -431,6 +455,7 @@ export async function createDesktopFakeGateway(options) {
   let closedReason = null;
   let budgetRejected = 0;
   let parserRejected = 0;
+  let acceptedConnections = 0;
   const server = createServer(
     { maxHeaderSize: 16 * 1024 },
     (request, response) => {
@@ -450,14 +475,30 @@ export async function createDesktopFakeGateway(options) {
     socket.on("error", () => {});
     socketClosures.set(
       socket,
-      new Promise((resolve) => socket.once("close", resolve)),
+      new Promise((resolve) => {
+        socket.once("close", () => {
+          sockets.delete(socket);
+          socketClosures.delete(socket);
+          resolve();
+          if (
+            acceptedConnections >= config.limits.maxRequests &&
+            sockets.size === 0
+          )
+            void close("connection_limit");
+        });
+      }),
     );
-    socket.once("close", () => sockets.delete(socket));
-    if (closing) socket.destroy();
+    if (closing || acceptedConnections >= config.limits.maxRequests) {
+      socket.destroy();
+      return;
+    }
+    acceptedConnections++;
+    if (acceptedConnections === config.limits.maxRequests) stopAccepting();
   });
   server.on("clientError", (_, socket) => {
     parserRejected = Math.min(parserRejected + 1, config.limits.maxRequests);
     socket.destroy();
+    if (parserRejected >= config.limits.maxRequests) void close("parser_limit");
   });
   const stopAccepting = () => {
     if (accepting) {
@@ -501,6 +542,9 @@ export async function createDesktopFakeGateway(options) {
       active_requests: requests.size,
       active_timers: requests.size + (ttlTimer === undefined ? 0 : 1),
       open_sockets: sockets.size,
+      live_socket_promises: socketClosures.size,
+      accepted_connections: acceptedConnections,
+      pending_tool_roles: pendingTools.size,
       budget_rejected: budgetRejected,
       parser_rejected: parserRejected,
       closed_reason: closedReason,
@@ -527,6 +571,8 @@ export async function createDesktopFakeGateway(options) {
     records.push(record);
     if (records.length === config.limits.maxRequests) stopAccepting();
     const controller = new AbortController();
+    let issuedPending;
+    let issuedModel;
     const state = { request, response, controller };
     const activeBefore = requests.size;
     requests.set(response, state);
@@ -636,7 +682,11 @@ export async function createDesktopFakeGateway(options) {
       }
       let body;
       try {
-        body = JSON.parse(Buffer.concat(parts).toString("utf8"));
+        body = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(
+            Buffer.concat(parts),
+          ),
+        );
       } catch {
         await reject(400, "fixture_invalid_json");
         return;
@@ -705,7 +755,11 @@ export async function createDesktopFakeGateway(options) {
         config.protocol === "responses"
           ? responseObject(model, output, responseId)
           : messageObject(model, output, responseId);
-      if (calls) pendingTools.set(model.id, { responseId, calls });
+      if (calls) {
+        issuedPending = { responseId, calls, ready: false };
+        issuedModel = model.id;
+        pendingTools.set(model.id, issuedPending);
+      }
       if (!body.stream) {
         await json(200, payload, calls ? "tool_call" : "completed");
       } else {
@@ -727,7 +781,6 @@ export async function createDesktopFakeGateway(options) {
           entries.length > config.limits.maxEvents ||
           total > config.limits.maxResponseBytes
         ) {
-          pendingTools.delete(model.id);
           await reject(500, "fixture_response_limit");
           return;
         }
@@ -766,11 +819,12 @@ export async function createDesktopFakeGateway(options) {
         }
         if (response.destroyed || controller.signal.aborted) {
           record.outcome = "client_cancelled";
-          pendingTools.delete(model.id);
         } else {
-          await ended();
+          if (!(await ended())) record.outcome = "client_cancelled";
         }
       }
+      if (issuedPending && record.outcome === "tool_call")
+        issuedPending.ready = true;
     } catch (error) {
       if (!response.destroyed && !response.headersSent)
         await reject(
@@ -782,6 +836,12 @@ export async function createDesktopFakeGateway(options) {
       else if (record.outcome === "pending")
         record.outcome = "client_cancelled";
     } finally {
+      if (
+        issuedPending &&
+        !issuedPending.ready &&
+        pendingTools.get(issuedModel) === issuedPending
+      )
+        pendingTools.delete(issuedModel);
       clearTimeout(timer);
       requests.delete(response);
       if (record.outcome === "pending") record.outcome = "client_cancelled";
