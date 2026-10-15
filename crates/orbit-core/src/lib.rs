@@ -8,6 +8,7 @@ pub mod helper_artifact;
 pub mod identity;
 pub mod images;
 pub mod network;
+pub(crate) mod policy;
 pub mod runtime_lock;
 pub mod service;
 pub mod store;

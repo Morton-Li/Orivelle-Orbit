@@ -22,6 +22,9 @@ pub struct SystemPaths {
     pub isolated: bool,
     #[cfg(test)]
     pub fixture_clients: Option<Vec<ClientView>>,
+    #[cfg(test)]
+    pub(crate) fixture_policy:
+        Option<std::sync::Arc<dyn Fn(&ClientView) -> crate::policy::Snapshot + Send + Sync>>,
 }
 impl SystemPaths {
     pub fn isolated(root: &Path) -> Result<Self> {
@@ -45,6 +48,8 @@ impl SystemPaths {
             isolated: true,
             #[cfg(test)]
             fixture_clients: None,
+            #[cfg(test)]
+            fixture_policy: None,
         })
     }
     /// Called only by a build with the explicitly authorized system-integration feature.
@@ -73,6 +78,8 @@ impl SystemPaths {
             isolated: false,
             #[cfg(test)]
             fixture_clients: None,
+            #[cfg(test)]
+            fixture_policy: None,
         })
     }
     pub fn ensure_configuration_parent(&self, client: ClientKind) -> Result<()> {
@@ -283,6 +290,9 @@ pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
                 }
             }
         }
+    }
+    for client in &mut clients {
+        crate::policy::observe(paths, client).project(client);
     }
     clients
 }
