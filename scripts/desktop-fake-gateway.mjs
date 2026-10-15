@@ -17,6 +17,13 @@ export const DESKTOP_FAKE_GATEWAY_SCENARIOS = Object.freeze([
   "text",
   "single-tool",
   "parallel-tools",
+  "auth-error",
+  "rate-limit",
+  "upstream-error",
+  "stream-error",
+  "malformed-stream",
+  "disconnect",
+  "stall",
 ]);
 const protocols = new Set(["responses", "messages"]);
 const fixtureUrl = new URL(
@@ -97,19 +104,28 @@ async function loadFixture() {
   return fixture;
 }
 
-function errorBody(protocol, code) {
+function errorBody(protocol, code, status = 400) {
+  const type =
+    status === 401
+      ? "authentication_error"
+      : status === 429
+        ? "rate_limit_error"
+        : status === 529
+          ? "overloaded_error"
+          : status >= 500
+            ? protocol === "messages"
+              ? "api_error"
+              : "server_error"
+            : "invalid_request_error";
   return protocol === "messages"
     ? {
         type: "error",
         error: {
-          type:
-            code === "fixture_authentication_failed"
-              ? "authentication_error"
-              : "invalid_request_error",
+          type,
           message: code,
         },
       }
-    : { error: { type: "invalid_request_error", code, message: code } };
+    : { error: { type, code, message: code } };
 }
 
 function authorized(request, token, protocol) {
@@ -407,8 +423,13 @@ function validateContinuation(protocol, body, pending, results) {
       resultTurns.length !== 1 ||
       callTurns[0].message.role !== "assistant" ||
       resultTurns[0].message.role !== "user" ||
-      callTurns[0].index >= resultTurns[0].index ||
+      callTurns[0].index + 1 !== resultTurns[0].index ||
       resultTurns[0].index !== body.messages.length - 1 ||
+      resultTurns[0].message.content.some((block, index) =>
+        index < pending.calls.length
+          ? block?.type !== "tool_result"
+          : block?.type !== "text" || typeof block.text !== "string",
+      ) ||
       replayed.length !== pending.calls.length ||
       new Set(replayed.map((block) => block.id)).size !== replayed.length ||
       replayed.some(
@@ -456,14 +477,22 @@ export async function createDesktopFakeGateway(options) {
   let budgetRejected = 0;
   let parserRejected = 0;
   let acceptedConnections = 0;
-  const server = createServer(
-    { maxHeaderSize: 16 * 1024 },
-    (request, response) => {
-      const task = handle(request, response);
-      tasks.add(task);
-      void task.finally(() => tasks.delete(task));
-    },
-  );
+  let pipelineRejected = 0;
+  function dispatch(request, response) {
+    const task = handle(request, response);
+    tasks.add(task);
+    void task.finally(() => tasks.delete(task));
+  }
+  const server = createServer({ maxHeaderSize: 16 * 1024 }, dispatch);
+  server.on("checkContinue", dispatch);
+  server.on("checkExpectation", dispatch);
+  server.on("dropRequest", (_, socket) => {
+    pipelineRejected = Math.min(
+      pipelineRejected + 1,
+      config.limits.maxRequests,
+    );
+    socket.destroy();
+  });
   const serverClosed = new Promise((resolve) => server.once("close", resolve));
   server.maxConnections = config.limits.maxRequests;
   server.maxRequestsPerSocket = 1;
@@ -535,11 +564,14 @@ export async function createDesktopFakeGateway(options) {
       run_id: runId,
       protocol: config.protocol,
       scenario: config.scenario,
+      ttl_ms: config.ttlMs,
       real_desktop_verified: false,
       complete_desktop_catalog: false,
       limits: config.limits,
       request_count: records.length,
-      active_requests: requests.size,
+      active_requests: [...requests.values()].filter((state) => state.admitted)
+        .length,
+      pending_responses: requests.size,
       active_timers: requests.size + (ttlTimer === undefined ? 0 : 1),
       open_sockets: sockets.size,
       live_socket_promises: socketClosures.size,
@@ -547,6 +579,7 @@ export async function createDesktopFakeGateway(options) {
       pending_tool_roles: pendingTools.size,
       budget_rejected: budgetRejected,
       parser_rejected: parserRejected,
+      pipeline_rejected: pipelineRejected,
       closed_reason: closedReason,
       records,
     });
@@ -573,9 +606,28 @@ export async function createDesktopFakeGateway(options) {
     const controller = new AbortController();
     let issuedPending;
     let issuedModel;
-    const state = { request, response, controller };
-    const activeBefore = requests.size;
+    const activeBefore = [...requests.values()].filter(
+      (item) => item.admitted,
+    ).length;
+    const state = {
+      request,
+      response,
+      controller,
+      record,
+      admitted: activeBefore < config.limits.maxConcurrent,
+    };
     requests.set(response, state);
+    response.once("close", () => {
+      if (!response.writableFinished) {
+        if (
+          ["pending", "completed", "tool_call", "fixture_stall"].includes(
+            record.outcome,
+          )
+        )
+          record.outcome = "client_cancelled";
+        controller.abort();
+      }
+    });
     const timer = setTimeout(() => {
       record.outcome = "request_timeout";
       controller.abort();
@@ -601,7 +653,7 @@ export async function createDesktopFakeGateway(options) {
         status = 500;
         outcome = "fixture_response_limit";
         bytes = Buffer.from(
-          JSON.stringify(errorBody(config.protocol, outcome)),
+          JSON.stringify(errorBody(config.protocol, outcome, 500)),
         );
         if (bytes.length > config.limits.maxResponseBytes) {
           record.outcome = outcome;
@@ -621,8 +673,78 @@ export async function createDesktopFakeGateway(options) {
       if (!(await ended(bytes))) record.outcome = "client_cancelled";
     };
     const reject = (status, code) =>
-      json(status, errorBody(config.protocol, code), code);
+      json(status, errorBody(config.protocol, code, status), code);
+    const waitForAbort = () =>
+      new Promise((resolve) => {
+        if (controller.signal.aborted) resolve();
+        else
+          controller.signal.addEventListener("abort", resolve, { once: true });
+      });
+    const stream = async (
+      entries,
+      outcome,
+      { malformed = false, stall = false } = {},
+    ) => {
+      const chunks = entries.map((entry, index) =>
+        Buffer.from(
+          "event: " +
+            entry.name +
+            "\ndata: " +
+            (malformed && index === entries.length - 1
+              ? "{not-json"
+              : JSON.stringify(entry.data)) +
+            "\n\n",
+        ),
+      );
+      const total = chunks.reduce((sum, part) => sum + part.length, 0);
+      if (
+        entries.length > config.limits.maxEvents ||
+        total > config.limits.maxResponseBytes
+      ) {
+        await reject(500, "fixture_response_limit");
+        return;
+      }
+      record.status = 200;
+      record.outcome = outcome;
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-store",
+        Connection: "close",
+        "X-Orivelle-Request-ID": record.request_id,
+      });
+      for (const [index, chunk] of chunks.entries()) {
+        if (controller.signal.aborted || response.destroyed) break;
+        if (!response.write(chunk)) {
+          await new Promise((resolve) => {
+            const finish = () => {
+              response.off("drain", finish);
+              response.off("close", finish);
+              controller.signal.removeEventListener("abort", finish);
+              resolve();
+            };
+            response.once("drain", finish);
+            response.once("close", finish);
+            controller.signal.addEventListener("abort", finish, { once: true });
+          });
+        }
+        record.event_count++;
+        record.response_bytes += chunk.length;
+        if (
+          ["response.completed", "message_stop"].includes(entries[index].name)
+        )
+          record.success_terminal_count++;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      if (!controller.signal.aborted && !response.destroyed) {
+        if (stall) await waitForAbort();
+        else if (!(await ended())) record.outcome = "client_cancelled";
+      }
+    };
     try {
+      if (request.headers.expect !== undefined) {
+        await reject(417, "fixture_expectation_not_supported");
+        return;
+      }
       if (activeBefore >= config.limits.maxConcurrent) {
         await reject(429, "fixture_concurrency_limit");
         return;
@@ -632,6 +754,10 @@ export async function createDesktopFakeGateway(options) {
         return;
       }
       if (!authorized(request, token, config.protocol)) {
+        await reject(401, "fixture_authentication_failed");
+        return;
+      }
+      if (config.scenario === "auth-error") {
         await reject(401, "fixture_authentication_failed");
         return;
       }
@@ -714,9 +840,21 @@ export async function createDesktopFakeGateway(options) {
         await json(200, { input_tokens: 1 }, "count_tokens");
         return;
       }
+      if (config.scenario === "rate-limit") {
+        await reject(429, "fixture_rate_limit");
+        return;
+      }
+      if (config.scenario === "upstream-error") {
+        await reject(502, "fixture_upstream_error");
+        return;
+      }
       const results = resultsFor(config.protocol, body);
       const pending = pendingTools.get(model.id);
-      const wantsTools = config.scenario !== "text";
+      const wantsTools =
+        ["single-tool", "parallel-tools"].includes(config.scenario) ||
+        (config.scenario === "stall" &&
+          Array.isArray(body.tools) &&
+          body.tools.length > 0);
       let calls = null;
       if (results.length) {
         if (!wantsTools) throw fault("fixture_tool_state_conflict");
@@ -760,6 +898,81 @@ export async function createDesktopFakeGateway(options) {
         issuedModel = model.id;
         pendingTools.set(model.id, issuedPending);
       }
+      if (
+        ["stream-error", "malformed-stream", "disconnect", "stall"].includes(
+          config.scenario,
+        )
+      ) {
+        if (!body.stream && config.scenario !== "stall") {
+          await reject(400, "fixture_stream_required");
+          return;
+        }
+        if (config.scenario === "stall" && !body.stream) {
+          const prefix = Buffer.from('{"fixture_incomplete":');
+          if (prefix.length > config.limits.maxResponseBytes) {
+            await reject(500, "fixture_response_limit");
+            return;
+          }
+          record.status = 200;
+          record.outcome = "fixture_stall";
+          record.response_bytes = prefix.length;
+          response.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            Connection: "close",
+          });
+          response.write(prefix);
+          await waitForAbort();
+          return;
+        }
+        const full =
+          config.protocol === "responses"
+            ? responseEvents(payload)
+            : messageEvents(payload);
+        let limited = full.filter(
+          (entry) =>
+            !["response.completed", "message_delta", "message_stop"].includes(
+              entry.name,
+            ),
+        );
+        if (config.scenario === "stream-error") {
+          limited = [
+            full[0],
+            config.protocol === "responses"
+              ? event("response.failed", {
+                  sequence_number: 1,
+                  response: {
+                    ...payload,
+                    status: "failed",
+                    output: [],
+                    error: {
+                      code: "server_error",
+                      message: "fixture_stream_error",
+                    },
+                  },
+                })
+              : event("error", {
+                  error: {
+                    type: "overloaded_error",
+                    message: "fixture_stream_error",
+                  },
+                }),
+          ];
+        } else if (config.scenario === "malformed-stream") {
+          limited = [full[0], event("fixture_malformed", {})];
+        } else if (config.scenario === "disconnect") {
+          limited = limited.slice(0, 2);
+        }
+        await stream(
+          limited,
+          "fixture_" + config.scenario.replaceAll("-", "_"),
+          {
+            malformed: config.scenario === "malformed-stream",
+            stall: config.scenario === "stall",
+          },
+        );
+        return;
+      }
       if (!body.stream) {
         await json(200, payload, calls ? "tool_call" : "completed");
       } else {
@@ -767,63 +980,14 @@ export async function createDesktopFakeGateway(options) {
           config.protocol === "responses"
             ? responseEvents(payload)
             : messageEvents(payload);
-        const chunks = entries.map((entry) =>
-          Buffer.from(
-            "event: " +
-              entry.name +
-              "\ndata: " +
-              JSON.stringify(entry.data) +
-              "\n\n",
-          ),
-        );
-        const total = chunks.reduce((sum, part) => sum + part.length, 0);
-        if (
-          entries.length > config.limits.maxEvents ||
-          total > config.limits.maxResponseBytes
-        ) {
-          await reject(500, "fixture_response_limit");
-          return;
-        }
-        record.status = 200;
-        record.outcome = calls ? "tool_call" : "completed";
-        response.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-store",
-          Connection: "close",
-          "X-Orivelle-Request-ID": record.request_id,
-        });
-        for (const [index, chunk] of chunks.entries()) {
-          if (controller.signal.aborted || response.destroyed) break;
-          if (!response.write(chunk)) {
-            await new Promise((resolve) => {
-              const finish = () => {
-                response.off("drain", finish);
-                response.off("close", finish);
-                controller.signal.removeEventListener("abort", finish);
-                resolve();
-              };
-              response.once("drain", finish);
-              response.once("close", finish);
-              controller.signal.addEventListener("abort", finish, {
-                once: true,
-              });
-            });
-          }
-          record.event_count++;
-          record.response_bytes += chunk.length;
-          if (
-            ["response.completed", "message_stop"].includes(entries[index].name)
-          )
-            record.success_terminal_count++;
-          await new Promise((resolve) => setImmediate(resolve));
-        }
-        if (response.destroyed || controller.signal.aborted) {
-          record.outcome = "client_cancelled";
-        } else {
-          if (!(await ended())) record.outcome = "client_cancelled";
-        }
+        await stream(entries, calls ? "tool_call" : "completed");
       }
-      if (issuedPending && record.outcome === "tool_call")
+      if (
+        issuedPending &&
+        record.outcome === "tool_call" &&
+        response.writableFinished &&
+        !controller.signal.aborted
+      )
         issuedPending.ready = true;
     } catch (error) {
       if (!response.destroyed && !response.headersSent)
