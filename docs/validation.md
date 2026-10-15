@@ -15,6 +15,7 @@
 | 层级 | 当前证据 | 未覆盖 |
 | --- | --- | --- |
 | 前端语义 | format、零 warning lint、typecheck、27/27 单元测试、生产 build 与排除测试 fixture 检查通过；包括参考价来源/缺失语义、同账户正常刷新保留草稿、首次账户缓存缺失后的只读恢复、策略变化及原生拒绝后旧配置确认持续失效 | 真实 IPC 和目标客户端 |
+| Desktop 协议 fixture | 项目内 Responses/Messages 网关 61/61；主/辅助模型、单/并行工具续轮、JSON/SSE、故障与资源预算；连同既有打包专项共 71/71 Node 测试通过，无跳过 | 真实 Desktop 的内置工具适配、实际请求/重试行为、HTTPS、模型菜单、载入与连接证据 |
 | 浏览器界面 | Chrome 隔离 profile 15/15 通过；深浅色、390/1280/1600 宽度、键盘、弹窗焦点、无重发、单图删除、旧确认失效、授权拒绝/取消、会话刷新与过期、维护限制、无登录的冲突恢复预览；视觉复核已完成 | 原生窗口、安全存储、桌面应用接入 |
 | Rust/native | 已有 CLT clang21 + SDK15.4：最新 core97/helper1 fake 回归、rustfmt、默认和嵌入 helper 的 system-integration typed cargo check通过；策略来源/晚变化、14组更新恢复故障夹具及图片出口、撤销、配额、授权、账务和锁回归通过 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
 | Panel | 阶段整合树独立复核六组2884项：2861 passed / 23 existing skipped、36897 assertions；隔离 MySQL8.4.11专项15/15，241 assertions；前端240/240及完整quality通过 | 后续其他任务推进的 develop 不属于此测试快照；真实 native/客户端/生产；未执行远端 GitLab pipeline |
@@ -36,7 +37,13 @@
 
 ## 尚待完成的实现
 
-2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口；尚无供两个 Desktop 使用的主/辅助模型、流式、工具和错误场景 fake gateway，Codex 的完整模型目录也未适配。Claude profile envelope 与 `_meta.json` 仍缺获准的合成导出资料，自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。Codex 的固定版本完整目录已作静态来源核查，目录编译和生产映射仍未适配。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+
+2026-10-15 协议隔离网关阶段从 develop `67f1cd65d685097042b1a0aa32c117ac9ec95db1` 创建 `feature/orbit-desktop-fake-gateway`，按基础 fixture、CI、工具/连接修复、故障与边界用例、文档分组提交。模块源码提交为 `80db039d525d17c5f9062572611a1020529c5c5d`，三文件及八份日志绑定 `.cache/evidence/fake-gateway-final-source-20261015.json`。网关最终 61/61、含既有打包专项的全 Node 71/71、前端完整 check 的 27/27 单测通过；格式、lint、语法及 YAML 五个 job 解析通过。两平台验证 job 均已接入，远端 pipeline 和 Windows 未运行。
+
+独立审查已关闭工具续轮角色/顺序/前缀、未交付 pending 清理、socket/pipeline/Expect 预算与计数、Responses 文本字段及测试代理隔离问题。所有 HTTP 测试客户端显式直连；子进程开启环境代理选项并设置仅回环的假代理，仍直连成功且 stderr 为空。取消用例证明已终结旧请求的重复 abort 不影响新 pending；没有声称暂停旧 finally 并制造实际穿插。首轮关闭后 socket 未归零的两项失败保留在 `fake-gateway-foundation-1.log`；最终日志 `fake-gateway-final-3.log`、`fake-gateway-final-root-all-node-20261015.log`、`fake-gateway-final-root-frontend-check-20261015.log` 均为实际通过。
+
+此阶段未改应用/Native 源码，未重复浏览器或 Rust 回归；最新应用候选仍绑定 `42900ddd52949a9440bed4f2e9df4d18e38e3efc`，稳定 ZIP 为 `runtime/candidates/Orivelle-Orbit-0.1.0-macos-arm64-42900ddd-candidate.zip`，源码、签名探针和产物证据见 `.cache/evidence/managed-policy-delivery-20261015.json`。隔离网关使用固定合成工具 `orbit_fixture_read`，没有内置到客户端候选，也不代表真实 Desktop 工具执行、TLS、系统安全存储或平台验收。阶段最终 SHA/合并/同 HEAD detach 以 `.cache/evidence/desktop-fake-gateway-delivery-20261015.json` 为准。用户本轮要求收尾后暂停，未进入下一开发阶段。
 
 受管理策略阶段从 develop `c88deee1b8feeb26c43b31f234a85683cd4fbdf4` 创建 `feature/orbit-managed-policy`。界面分组提交 `1194ae0f28db2b8245a49bc36ed1a40c0a266663`、`f13ec7d07ece156c5e2aa00c3e99025a3fc6277b`，随后来源采集 `a190ef9` 与配置门禁 `dc49faea5e8fbb98c1e673bb0926ce4bd6c86382` 分组提交。Native 最终 97 core + 1 helper 通过，普通回归的 CLI signer 入口仍为 1 ignored；fmt、helper 编译、default/system typed check 通过。最终五文件及六份日志绑定 `runtime/logs/native-managed-policy-final-source.json`，原始失败和历史日志也在清单内。首次 launcher 127 未启动 Cargo；之后两项旧 fixture 缺少新身份/策略材料导致失败，修正后保留旧无策略 journal 拒绝断言，最终全部通过。
 
