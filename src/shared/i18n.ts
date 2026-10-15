@@ -105,7 +105,11 @@ const zh = {
   "access.importExported":
     "Claude 导入文件已保存。请手动导入并完整重启，配置载入和连接仍待确认。",
   "access.previewExpired":
-    "预览已过期，或账户、节点、凭据、模型及客户端版本已变化，请重新预览。",
+    "预览已失效，或账户、节点、凭据、模型、组织策略及客户端版本已变化，请重新预览。",
+  "access.policyUnverified":
+    "尚未确认目标应用的组织管理策略，暂时无法应用或导出配置。请完成策略检测后重新预览。",
+  "access.policyChanged":
+    "目标应用的组织管理策略已变化，本次确认已失效。请重新检测并预览配置。",
   "access.removeHint":
     "删除连接会清除此连接的本地会话和推理凭据，保留本地历史、安装证明与备份恢复密钥。服务器推理 key 仅在你另行选择撤销时撤销。",
   "access.revoke": "撤销本安装推理 key",
@@ -366,7 +370,11 @@ const en: Record<keyof typeof zh, string> = {
   "access.importExported":
     "Claude import file saved. Import it manually and fully restart; loading and connection remain unconfirmed.",
   "access.previewExpired":
-    "This preview expired or the account, node, credential, model or client version changed. Create a new preview.",
+    "This preview is no longer valid, or the account, node, credential, model, organization policy or client version changed. Create a new preview.",
+  "access.policyUnverified":
+    "The target application's organization policy is unconfirmed. Configuration cannot be applied or exported. Complete the policy check and create a new preview.",
+  "access.policyChanged":
+    "The target application's organization policy changed and this confirmation is no longer valid. Check the policy and create a new preview.",
   "access.removeHint":
     "Removes local sessions and inference credentials for this connection. History, installation proof and backup keys remain. The server inference key is revoked only if you select that separately.",
   "access.revoke": "Revoke installation inference key",

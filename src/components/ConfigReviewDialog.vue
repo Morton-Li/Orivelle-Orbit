@@ -1,26 +1,31 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import type { ConfigPreview } from "../shared/contracts";
 import { t } from "../shared/i18n";
+import { configPolicyMessage } from "../shared/format";
 import OrbitDialog from "./OrbitDialog.vue";
 import OrbitIcon from "./OrbitIcon.vue";
 const props = defineProps<{ preview: ConfigPreview | null }>();
 const emit = defineEmits<{ close: []; applied: [] }>();
 const store = useOrbitStore();
 const now = ref(Date.now());
+const rejectedPreviewIds = ref(new Set<string>());
 const timer = window.setInterval(() => {
   now.value = Date.now();
 }, 1000);
 onUnmounted(() => window.clearInterval(timer));
 const current = computed(() => {
   const preview = props.preview;
-  if (!preview) return false;
+  if (!preview || rejectedPreviewIds.value.has(preview.id)) return false;
   const client = store.state.clients.find(
     (item) => item.client === preview.client,
   );
   if (
-    client?.version !== preview.target_version ||
+    !client?.installed ||
+    !client.platform_supported ||
+    client.managed !== "no" ||
+    client.version !== preview.target_version ||
     Date.parse(preview.expires_at) <= now.value
   )
     return false;
@@ -48,6 +53,13 @@ const current = computed(() => {
     )
   );
 });
+watch(
+  () => [props.preview?.id ?? null, current.value] as const,
+  ([id, valid]) => {
+    if (id && !valid) rejectedPreviewIds.value.add(id);
+  },
+  { immediate: true, flush: "sync" },
+);
 const allowed = computed(
   () =>
     current.value &&
@@ -62,6 +74,7 @@ const configBusy = computed(
 const exportAllowed = computed(
   () =>
     current.value &&
+    !store.state.maintenance_active &&
     props.preview?.operation === "apply" &&
     props.preview.client === "claude" &&
     props.preview.can_export_import &&
@@ -75,6 +88,7 @@ async function exportImport() {
     preview_id: preview.id,
     confirmed: true,
   });
+  if (!result) rejectedPreviewIds.value.add(preview.id);
   if (result?.saved) {
     store.notify(t("access.importExported"), "neutral");
     emit("close");
@@ -93,6 +107,7 @@ async function confirm() {
           preview_id: preview.id,
           confirmed: true,
         });
+  if (!result) rejectedPreviewIds.value.add(preview.id);
   if (result) {
     await store.refresh();
     store.notify(
@@ -163,7 +178,10 @@ async function confirm() {
         {{ t("access.previewExpired") }}
       </p>
       <p v-if="preview.blocking_reason" class="info-box">
-        {{ preview.blocking_reason }}
+        {{
+          configPolicyMessage(preview.blocking_reason) ??
+          preview.blocking_reason
+        }}
       </p>
       <p v-if="preview.can_export_import" class="info-box">
         {{ t("access.importHint") }}

@@ -14,9 +14,9 @@
 
 | 层级 | 当前证据 | 未覆盖 |
 | --- | --- | --- |
-| 前端语义 | format、零 warning lint、typecheck、23/23 单元测试、生产 build 与排除测试 fixture 检查通过；包括参考价来源/缺失语义、同账户正常刷新保留草稿、首次账户缓存缺失后的只读恢复 | 真实 IPC 和目标客户端 |
+| 前端语义 | format、零 warning lint、typecheck、27/27 单元测试、生产 build 与排除测试 fixture 检查通过；包括参考价来源/缺失语义、同账户正常刷新保留草稿、首次账户缓存缺失后的只读恢复、策略变化及原生拒绝后旧配置确认持续失效 | 真实 IPC 和目标客户端 |
 | 浏览器界面 | Chrome 隔离 profile 15/15 通过；深浅色、390/1280/1600 宽度、键盘、弹窗焦点、无重发、单图删除、旧确认失效、授权拒绝/取消、会话刷新与过期、维护限制、无登录的冲突恢复预览；视觉复核已完成 | 原生窗口、安全存储、桌面应用接入 |
-| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core80/helper1 fake 回归、rustfmt、默认和嵌入 helper 的 system-integration typed cargo check通过；14组更新恢复故障夹具及图片出口、撤销、配额、授权、账务和锁回归通过 | 真实系统 vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
+| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core97/helper1 fake 回归、rustfmt、默认和嵌入 helper 的 system-integration typed cargo check通过；策略来源/晚变化、14组更新恢复故障夹具及图片出口、撤销、配额、授权、账务和锁回归通过 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
 | Panel | 阶段整合树独立复核六组2884项：2861 passed / 23 existing skipped、36897 assertions；隔离 MySQL8.4.11专项15/15，241 assertions；前端240/240及完整quality通过 | 后续其他任务推进的 develop 不属于此测试快照；真实 native/客户端/生产；未执行远端 GitLab pipeline |
 | Edge | 本任务没有修改；合同以现有源码/测试核查 | 真实客户端与 fake gateway 的当前联调 |
 | macOS arm64 | 当前 Mac release helper/GUI、`.app` 与 ZIP 构建成功；实际单 arm64、minOS15.0/SDK15.4、helper 完整内嵌、前端 custom-protocol 内嵌；未运行 GUI | macOS 15、原生真实运行和完整客户端流程 |
@@ -36,7 +36,11 @@
 
 ## 尚待完成的实现
 
-2026-10-14 对完整需求的补充审计发现，下列缺口仍有项目内代码工作，不能仅列为环境验收：managed policy 的实际来源采集尚未实现，检测保持 `unknown`，自动配置因此受阻；客户端载入/连接证据目前没有生产采集入口；尚无供两个 Desktop 使用的主/辅助模型、流式、工具和错误场景 fake gateway。Claude profile envelope 与 `_meta.json` 仍缺获准的合成导出资料，自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口；尚无供两个 Desktop 使用的主/辅助模型、流式、工具和错误场景 fake gateway，Codex 的完整模型目录也未适配。Claude profile envelope 与 `_meta.json` 仍缺获准的合成导出资料，自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+
+受管理策略阶段从 develop `c88deee1b8feeb26c43b31f234a85683cd4fbdf4` 创建 `feature/orbit-managed-policy`。界面分组提交 `1194ae0f28db2b8245a49bc36ed1a40c0a266663`、`f13ec7d07ece156c5e2aa00c3e99025a3fc6277b`，随后来源采集 `a190ef9` 与配置门禁 `dc49faea5e8fbb98c1e673bb0926ce4bd6c86382` 分组提交。Native 最终 97 core + 1 helper 通过，普通回归的 CLI signer 入口仍为 1 ignored；fmt、helper 编译、default/system typed check 通过。最终五文件及六份日志绑定 `runtime/logs/native-managed-policy-final-source.json`，原始失败和历史日志也在清单内。首次 launcher 127 未启动 Cargo；之后两项旧 fixture 缺少新身份/策略材料导致失败，修正后保留旧无策略 journal 拒绝断言，最终全部通过。
+
+本阶段独立 reviewer 提出的检查后文件替换/FIFO 阻塞、普通 CF 偏好误报为强制管理、耗时读取后的最终守卫和旧预览复活均已修复并补测。界面最终 27/27 单测、15/15 浏览器通过，对应 `runtime/logs/managed-policy-ui-{check,e2e}-final-3-20261015.log` 与 `.cache/evidence/managed-policy-ui-final-source-20261015.json`。Chrome 首次沙箱启动失败未执行页面断言，其原日志和 trace 保留；成功复验使用项目内 profile 与 mock keychain。所有结果来自合成来源和假 Vault，未执行真实 CFPreferences/registry 或 Desktop。最终源码、候选包和本地合并以阶段交付证据为准，旧 aff8 候选保持独立归档。
 
 锁定 Tauri CLI 的合成签名互通已补齐：2026-10-14 在干净提交 `cdb6f2d50dd2b67329604cb948a72b4108f14231` 上实际执行 CLI2.12.2 的版本/无版本签名、TAB/CR/LF拒绝和同一 Rust verifier 的正负例，运行exit0、源码前后一致，临时合成私钥目录残留0。该首轮摘要与日志保存在 `.cache/evidence/synthetic-updater-signer-probe-cdb6{.json,-run.log}`；收尾重跑的最终源码以 `runtime/logs/synthetic-updater-signer-probe.json` 为准。合成信任不进入候选 release，此测试不等于正式证书、真实安装或更新验收。
 

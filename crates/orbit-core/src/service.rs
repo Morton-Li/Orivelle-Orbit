@@ -90,6 +90,7 @@ struct PreviewEntry {
     view: ConfigPreview,
     journal_id: Option<String>,
     import_candidate: Option<(Vec<u8>, String)>,
+    policy: crate::policy::Snapshot,
 }
 struct ForgetEntry {
     view: ForgetInstallationPreview,
@@ -2131,7 +2132,66 @@ impl Service {
             store: &self.store,
             vault: self.vault.as_ref(),
             allowed_roots: self.paths.configuration_roots.clone(),
+            policy_guard: None,
         }
+    }
+    fn guarded_config_engine<'a>(&'a self, guard: &'a dyn Fn() -> Result<()>) -> ConfigEngine<'a> {
+        ConfigEngine {
+            store: &self.store,
+            vault: self.vault.as_ref(),
+            allowed_roots: self.paths.configuration_roots.clone(),
+            policy_guard: Some(guard),
+        }
+    }
+    fn client_policy(&self, client: ClientKind) -> Result<(ClientView, crate::policy::Snapshot)> {
+        let mut target = self
+            .clients
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .iter()
+            .find(|c| c.client == client)
+            .cloned()
+            .ok_or_else(|| fail("client_unsupported"))?;
+        let before = serde_json::to_vec(&target).map_err(|_| fail("serialization_failed"))?;
+        let policy = crate::policy::observe(&self.paths, &target);
+        policy.project(&mut target);
+        if policy.state != crate::policy::State::No {
+            target.loaded_evidence = None;
+            target.connection_evidence = None;
+            target.loaded_state = if target.configuration_state == "saved" {
+                "restart_required"
+            } else {
+                "unconfirmed"
+            }
+            .into();
+            target.connection_state = "not_tested".into();
+        }
+        if before != serde_json::to_vec(&target).map_err(|_| fail("serialization_failed"))? {
+            for current in self
+                .clients
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?
+                .iter_mut()
+                .filter(|c| c.client == client)
+            {
+                *current = target.clone();
+            }
+            self.store
+                .put("client-state", client.as_str(), "local", &target)?;
+            self.changed();
+        }
+        Ok((target, policy))
+    }
+    fn validate_policy(
+        &self,
+        client: ClientKind,
+        expected: &crate::policy::Snapshot,
+    ) -> Result<()> {
+        let (_, current) = self.client_policy(client)?;
+        if expected.revision != current.revision {
+            self.invalidate_evidence()?;
+        }
+        expected.matches(&current)
     }
     fn pending_configuration_recovery(&self, client: ClientKind) -> Result<bool> {
         for journal in self.store.list::<Journal>("journal", None)? {
@@ -2153,14 +2213,7 @@ impl Service {
             {
                 continue;
             }
-            let target = self
-                .clients
-                .lock()
-                .map_err(|_| fail("state_unavailable"))?
-                .iter()
-                .find(|c| c.client == journal.client)
-                .cloned()
-                .ok_or_else(|| fail("client_unsupported"))?;
+            let (target, policy) = self.client_policy(journal.client)?;
             let qualified = self.paths.writes_authorized
                 && journal.client == ClientKind::Codex
                 && target.installed
@@ -2170,6 +2223,7 @@ impl Service {
                 && target.version == journal.target_version
                 && target.bundle_id.is_some()
                 && target.bundle_id == journal.target_bundle_id
+                && journal.target_policy_revision.as_deref() == Some(policy.revision.as_str())
                 && self
                     .store
                     .installation(&journal.installation.origin)?
@@ -2177,9 +2231,13 @@ impl Service {
                 && self
                     .ensure_installation_available(&journal.installation.id)
                     .is_ok();
+            let guard = || self.validate_policy(journal.client, &policy);
             let recovered = qualified
                 && journal.phase != "conflict"
-                && self.config_engine().recover(&journal.id).is_ok();
+                && self
+                    .guarded_config_engine(&guard)
+                    .recover(&journal.id)
+                    .is_ok();
             for client in self
                 .clients
                 .lock()
@@ -2221,14 +2279,8 @@ impl Service {
             })
             .ok_or_else(|| fail("model_unavailable"))?;
         let context = self.context(&record, &cache, model)?;
-        let target = self
-            .clients
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .iter()
-            .find(|c| c.client == client)
-            .cloned()
-            .ok_or_else(|| fail("platform_unsupported"))?;
+        let (target, policy) = self.client_policy(client)?;
+        let guard = || self.validate_policy(client, &policy);
         let now = chrono::Utc::now();
         let mut preview = ConfigPreview {
             id: uuid(),
@@ -2278,6 +2330,7 @@ impl Service {
             preview.blocking_reason = Some("model_unsupported".into());
         } else {
             if client == ClientKind::Codex {
+                guard()?;
                 self.paths.ensure_configuration_parent(client)?;
             }
             let install = self.installation(&record)?;
@@ -2305,6 +2358,7 @@ impl Service {
             };
             let mut checked = binding.clone();
             checked.enabled = true;
+            guard()?;
             let _ = bound_helper_token(
                 &checked,
                 client,
@@ -2313,6 +2367,7 @@ impl Service {
                 self.vault.as_ref(),
                 now.timestamp(),
             )?;
+            guard()?;
             self.store
                 .put("binding", &binding_id, &record.view.account_id, &binding)?;
             if client == ClientKind::Claude {
@@ -2362,7 +2417,7 @@ impl Service {
                     .filter(|b| b.client == client && b.enabled)
                     .map(|b| b.id)
                     .collect();
-                let mut journal = self.config_engine().prepare(
+                let mut journal = self.guarded_config_engine(&guard).prepare(
                     client,
                     &record.view.account_id,
                     &install,
@@ -2375,11 +2430,13 @@ impl Service {
                     previous,
                 )?;
                 journal.account_label = cache.account.label.clone();
-                self.config_engine().freeze_target(
+                self.guarded_config_engine(&guard).freeze_target(
                     &mut journal,
                     target.version.clone(),
                     target.bundle_id.clone(),
                 )?;
+                self.guarded_config_engine(&guard)
+                    .freeze_policy(&mut journal, &policy.revision)?;
                 journal_id = Some(journal.id);
                 preview.can_apply = true;
             }
@@ -2396,6 +2453,7 @@ impl Service {
                     view: preview.clone(),
                     journal_id,
                     import_candidate,
+                    policy,
                 },
             );
         Ok(preview)
@@ -2425,7 +2483,12 @@ impl Service {
         }
         Ok(entry)
     }
-    fn validate_preview_context(&self, preview: &ConfigPreview) -> Result<()> {
+    fn validate_preview_context(
+        &self,
+        preview: &ConfigPreview,
+        policy: &crate::policy::Snapshot,
+    ) -> Result<()> {
+        self.validate_policy(preview.client, policy)?;
         let target = self
             .clients
             .lock()
@@ -2450,6 +2513,7 @@ impl Service {
                 return Err(fail("account_scope_mismatch"));
             }
             self.ensure_installation_available(&install.id)?;
+            self.validate_policy(preview.client, policy)?;
             let _ = self.vault.get(&install.backup_reference)?;
             return Ok(());
         }
@@ -2493,8 +2557,9 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
-        let _ = self.validate_preview_context(&entry.view)?;
-        let journal = self.config_engine().apply(
+        let _ = self.validate_preview_context(&entry.view, &entry.policy)?;
+        let guard = || self.validate_policy(entry.view.client, &entry.policy);
+        let journal = self.guarded_config_engine(&guard).apply(
             entry
                 .journal_id
                 .as_deref()
@@ -2563,7 +2628,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
-        self.validate_preview_context(&entry.view)?;
+        self.validate_preview_context(&entry.view, &entry.policy)?;
         if !self.paths.helper_available() {
             return Err(fail("helper_unavailable"));
         }
@@ -2575,6 +2640,7 @@ impl Service {
             .get::<HelperBinding>("binding", &binding_id)?
             .ok_or_else(|| fail("binding_disabled"))?;
         binding.enabled = true;
+        self.validate_policy(ClientKind::Claude, &entry.policy)?;
         let _ = bound_helper_token(
             &binding,
             ClientKind::Claude,
@@ -2583,7 +2649,9 @@ impl Service {
             self.vault.as_ref(),
             chrono::Utc::now().timestamp(),
         )?;
+        self.validate_policy(ClientKind::Claude, &entry.policy)?;
         crate::config::atomic_write(path, &bytes)?;
+        self.validate_policy(ClientKind::Claude, &entry.policy)?;
         self.store
             .put("binding", &binding_id, &binding.account_id, &binding)?;
         // Exporting a diagnostic candidate is not applying, loading, or observing
@@ -2610,21 +2678,20 @@ impl Service {
         if install.id != backup.installation.id {
             return Err(fail("account_scope_mismatch"));
         }
-        let target = self
-            .clients
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .iter()
-            .find(|c| c.client == backup.client)
-            .cloned()
-            .ok_or_else(|| fail("client_unsupported"))?;
+        let (target, policy) = self.client_policy(backup.client)?;
+        let guard = || self.validate_policy(backup.client, &policy);
         let authorized = self.paths.writes_authorized
             && backup.client == ClientKind::Codex
             && target.installed
             && target.platform_supported
             && target.managed == "no";
         let journal_id = if authorized {
-            Some(self.config_engine().prepare_restore(backup_id)?.id)
+            let mut journal = self
+                .guarded_config_engine(&guard)
+                .prepare_restore(backup_id)?;
+            self.guarded_config_engine(&guard)
+                .freeze_policy(&mut journal, &policy.revision)?;
+            Some(journal.id)
         } else {
             None
         };
@@ -2679,6 +2746,7 @@ impl Service {
                     view: preview.clone(),
                     journal_id,
                     import_candidate: None,
+                    policy,
                 },
             );
         Ok(preview)
@@ -4117,6 +4185,330 @@ mod tests {
         );
         serde_json::from_str(GOLDEN).unwrap()
     }
+    struct PolicyVault {
+        inner: Arc<FakeVault>,
+        calls: AtomicU64,
+        mutations: AtomicU64,
+        pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    }
+    impl Vault for PolicyVault {
+        fn get(&self, reference: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let pause = self.pause.lock().unwrap().take();
+            if let Some((entered, resume)) = pause {
+                entered.send(()).map_err(|_| fail("synthetic_barrier"))?;
+                resume
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|_| fail("synthetic_barrier"))?;
+            }
+            self.inner.get(reference)
+        }
+        fn put(&self, reference: &str, bytes: &[u8]) -> Result<()> {
+            self.mutations.fetch_add(1, Ordering::SeqCst);
+            self.inner.put(reference, bytes)
+        }
+        fn delete(&self, reference: &str) -> Result<()> {
+            self.mutations.fetch_add(1, Ordering::SeqCst);
+            self.inner.delete(reference)
+        }
+    }
+    struct PolicyFixture {
+        _dir: tempfile::TempDir,
+        service: Arc<Service>,
+        vault: Arc<PolicyVault>,
+        record: ConnectionRecord,
+        epoch: Arc<AtomicU64>,
+        model: String,
+        client: ClientKind,
+    }
+    impl PolicyFixture {
+        fn preview(&self) -> ConfigPreview {
+            self.service
+                .preview_client_config(
+                    &self.record.view.id,
+                    self.record.view.revision,
+                    self.client,
+                    &self.model,
+                )
+                .unwrap()
+        }
+        fn reset(&self) {
+            self.vault.calls.store(0, Ordering::SeqCst);
+            self.vault.mutations.store(0, Ordering::SeqCst);
+        }
+        fn bindings(&self) -> Value {
+            serde_json::to_value(
+                self.service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap(),
+            )
+            .unwrap()
+        }
+    }
+    fn policy_fixture(client: ClientKind) -> PolicyFixture {
+        let (dir, original, vault, mut record, install) = setup();
+        original
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+            )
+            .unwrap();
+        let mut paths = original.paths.clone();
+        paths.writes_authorized = true;
+        std::fs::write(&paths.codex_config, b"model='old'\n").unwrap();
+        let helper = b"synthetic helper fixture never executed";
+        std::fs::write(&paths.helper, helper).unwrap();
+        paths.helper_expected_sha256 = Some(sha256(helper));
+        let mut clients = original.clients.lock().unwrap().clone();
+        let target = clients.iter_mut().find(|c| c.client == client).unwrap();
+        target.installed = true;
+        target.platform_supported = true;
+        target.version = Some("2.19675.0-synthetic".into());
+        target.bundle_id = Some(format!("synthetic.{}", client.as_str()));
+        target.managed = "no".into();
+        paths.fixture_clients = Some(clients);
+        let epoch = Arc::new(AtomicU64::new(0));
+        let signal = epoch.clone();
+        paths.fixture_policy = Some(Arc::new(move |target| {
+            let value = signal.load(Ordering::SeqCst);
+            crate::policy::Snapshot::fixture(
+                target,
+                match value {
+                    2 => crate::policy::State::Yes,
+                    3 => crate::policy::State::Unknown,
+                    _ => crate::policy::State::No,
+                },
+                &format!("synthetic-source-{value}"),
+            )
+        }));
+        let vault = Arc::new(PolicyVault {
+            inner: vault,
+            calls: AtomicU64::new(0),
+            mutations: AtomicU64::new(0),
+            pause: Mutex::new(None),
+        });
+        let service = Service::new(original.store.clone(), vault.clone(), paths).unwrap();
+        let mut cache = service.account_cache(&record).unwrap();
+        cache.models[0]
+            .capabilities
+            .extend(["openai.responses".into(), "anthropic.messages".into()]);
+        let model = cache.models[0].id.clone();
+        service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        PolicyFixture {
+            _dir: dir,
+            service,
+            vault,
+            record,
+            epoch,
+            model,
+            client,
+        }
+    }
+    #[test]
+    fn changed_or_unknown_policy_rejects_apply_before_vault_files_or_binding_changes() {
+        for epoch in [1, 2, 3] {
+            let f = policy_fixture(ClientKind::Codex);
+            let preview = f.preview();
+            assert!(preview.can_apply);
+            let bindings = f.bindings();
+            f.reset();
+            f.epoch.store(epoch, Ordering::SeqCst);
+            assert_eq!(
+                f.service
+                    .apply_client_config(&preview.id, true, false)
+                    .unwrap_err()
+                    .code,
+                "managed_policy_changed"
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
+            assert_eq!(f.bindings(), bindings);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+            assert!(
+                f.service
+                    .store
+                    .list::<Journal>("backup", None)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+    #[test]
+    fn policy_change_while_vault_read_is_blocked_prevents_first_apply_or_export_write() {
+        for client in [ClientKind::Codex, ClientKind::Claude] {
+            let f = policy_fixture(client);
+            let preview = f.preview();
+            assert!(if client == ClientKind::Codex {
+                preview.can_apply
+            } else {
+                preview.can_export_import
+            });
+            let target = f.service.store.root.join("synthetic-diagnostic.json");
+            let worker_target = target.clone();
+            let bindings = f.bindings();
+            f.reset();
+            let (entered, waiting) = std::sync::mpsc::channel();
+            let (resume, released) = std::sync::mpsc::channel();
+            *f.vault.pause.lock().unwrap() = Some((entered, released));
+            let worker = f.service.clone();
+            let thread = std::thread::spawn(move || {
+                if client == ClientKind::Codex {
+                    worker
+                        .apply_client_config(&preview.id, true, false)
+                        .map(|_| ())
+                } else {
+                    worker.export_claude_import(&preview.id, true, &worker_target)
+                }
+            });
+            waiting
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            f.epoch.store(1, Ordering::SeqCst);
+            resume.send(()).unwrap();
+            assert_eq!(
+                thread.join().unwrap().unwrap_err().code,
+                "managed_policy_changed"
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
+            assert!(!target.exists());
+            assert_eq!(f.bindings(), bindings);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+        }
+    }
+    #[test]
+    fn restore_and_claude_export_recheck_the_frozen_policy_before_any_secret_access() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f.preview();
+        let result = f
+            .service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let after = std::fs::read(&f.service.paths.codex_config).unwrap();
+        let restore = f
+            .service
+            .preview_restore(result.backup_group_id.as_ref().unwrap())
+            .unwrap();
+        assert!(restore.can_apply);
+        let bindings = f.bindings();
+        f.reset();
+        f.epoch.store(1, Ordering::SeqCst);
+        assert_eq!(
+            f.service
+                .apply_client_config(&restore.id, true, true)
+                .unwrap_err()
+                .code,
+            "managed_policy_changed"
+        );
+        assert_eq!(std::fs::read(&f.service.paths.codex_config).unwrap(), after);
+        assert_eq!(f.bindings(), bindings);
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+        let f = policy_fixture(ClientKind::Claude);
+        let preview = f.preview();
+        assert!(preview.can_export_import);
+        let target = f.service.store.root.join("synthetic-diagnostic.json");
+        std::fs::write(&target, b"keep original").unwrap();
+        let bindings = f.bindings();
+        f.reset();
+        f.epoch.store(2, Ordering::SeqCst);
+        assert_eq!(
+            f.service
+                .export_claude_import(&preview.id, true, &target)
+                .unwrap_err()
+                .code,
+            "managed_policy_changed"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep original");
+        assert_eq!(f.bindings(), bindings);
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn policy_arriving_after_file_publish_never_enables_the_final_helper_grant() {
+        let f = policy_fixture(ClientKind::Codex);
+        let before = f.bindings();
+        let mut paths = f.service.paths.clone();
+        let path = paths.codex_config.clone();
+        paths.fixture_policy = Some(Arc::new(move |target| {
+            let changed = std::fs::read(&path).unwrap() != b"model='old'\n";
+            crate::policy::Snapshot::fixture(
+                target,
+                crate::policy::State::No,
+                if changed {
+                    "policy-arrived"
+                } else {
+                    "synthetic-source-0"
+                },
+            )
+        }));
+        let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+        let preview = service
+            .preview_client_config(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                &f.model,
+            )
+            .unwrap();
+        assert!(preview.can_apply);
+        let bindings = serde_json::to_value(
+            service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap_err()
+                .code,
+            "managed_policy_changed"
+        );
+        assert_ne!(
+            std::fs::read(&service.paths.codex_config).unwrap(),
+            b"model='old'\n"
+        );
+        assert_eq!(
+            serde_json::to_value(
+                service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+            )
+            .unwrap(),
+            bindings
+        );
+        assert!(
+            service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|b| !b.enabled)
+        );
+        assert!(
+            service
+                .pending_configuration_recovery(ClientKind::Codex)
+                .unwrap()
+        );
+        assert!(before.as_array().unwrap().is_empty());
+    }
     fn setup() -> (
         tempfile::TempDir,
         Arc<Service>,
@@ -5293,6 +5685,7 @@ mod tests {
             "committed-gap",
             "prepared",
             "forgetting",
+            "legacy-no-policy",
         ] {
             let (_dir, old, vault, record, install) = setup();
             let path = old.paths.codex_config.clone();
@@ -5334,6 +5727,12 @@ mod tests {
                     target.bundle_id.clone(),
                 )
                 .unwrap();
+            if mode != "legacy-no-policy" {
+                let policy = crate::policy::observe(&old.paths, &target);
+                engine
+                    .freeze_policy(&mut journal, &policy.revision)
+                    .unwrap();
+            }
             if mode == "committed-gap" {
                 engine.apply(&journal.id).unwrap();
                 old.store.delete("backup", &journal.id).unwrap();
@@ -5609,6 +6008,7 @@ mod tests {
             client.installed = true;
             client.platform_supported = true;
             client.version = Some("2.19675.0-synthetic".into());
+            client.bundle_id = Some("com.anthropic.claudefordesktop".into());
             client.managed = "no".into();
             service
                 .store

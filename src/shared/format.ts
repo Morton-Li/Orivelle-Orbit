@@ -6,6 +6,12 @@ import type {
 } from "./contracts";
 import { locale, t } from "./i18n";
 
+export function configPolicyMessage(code: string): string | null {
+  if (code === "managed_policy_unverified") return t("access.policyUnverified");
+  if (code === "managed_policy_changed") return t("access.policyChanged");
+  return null;
+}
+
 export function formatUpdatedAt(value: string | null): string {
   if (!value || value.length > 64 || !Number.isFinite(Date.parse(value)))
     return t("common.unknown");

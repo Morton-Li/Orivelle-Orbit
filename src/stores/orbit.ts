@@ -21,6 +21,7 @@ import type {
   TaskView,
 } from "../shared/contracts";
 import { locale, t } from "../shared/i18n";
+import { configPolicyMessage } from "../shared/format";
 
 const defaultSettings: SettingsView = {
   theme: "system",
@@ -178,8 +179,10 @@ export const useOrbitStore = defineStore("orbit", () => {
   }
   function report(error: unknown) {
     const code = error instanceof OrbitError ? error.code : "operation_failed";
+    const policyMessage = configPolicyMessage(code);
     notify(
-      `${error instanceof OrbitError ? error.message : t("common.failed")} (${code})`,
+      policyMessage ??
+        `${error instanceof OrbitError ? error.message : t("common.failed")} (${code})`,
       "error",
     );
   }
