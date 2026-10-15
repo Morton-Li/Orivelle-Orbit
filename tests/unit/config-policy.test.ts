@@ -119,6 +119,15 @@ describe("configuration confirmation follows current policy", () => {
           ([command]) => command === "apply_client_config",
         ),
       ).toHaveLength(1);
+
+      await view.setProps({ preview: preview() });
+      expect(apply.element.disabled).toBe(true);
+      await apply.trigger("click");
+      expect(
+        bridge.call.mock.calls.filter(
+          ([command]) => command === "apply_client_config",
+        ),
+      ).toHaveLength(1);
     },
   );
 

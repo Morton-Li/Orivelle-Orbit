@@ -10,14 +10,14 @@ const props = defineProps<{ preview: ConfigPreview | null }>();
 const emit = defineEmits<{ close: []; applied: [] }>();
 const store = useOrbitStore();
 const now = ref(Date.now());
-const rejectedPreviewId = ref<string | null>(null);
+const rejectedPreviewIds = ref(new Set<string>());
 const timer = window.setInterval(() => {
   now.value = Date.now();
 }, 1000);
 onUnmounted(() => window.clearInterval(timer));
 const current = computed(() => {
   const preview = props.preview;
-  if (!preview || rejectedPreviewId.value === preview.id) return false;
+  if (!preview || rejectedPreviewIds.value.has(preview.id)) return false;
   const client = store.state.clients.find(
     (item) => item.client === preview.client,
   );
@@ -56,7 +56,7 @@ const current = computed(() => {
 watch(
   () => [props.preview?.id ?? null, current.value] as const,
   ([id, valid]) => {
-    if (id && !valid) rejectedPreviewId.value = id;
+    if (id && !valid) rejectedPreviewIds.value.add(id);
   },
   { immediate: true, flush: "sync" },
 );
@@ -88,7 +88,7 @@ async function exportImport() {
     preview_id: preview.id,
     confirmed: true,
   });
-  if (!result) rejectedPreviewId.value = preview.id;
+  if (!result) rejectedPreviewIds.value.add(preview.id);
   if (result?.saved) {
     store.notify(t("access.importExported"), "neutral");
     emit("close");
@@ -107,7 +107,7 @@ async function confirm() {
           preview_id: preview.id,
           confirmed: true,
         });
-  if (!result) rejectedPreviewId.value = preview.id;
+  if (!result) rejectedPreviewIds.value.add(preview.id);
   if (result) {
     await store.refresh();
     store.notify(
