@@ -6,7 +6,7 @@
 
 - 办公 Mac：macOS 26.7.1 arm64、Xcode 27.0、Node 24.18.0、npm 11.16.0、Rust 1.97.1。Docker 已启动。
 - 项目内开发、依赖锁定、合成数据、隔离测试和本地提交已获准。原工作区和其他 worktree 保留。
-- 2026-10-21 用户明确授权当前办公 Mac 作为真实集成环境。本轮只验证 Orbit 自身和专用合成 Keychain 项；用户询问提前打开 Claude 的目的后，已停止第三方客户端界面操作。真实凭据/上游/收费调用、生产数据库、正式签名证书安装、发布部署仍需另行授权。
+- 2026-10-21 用户明确授权当前办公 Mac 作为真实集成环境，有限原生预检已验证 Orbit 自身和专用合成 Keychain 项；用户询问提前打开 Claude 的目的后，已停止第三方客户端界面操作。本来源阶段仅检查公开安装包、只读进程/FD 元数据及项目内合成测试。真实凭据/上游/收费调用、生产数据库、正式签名证书安装、发布部署仍需另行授权。
 - `lab.lan` 仅个人 Mac 可用，当前不依赖它。Windows 11 25H2 x64 和 macOS 15 最低版本的实际环境尚无验收证据。
 - macOS Intel 已取消，无此目标的设计、构建或验收。
 
@@ -14,11 +14,12 @@
 
 | 层级 | 当前证据 | 未覆盖 |
 | --- | --- | --- |
-| 前端语义 | format、零 warning lint、typecheck、44/44 单元测试、生产 build 与排除测试 fixture 检查通过；包括目录声明与独立 runtime 展示、旧确认退役，以及既有草稿、价格、策略和缓存恢复语义 | 目标客户端实际接入；本轮有限原生 IPC 见下行 |
+| 前端语义 | 此前完整 format、零 warning lint、typecheck、44/44 单元测试、生产 build 与排除测试 fixture 检查通过；本轮六条双语文案的单文件格式/lint和10项受影响测试通过，11项被筛选 | 新文案未在原生 GUI 载入；目标客户端实际接入；有限原生 IPC 见下行 |
 | Desktop 协议 fixture | 项目内 Responses/Messages 网关 61/61；主/辅助模型、单/并行工具续轮、JSON/SSE、故障与资源预算；连同既有打包专项共 71/71 Node 测试通过，无跳过 | 真实 Desktop 的内置工具适配、实际请求/重试行为、HTTPS、模型菜单、载入与连接证据 |
 | Codex 目录与接线 | 固定 CLI0.163.0-alpha.10.2 完整官方目录的12项编译用例、10项作用域用例和10项双文件接线用例通过；已消费 Panel 显式绑定及真实整数 reasoning revision，联合 journal 覆盖配置、目录和授权恢复 | 运行实例来源、真实 Desktop 载入/模型菜单与能力、全部 runtime reasoning 路径 |
+| Codex 本机来源纯层 | macOS 测试专用参数解析与私有来源模型8/8、两文件rustfmt通过；独立复核关闭环境区截断问题；只读元数据探针明确未证明选中来源 | 生产采集器/FFI/Service未开始，release仍unverified；真实资源加载代次、候选分类、角色/根及连接核验 |
 | 浏览器界面 | 最新 Chrome 隔离 profile 的4/4受影响模型预览、冲突恢复和Claude导出用例通过，其余11项无变更流程未重跑；此前完整15/15及深浅色、390/1280/1600宽度和视觉记录保留 | 原生窗口、安全存储、桌面应用接入 |
-| Rust/native 合成回归 | 已有 CLT clang21 + SDK15.4：既有 core128/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；当时普通 signer 入口1 ignored；包含双文件恢复及既有故障、授权、账务和锁回归。本轮新增默认 ignored 的专项另见下行，未重跑全套 | 合成回归不覆盖真实系统；不能将编译 feature 当成真实集成 |
+| Rust/native 合成回归 | 已有 CLT clang21 + SDK15.4：既有 core128/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；当时普通 signer 入口1 ignored；包含双文件恢复及既有故障、授权、账务和锁回归。此前 NativeVault 的默认 ignored 专项另见下行，未重跑全套 | 合成回归不覆盖真实系统；不能将编译 feature 当成真实集成 |
 | 本机 NativeVault | 新增默认 ignored 的 macOS 专项；单目标编译和格式通过。受限环境首轮 create 失败并清理通过；获准环境以同一已编译测试二进制实际运行 1/1 通过，新随机项的 10 步 journal 全 passed | GUI/helper 的身份与 Keychain 连续性、拒绝访问及平台全流程；首轮具体系统原因未确认 |
 | Orbit 原生界面 | 1426f16d 源码候选在 macOS 26.7.1 arm64 的 Tauri WKWebView 中实际运行：四页、快捷键、未登录限制、诊断 IPC、原生保存对话及关闭窗口后重新显示通过 | 登录、图片输入/生成/复制、helper 执行、第三方客户端接入、最低 macOS15 与 Windows；详见[本机预检](macos-native-preflight.md) |
 | Panel | 绑定阶段源afbfe38a：隔离MySQL13/13（660 assertions）；三个受影响CI分组、前端329/329、PHP及前端quality通过，历史单项失败和复验见下文；最终安全构建179文件独立核对 | 真实 native/客户端/生产；未执行远端 GitLab pipeline；后来推进的 develop 不属于此快照 |
@@ -39,6 +40,8 @@
 平台验证必须在 Windows 11 25H2 x64 和 macOS 15+ Apple Silicon 上分别记录编译、运行、配置、系统安全存储、拖放/文件/复制、两个真实桌面应用的模型选择、流式/工具/辅助模型和错误流程。CLI、跨编译、浏览器、Ubuntu或 fake vault 都不能替代这些验收。
 
 ## 尚待完成的实现
+
+2026-10-21 本机来源阶段只完成[测试专用纯判定层与范围文案](codex-runtime.md)，分节提交后合入本地 `develop`；按用户最新要求在此停下并暂停目标，等明确“继续”才开始生产采集器。8项纯测试与10项受影响文案测试不能代表真实来源或新版 GUI 通过，旧 `1426f16d` 候选保持独立归档。
 
 2026-10-21 当前 Mac 授权后的有限原生预检已取得真实 NativeVault 单项及 Orbit 未登录界面证据，过程与边界见[本机预检](macos-native-preflight.md)。这不改变运行实例来源、远端组织策略、Claude library 写入、第三方 Desktop 载入/连接和其他平台的剩余门禁。此前各阶段的“未运行/未获准”陈述只描述当时快照。
 
