@@ -121,6 +121,14 @@ const zh = {
   "access.codexRuntimeUnverified": "待核验",
   "access.codexRuntimeBlocked":
     "执行来源尚未确认匹配声明目标，本次不能应用。请核验桌面应用使用的 CLI 后重新预览。",
+  "access.codexRuntimeUnavailable":
+    "尚未核验目标桌面应用的执行来源，本次不能变更配置。",
+  "access.codexRuntimeChanged":
+    "目标桌面应用的执行来源已变化，本次确认已失效。请重新预览配置。",
+  "access.codexRestoreContextUnavailable":
+    "此备份缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
+  "access.codexOverrideUnavailable":
+    "现有显式设置可能覆盖本次配置，暂时不能自动应用。请先手动核对后重新预览。",
   "access.codexEvidenceBoundary":
     "模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
   "access.codexBindingUnavailable":
@@ -408,6 +416,14 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexRuntimeUnverified": "Check pending",
   "access.codexRuntimeBlocked":
     "The execution source has not been confirmed to match the declared target. Check the CLI used by Desktop and create a new preview before applying.",
+  "access.codexRuntimeUnavailable":
+    "The target Desktop application's execution source has not been verified. Configuration cannot be changed in this confirmation.",
+  "access.codexRuntimeChanged":
+    "The target Desktop application's execution source changed. This confirmation is no longer valid. Create a new preview.",
+  "access.codexRestoreContextUnavailable":
+    "This backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
+  "access.codexOverrideUnavailable":
+    "Existing explicit settings may override this configuration, so it cannot be applied automatically. Check the settings manually before creating a new preview.",
   "access.codexEvidenceBoundary":
     "A template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
   "access.codexBindingUnavailable":

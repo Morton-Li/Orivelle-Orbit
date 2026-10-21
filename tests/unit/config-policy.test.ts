@@ -296,6 +296,11 @@ describe("Codex catalog confirmation", () => {
     ["codex_binding_unavailable", "当前模型缺少可用的 Codex 模板声明"],
     ["codex_reasoning_unavailable", "当前推理档位策略不足"],
     ["codex_catalog_template_unavailable", "当前模型目录无法安全生成"],
+    ["codex_runtime_unverified", "尚未核验目标桌面应用的执行来源"],
+    ["codex_runtime_changed", "目标桌面应用的执行来源已变化"],
+    ["codex_catalog_scope_changed", "模型目录、权限或连接状态已变化"],
+    ["codex_catalog_context_unverified", "缺少可核验的恢复上下文"],
+    ["codex_config_override_unverified", "现有显式设置可能覆盖本次配置"],
   ])("explains blocked previews for %s", (code, explanation) => {
     const value = preview();
     value.can_apply = false;
@@ -307,5 +312,28 @@ describe("Codex catalog confirmation", () => {
     expect(
       view.get<HTMLButtonElement>(".button.primary").element.disabled,
     ).toBe(true);
+  });
+
+  it("explains a native runtime rejection in English without exposing exception details", async () => {
+    const state = bootstrap("synthetic-account-a", 2);
+    state.settings.locale = "en";
+    const store = useOrbitStore();
+    store.acceptState(state);
+    const view = show(preview());
+    bridge.call.mockRejectedValueOnce(
+      new OrbitError(
+        "codex_runtime_changed",
+        "synthetic-private-runtime-value",
+      ),
+    );
+    const apply = view.get<HTMLButtonElement>(".button.primary");
+    await apply.trigger("click");
+    await flushPromises();
+    expect(store.notice?.text).toContain("execution source changed");
+    expect(store.notice?.text).not.toContain("synthetic-private-runtime-value");
+    expect(store.notice?.text).not.toContain("codex_runtime_changed");
+    expect(apply.element.disabled).toBe(true);
+    await apply.trigger("click");
+    expect(bridge.call).toHaveBeenCalledTimes(1);
   });
 });
