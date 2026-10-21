@@ -115,16 +115,16 @@ const zh = {
   "access.codexDefaultAlias": "默认模型调用名称",
   "access.codexDefaultEffort": "默认推理档位",
   "access.codexDeclaredCli": "声明目标 CLI（须匹配桌面捆绑版本）",
-  "access.codexRuntime": "独立执行来源核验",
-  "access.codexRuntimeCli": "执行来源 CLI 版本",
-  "access.codexRuntimeVerified": "本次预览的执行来源已核验",
+  "access.codexRuntime": "本机接入来源核验",
+  "access.codexRuntimeCli": "本机接入 CLI 版本",
+  "access.codexRuntimeVerified": "本机接入：本次预览的执行来源已核验",
   "access.codexRuntimeUnverified": "待核验",
   "access.codexRuntimeBlocked":
-    "执行来源尚未确认匹配声明目标，本次不能应用。请核验桌面应用使用的 CLI 后重新预览。",
+    "本机接入的执行来源尚未确认匹配声明目标，本次不能应用。请核对本机接入使用的 CLI 后重新预览。",
   "access.codexRuntimeUnavailable":
-    "尚未核验目标桌面应用的执行来源，本次不能变更配置。",
+    "本机接入：尚未核验目标桌面应用的执行来源，本次不能变更配置。",
   "access.codexRuntimeChanged":
-    "目标桌面应用的执行来源已变化，本次确认已失效。请重新预览配置。",
+    "本机接入：目标桌面应用的执行来源已变化，本次确认已失效。请重新预览配置。",
   "access.codexRestoreContextUnavailable":
     "此备份缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
   "access.codexOverrideUnavailable":
@@ -410,16 +410,17 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexDefaultEffort": "Default reasoning effort",
   "access.codexDeclaredCli":
     "Declared CLI target (must match the Desktop bundled version)",
-  "access.codexRuntime": "Independent execution source check",
-  "access.codexRuntimeCli": "Execution source CLI version",
-  "access.codexRuntimeVerified": "Execution source checked for this preview",
+  "access.codexRuntime": "Local backend source check",
+  "access.codexRuntimeCli": "Local backend CLI version",
+  "access.codexRuntimeVerified":
+    "Local backend execution source checked for this preview",
   "access.codexRuntimeUnverified": "Check pending",
   "access.codexRuntimeBlocked":
-    "The execution source has not been confirmed to match the declared target. Check the CLI used by Desktop and create a new preview before applying.",
+    "The local backend execution source has not been confirmed to match the declared target. Check the CLI used for local access and create a new preview before applying.",
   "access.codexRuntimeUnavailable":
-    "The target Desktop application's execution source has not been verified. Configuration cannot be changed in this confirmation.",
+    "The target Desktop application's local backend execution source has not been verified. Configuration cannot be changed in this confirmation.",
   "access.codexRuntimeChanged":
-    "The target Desktop application's execution source changed. This confirmation is no longer valid. Create a new preview.",
+    "The target Desktop application's local backend execution source changed. This confirmation is no longer valid. Create a new preview.",
   "access.codexRestoreContextUnavailable":
     "This backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
   "access.codexOverrideUnavailable":
