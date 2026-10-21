@@ -34,7 +34,7 @@ Panel 的可选 `provider_models.codex_catalog_binding` 只保存 `profile_id` �
 
 账户出口在原有账户、组、成员与模型过滤之后投影绑定：未配置为 `null`；合法声明为 `state: declared`、`verified: false`，附固定 profile、CLI、来源摘要和模板；未知、损坏或已不合格的值仅为 `state: unavailable`、`verified: false`，不回显存储原文。声明不是运行实例或上游能力证明。reasoning 的支持集合、成员允许集合与默认值仍以原有策略为准；其 `revision` 是 `null` 或成员版本整数，不能按字符串摘要猜测转换。
 
-该合同的 Panel 源码为 `afbfe38a83668e8473e7b1dbc85410a1eea7c20e`，已显式合入本地 develop `19d74cc7cbea49d73c3b4cab9139bb805dd886db`。专项隔离 MySQL、受影响 CI 分组、前端与构建验收记录保存在 Panel 的 `storage/framework/testing/orbit-codex-binding-evidence/`；这些证据不表示 Orbit 已消费该字段或真实客户端已加载目录。
+该合同的 Panel 源码为 `afbfe38a83668e8473e7b1dbc85410a1eea7c20e`，已显式合入本地 develop `19d74cc7cbea49d73c3b4cab9139bb805dd886db`。专项隔离 MySQL、受影响 CI 分组、前端与构建验收记录保存在 Panel 的 `storage/framework/testing/orbit-codex-binding-evidence/`；它们只证明该 Panel 快照的声明出口，Orbit 消费与真实客户端载入分别需要自己的证据。
 
 ## 作用域规划
 
@@ -44,8 +44,22 @@ Panel 的可选 `provider_models.codex_catalog_binding` 只保存 `profile_id` �
 
 作用域摘要包含 origin、账户、安装、连接及其版本、授权 epoch、凭据版本、节点、provider、目录版本、所选模型、全部该范围模型的原始版本与规范化声明/策略，以及编译输出摘要。因此其他菜单项或作用域变化也会使旧预览失效。重复 alias、目录条目数量或编译输出上限超出时整组拒绝，不截断目录。摘要是比较冻结输入的一致性工具，不是新增授权或实际运行来源证明。
 
+## 联合配置与恢复
+
+Service 从当前账户、节点和 provider 的完整模型范围规划目录，预览仅向 UI 展示来源、摘要、路径、默认别名、reasoning 默认值和别名列表；完整模板及 journal 内容不经 IPC 返回。UI 只能提交单次 `preview_id` 和确认，不能提供模板、运行来源或授权材料。Panel 的 `verified: false` 声明与独立的 runtime 状态分别展示。
+
+预览与应用入口先检查项目授权、实际 CLI 来源及组织策略，再刷新 bootstrap 和完整模型出口；bootstrap 刷新后重新检查节点、权限、密钥与连接版本。提交在账户锁内重编译整个目录，比较完整范围及输出，不能只复核所选模型。运行来源、策略或范围变化会永久退役旧预览，恢复原状态也不能复活它。
+
+目录固定为配置同目录下的 `orivelle-orbit.models.json`。一次 journal 先发布目录，再发布 `config.toml`，将 `model`、`model_provider`、`model_catalog_json` 和 `model_reasoning_effort` 设置为本次明确结果，并沿用现有 helper 的认证合同。两个文件的存在状态和摘要共同构成配置版本；任一外部修改均使旧证据失效。指定 `profile` 或 profile 内覆盖上述字段时拒绝自动修改并要求人工核查。保留的 plan mode、其他配置文件、CLI/daemon 选择及其他 runtime 路径尚未全部验证，不能据此声称所有 reasoning 请求均受本配置覆盖。
+
+加密 journal 冻结完整 actor、安装、连接、授权 epoch、凭据、节点、provider、模型声明与策略、来源与输出摘要、明确默认值、固定双路径及私有 runtime 身份。Vault 读取返回后复核来源与策略；解密后、每个文件写入前、授权启用前及提交恢复状态前复核完整上下文；先检查全部文件，发现第三种外部状态则不覆盖任何文件。旧 journal 缺少完整 Codex 上下文时不自动恢复。人工恢复只还原原始双文件字节，仍要求原 owner、固定路径、当前来源和策略；退出或推理密钥丢失后可恢复原文件，但不会复活旧 helper 授权。Claude 诊断导出也排除两个 Codex 目标，不能绕过 journal 覆盖目录。
+
+生产 `CodexRuntimeSnapshot` 当前始终为 `unverified`，正向来源只存在于编译隔离的合成测试中。安装包版本、Panel 声明或 UI 状态不能构造私有的已验证身份。因此当前真实自动应用与恢复仍关闭；该接线只在明确的合成来源和假 Vault 下取得正向证据。
+
 ## 当前验收边界
 
-项目内测试使用合成映射，验证模板保留、权限子集、引用和 reasoning 一致性及资源上限。没有启动 Desktop、helper 或 Orbit GUI，没有读取用户认证资料、修改真实配置、调用系统安全存储或发送推理请求。
+项目内测试使用合成映射，验证模板保留、权限子集、引用、reasoning 与资源上限；作用域规划专项 10/10、双文件接线专项 10/10，以及导出目标保护的受影响 1/1 通过。最终完整 core128/helper1、rustfmt、helper 编译和 default/system typed check 通过；普通回归中的独立 signer 入口仍为 1 ignored，本阶段没有重复执行。前端完整质量链的 44/44 单测和 4/4 受影响浏览器用例通过，其他 11 项无变更流程未重跑。首轮浏览器在沙箱内启动阶段报告 SIGABRT，清理时报告 kill EPERM，四项页面断言未执行，原日志保留；成功运行使用项目内 profile 和 mock keychain。
+
+最终源码、实际 argv、源码前后摘要、日志、历史失败及本地提交/合并记录见项目忽略目录 `.cache/evidence/codex-config-catalog-20261021/`。没有启动 Desktop、helper 或 Orbit GUI，没有读取用户认证资料、修改真实配置、调用系统安全存储或发送推理请求。
 
 Panel 声明与纯目录编译不证明运行实例的 CLI 选择；组织远端策略仍为未知。自动配置仍需要独立的来源与策略门禁，不会据此生成 `loaded_evidence` 或 `connection_evidence`，也不代表实际模型菜单、流式或工具调用已经验收。现有 Mac 候选包仍绑定此前的源码，不能作为本模块的打包或运行证据。后续包含模板的新候选还需把固定来源的许可证和完整 NOTICE 纳入实际分发产物并回读验证。
