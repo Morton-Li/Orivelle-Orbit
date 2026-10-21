@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
+  readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -10,6 +13,7 @@ import {
 import path from "node:path";
 import test from "node:test";
 import {
+  CODEX_SOURCE_MATERIALS,
   digest,
   freezeSource,
   inspectMacApp,
@@ -43,6 +47,17 @@ async function fixture(t) {
   await chmod(binary, 0o700);
   const icon = path.join(app, "Contents/Resources/icon.icns");
   await writeFile(icon, "synthetic icon");
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(app, material.path);
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(
+      new URL(
+        `../../crates/orbit-core/resources/codex/${CODEX_SOURCE_MATERIALS.cli_version}/${material.name}`,
+        import.meta.url,
+      ),
+      target,
+    );
+  }
   return {
     project,
     app,
@@ -57,11 +72,72 @@ async function fixture(t) {
 test("bundle proof includes resources, metadata and executable permissions", async (t) => {
   const options = await fixture(t);
   const before = await inspectMacApp(options);
+  assert.deepEqual(before.codex_source_materials, {
+    project: "OpenAI Codex",
+    cli_version: "0.163.0-alpha.10.2",
+    source_commit: "4ebc485ca321243727539187169425fcf972f2c4",
+    catalog_sha256:
+      "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+    files: CODEX_SOURCE_MATERIALS.files.map(({ path, bytes, sha256 }) => ({
+      path,
+      bytes,
+      sha256,
+    })),
+  });
   await writeFile(options.icon, "changed icon");
   const changedResource = await inspectMacApp(options);
   assert.notEqual(before.package_sha256, changedResource.package_sha256);
   await chmod(options.binary, 0o600);
   await assert.rejects(inspectMacApp(options), /executable differs/);
+});
+
+test("required Codex materials cannot be omitted or disabled by empty expectations", async (t) => {
+  const options = await fixture(t);
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(options.app, material.path);
+    const original = await readFile(target);
+    await rm(target);
+    await assert.rejects(inspectMacApp(options), /Codex source material/);
+    await assert.rejects(
+      inspectMacApp({ ...options, expected: { ...expected, resources: [] } }),
+      /Codex source material/,
+    );
+    await writeFile(target, original);
+  }
+});
+
+test("same-length altered Codex materials fail their exact source hashes", async (t) => {
+  const options = await fixture(t);
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(options.app, material.path);
+    const original = await readFile(target);
+    const altered = Buffer.from(original);
+    altered[0] ^= 1;
+    await writeFile(target, altered);
+    await assert.rejects(inspectMacApp(options), /Codex source material/);
+    await writeFile(target, original);
+  }
+});
+
+test("correct Codex bytes at another resource destination do not satisfy the pin", async (t) => {
+  const options = await fixture(t);
+  const wrong = path.join(options.app, "Contents/Resources/codex-wrong-target");
+  await mkdir(wrong);
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(options.app, material.path);
+    const misplaced = path.join(wrong, material.name);
+    await rename(target, misplaced);
+    await assert.rejects(inspectMacApp(options), /Codex source material/);
+    await rename(misplaced, target);
+  }
+});
+
+test("a directory cannot replace a required Codex regular file", async (t) => {
+  const options = await fixture(t);
+  const target = path.join(options.app, CODEX_SOURCE_MATERIALS.files[0].path);
+  await rm(target);
+  await mkdir(target);
+  await assert.rejects(inspectMacApp(options), /Codex source material/);
 });
 
 test("a replaced app executable cannot inherit the compiled candidate proof", async (t) => {

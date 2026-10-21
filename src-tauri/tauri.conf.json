@@ -31,11 +31,7 @@
   },
   "bundle": {
     "active": false,
-    "targets": [
-      "nsis",
-      "app",
-      "dmg"
-    ],
+    "targets": ["nsis", "app", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -51,7 +47,12 @@
         "installMode": "currentUser"
       }
     },
-    "useLocalToolsDir": true
+    "useLocalToolsDir": true,
+    "resources": {
+      "../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/LICENSE": "licenses/codex/0.163.0-alpha.10.2/LICENSE",
+      "../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/NOTICE": "licenses/codex/0.163.0-alpha.10.2/NOTICE",
+      "../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json": "licenses/codex/0.163.0-alpha.10.2/PROVENANCE.json"
+    }
   },
   "plugins": {
     "updater": {
