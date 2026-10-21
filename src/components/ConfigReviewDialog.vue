@@ -65,9 +65,25 @@ const allowed = computed(
     current.value &&
     !store.state.maintenance_active &&
     props.preview?.can_apply &&
+    codexReady.value &&
     (props.preview.operation === "restore" || store.ready) &&
     !configBusy.value,
 );
+const codexReady = computed(() => {
+  const preview = props.preview;
+  if (preview?.client !== "codex" || preview.operation !== "apply") return true;
+  return (
+    !!preview.codex_catalog &&
+    codexRuntimeVerified.value &&
+    preview.codex_runtime?.cli_version === preview.codex_catalog.cli_version
+  );
+});
+const codexRuntimeVerified = computed(() => {
+  const runtime = props.preview?.codex_runtime;
+  return (
+    runtime?.state === "verified" && !!runtime.revision && !!runtime.cli_version
+  );
+});
 const configBusy = computed(
   () => store.busy.has("config-apply") || store.busy.has("config-export"),
 );
@@ -162,6 +178,58 @@ async function confirm() {
           </dd>
         </div>
       </dl>
+      <template
+        v-if="preview.client === 'codex' && preview.operation === 'apply'"
+      >
+        <h3>{{ t("access.codexCatalog") }}</h3>
+        <template v-if="preview.codex_catalog">
+          <dl class="preview-context">
+            <div>
+              <dt>{{ t("access.codexDefaultAlias") }}</dt>
+              <dd>
+                <code>{{ preview.codex_catalog.default_alias }}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>{{ t("access.codexDefaultEffort") }}</dt>
+              <dd>{{ preview.codex_catalog.default_reasoning_effort }}</dd>
+            </div>
+            <div>
+              <dt>{{ t("access.codexDeclaredCli") }}</dt>
+              <dd>{{ preview.codex_catalog.cli_version }}</dd>
+            </div>
+          </dl>
+          <h4>{{ t("access.codexMenuAliases") }}</h4>
+          <ul class="path-list" :aria-label="t('access.codexMenuAliases')">
+            <li v-for="alias in preview.codex_catalog.aliases" :key="alias">
+              <code>{{ alias }}</code>
+            </li>
+          </ul>
+        </template>
+        <p v-else class="info-box">{{ t("access.codexCatalogUnavailable") }}</p>
+        <dl class="preview-context">
+          <div>
+            <dt>{{ t("access.codexRuntime") }}</dt>
+            <dd>
+              {{
+                codexRuntimeVerified
+                  ? t("access.codexRuntimeVerified")
+                  : t("access.codexRuntimeUnverified")
+              }}
+            </dd>
+          </div>
+          <div>
+            <dt>{{ t("access.codexRuntimeCli") }}</dt>
+            <dd>
+              {{ preview.codex_runtime?.cli_version ?? t("common.unknown") }}
+            </dd>
+          </div>
+        </dl>
+        <p class="info-box">{{ t("access.codexEvidenceBoundary") }}</p>
+        <p v-if="!codexReady" class="error-text" role="alert">
+          {{ t("access.codexRuntimeBlocked") }}
+        </p>
+      </template>
       <h3>{{ t("access.paths") }}</h3>
       <ul class="path-list">
         <li v-for="path in preview.paths" :key="path">

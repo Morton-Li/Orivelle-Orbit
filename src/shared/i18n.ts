@@ -110,6 +110,27 @@ const zh = {
     "尚未确认目标应用的组织管理策略，暂时无法应用或导出配置。请完成策略检测后重新预览。",
   "access.policyChanged":
     "目标应用的组织管理策略已变化，本次确认已失效。请重新检测并预览配置。",
+  "access.codexCatalog": "Codex 模型目录",
+  "access.codexMenuAliases": "模型菜单调用名称（本次目录）",
+  "access.codexDefaultAlias": "默认模型调用名称",
+  "access.codexDefaultEffort": "默认推理档位",
+  "access.codexDeclaredCli": "声明目标 CLI（须匹配桌面捆绑版本）",
+  "access.codexRuntime": "独立执行来源核验",
+  "access.codexRuntimeCli": "执行来源 CLI 版本",
+  "access.codexRuntimeVerified": "本次预览的执行来源已核验",
+  "access.codexRuntimeUnverified": "待核验",
+  "access.codexRuntimeBlocked":
+    "执行来源尚未确认匹配声明目标，本次不能应用。请核验桌面应用使用的 CLI 后重新预览。",
+  "access.codexEvidenceBoundary":
+    "模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
+  "access.codexBindingUnavailable":
+    "当前模型缺少可用的 Codex 模板声明。请刷新模型列表，或联系管理员补充声明后重新预览。",
+  "access.codexReasoningUnavailable":
+    "当前推理档位策略不足以生成完整目录。请刷新模型权限后重新预览。",
+  "access.codexCatalogChanged":
+    "模型目录、权限或连接状态已变化，本次预览已失效。请刷新后重新预览。",
+  "access.codexCatalogUnavailable":
+    "当前模型目录无法安全生成。请核对模板声明、版本及推理档位后重新预览。",
   "access.removeHint":
     "删除连接会清除此连接的本地会话和推理凭据，保留本地历史、安装证明与备份恢复密钥。服务器推理 key 仅在你另行选择撤销时撤销。",
   "access.revoke": "撤销本安装推理 key",
@@ -375,6 +396,28 @@ const en: Record<keyof typeof zh, string> = {
     "The target application's organization policy is unconfirmed. Configuration cannot be applied or exported. Complete the policy check and create a new preview.",
   "access.policyChanged":
     "The target application's organization policy changed and this confirmation is no longer valid. Check the policy and create a new preview.",
+  "access.codexCatalog": "Codex model catalog",
+  "access.codexMenuAliases": "Model menu aliases in this catalog",
+  "access.codexDefaultAlias": "Default model alias",
+  "access.codexDefaultEffort": "Default reasoning effort",
+  "access.codexDeclaredCli":
+    "Declared CLI target (must match the Desktop bundled version)",
+  "access.codexRuntime": "Independent execution source check",
+  "access.codexRuntimeCli": "Execution source CLI version",
+  "access.codexRuntimeVerified": "Execution source checked for this preview",
+  "access.codexRuntimeUnverified": "Check pending",
+  "access.codexRuntimeBlocked":
+    "The execution source has not been confirmed to match the declared target. Check the CLI used by Desktop and create a new preview before applying.",
+  "access.codexEvidenceBoundary":
+    "A template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
+  "access.codexBindingUnavailable":
+    "This model has no available Codex template declaration. Refresh the model list or ask an administrator to declare one, then preview again.",
+  "access.codexReasoningUnavailable":
+    "The current reasoning policy cannot produce a complete catalog. Refresh model permissions and preview again.",
+  "access.codexCatalogChanged":
+    "The model catalog, permissions or connection changed. Refresh and create a new preview.",
+  "access.codexCatalogUnavailable":
+    "The model catalog cannot be generated safely. Check the template declaration, version and reasoning policy, then preview again.",
   "access.removeHint":
     "Removes local sessions and inference credentials for this connection. History, installation proof and backup keys remain. The server inference key is revoked only if you select that separately.",
   "access.revoke": "Revoke installation inference key",

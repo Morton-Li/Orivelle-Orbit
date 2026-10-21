@@ -2,9 +2,15 @@ import type { Page } from "@playwright/test";
 import type {
   AuthorizationEvent,
   BootstrapView,
-  ModelView,
 } from "../../src/shared/contracts";
-import { bootstrap, imageModel, task } from "../fixtures";
+import {
+  bootstrap,
+  imageModel,
+  syntheticCodexCatalog,
+  syntheticCodexModel,
+  syntheticCodexRuntime,
+  task,
+} from "../fixtures";
 
 export type FixtureControl = {
   counts: Record<string, number>;
@@ -22,14 +28,6 @@ export async function fixture(
   } = {},
 ) {
   const state = options.state ?? bootstrap();
-  const text: ModelView = {
-    ...imageModel("synthetic-text"),
-    category: "text",
-    capabilities: ["openai.responses", "anthropic.messages"],
-    image_parameters: null,
-    image_billing_mode: null,
-    sales_price: null,
-  };
   await page.addInitScript(
     ({
       initial,
@@ -38,6 +36,8 @@ export async function fixture(
       paidFailure,
       claudeImport,
       restoreMode,
+      codexCatalog,
+      codexRuntime,
     }) => {
       // Test-only in-memory IPC. This is injected by Playwright and is never included in the application bundle.
       const testWindow = window as unknown as {
@@ -184,6 +184,8 @@ export async function fixture(
               operation: "restore",
               target_version: "synthetic-version",
               paths: ["/fixture/config"],
+              codex_catalog: null,
+              codex_runtime: null,
               model_id: null,
               context: null,
               restore_owner: {
@@ -217,7 +219,12 @@ export async function fixture(
               client: request.client,
               operation: "apply",
               target_version: "synthetic-version",
-              paths: ["/fixture/config"],
+              paths:
+                request.client === "codex"
+                  ? ["/fixture/config", codexCatalog.path]
+                  : ["/fixture/config"],
+              codex_catalog: request.client === "codex" ? codexCatalog : null,
+              codex_runtime: request.client === "codex" ? codexRuntime : null,
               model_id: request.model_id,
               context: {
                 account_id: connection.account_id,
@@ -249,11 +256,13 @@ export async function fixture(
     },
     {
       initial: state,
-      models: [imageModel(), text],
+      models: [imageModel(), syntheticCodexModel()],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
       claudeImport: options.claudeImport ?? false,
       restoreMode: options.restoreMode ?? "blocked",
+      codexCatalog: syntheticCodexCatalog(),
+      codexRuntime: syntheticCodexRuntime(),
     },
   );
 }
