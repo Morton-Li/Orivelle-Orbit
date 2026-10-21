@@ -14,16 +14,17 @@ vi.mock("../../src/shared/bridge", async (importOriginal) => ({
 
 import ConfigReviewDialog from "../../src/components/ConfigReviewDialog.vue";
 import { OrbitError } from "../../src/shared/bridge";
-import type { ConfigPreview, ModelView } from "../../src/shared/contracts";
+import type { ConfigPreview } from "../../src/shared/contracts";
 import { useOrbitStore } from "../../src/stores/orbit";
-import { bootstrap, imageModel } from "../fixtures";
+import {
+  bootstrap,
+  syntheticCodexCatalog,
+  syntheticCodexModel,
+  syntheticCodexRuntime,
+} from "../fixtures";
 
 let wrapper: VueWrapper | undefined;
-const model: ModelView = {
-  ...imageModel("synthetic-text"),
-  category: "text",
-  capabilities: ["openai.responses", "anthropic.messages"],
-};
+const model = syntheticCodexModel();
 beforeEach(async () => {
   setActivePinia(createPinia());
   bridge.call.mockReset().mockResolvedValue([model]);
@@ -42,7 +43,12 @@ function preview(client: "codex" | "claude" = "codex"): ConfigPreview {
     operation: "apply",
     client,
     target_version: "synthetic-version",
-    paths: ["/fixture/config"],
+    paths:
+      client === "codex"
+        ? ["/fixture/config", "/fixture/codex-model-catalog.json"]
+        : ["/fixture/config"],
+    codex_catalog: client === "codex" ? syntheticCodexCatalog() : null,
+    codex_runtime: client === "codex" ? syntheticCodexRuntime() : null,
     model_id: model.id,
     context: {
       account_id: connection.account_id,
@@ -163,6 +169,170 @@ describe("configuration confirmation follows current policy", () => {
     expect(useOrbitStore().notice?.text).not.toContain(
       "synthetic-private-policy-value",
     );
+    await apply.trigger("click");
+    expect(bridge.call).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Codex catalog confirmation", () => {
+  it("shows the compiled menu and explicit defaults separately from client loading and connection", () => {
+    const value = preview();
+    value.codex_catalog!.aliases.push("synthetic-second");
+    value.codex_catalog!.default_alias = "synthetic-second";
+    useOrbitStore().models.push(syntheticCodexModel("synthetic-second"));
+    const view = show(value);
+    expect(
+      view
+        .get('ul[aria-label="模型菜单调用名称（本次目录）"]')
+        .findAll("li")
+        .map((item) => item.text()),
+    ).toEqual(["synthetic-text", "synthetic-second"]);
+    const context = view.findAll("dl")[1]!;
+    expect(context.text()).toContain("默认模型调用名称synthetic-second");
+    expect(context.text()).toContain("默认推理档位high");
+    expect(context.text()).toContain("0.163.0-alpha.10.2");
+    expect(view.text()).toContain("本次预览的执行来源已核验");
+    expect(view.text()).toContain("不代表客户端已载入或连接通过");
+    expect(view.text()).toContain("/fixture/config");
+    expect(view.text()).toContain("/fixture/codex-model-catalog.json");
+    expect(view.text()).not.toContain(value.codex_catalog!.source_sha256);
+    expect(view.text()).not.toContain(value.codex_catalog!.sha256);
+    expect(
+      view.get<HTMLButtonElement>(".button.primary").element.disabled,
+    ).toBe(false);
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  const unavailableRuntimes: {
+    name: string;
+    runtime: ConfigPreview["codex_runtime"];
+    checked: boolean;
+  }[] = [
+    { name: "absent", runtime: null, checked: false },
+    {
+      name: "unverified",
+      runtime: { ...syntheticCodexRuntime(), state: "unverified" },
+      checked: false,
+    },
+    {
+      name: "a different CLI version",
+      runtime: {
+        ...syntheticCodexRuntime(),
+        cli_version: "synthetic-other-version",
+      },
+      checked: true,
+    },
+    {
+      name: "missing its revision",
+      runtime: { ...syntheticCodexRuntime(), revision: null },
+      checked: false,
+    },
+    {
+      name: "missing its CLI version",
+      runtime: { ...syntheticCodexRuntime(), cli_version: null },
+      checked: false,
+    },
+  ];
+  it.each(unavailableRuntimes)(
+    "cannot apply a declared catalog when the execution source is $name",
+    async ({ runtime, checked }) => {
+      const value = preview();
+      value.codex_runtime = runtime;
+      const view = show(value);
+      const apply = view.get<HTMLButtonElement>(".button.primary");
+      expect(value.can_apply).toBe(true);
+      expect(apply.element.disabled).toBe(true);
+      expect(view.text()).toContain("执行来源尚未确认匹配声明目标");
+      expect(view.text().includes("本次预览的执行来源已核验")).toBe(checked);
+      await apply.trigger("click");
+      expect(bridge.call).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires a generated catalog even with synthetic verified runtime metadata", async () => {
+    const value = preview();
+    value.codex_catalog = null;
+    const view = show(value);
+    const apply = view.get<HTMLButtonElement>(".button.primary");
+    expect(apply.element.disabled).toBe(true);
+    expect(view.text()).toContain("本次预览的执行来源已核验");
+    expect(view.text()).toContain("0.163.0-alpha.10.2");
+    await apply.trigger("click");
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  it("retires the preview when native rejects a late change to another catalog model", async () => {
+    const store = useOrbitStore();
+    store.models.push(syntheticCodexModel("synthetic-second"));
+    const value = preview();
+    value.codex_catalog!.aliases.push("synthetic-second");
+    const view = show(value);
+    store.models[1]!.revision = "synthetic-later-revision";
+    store.models[1]!.codex_catalog_binding = {
+      state: "unavailable",
+      verified: false,
+    };
+    await nextTick();
+    const apply = view.get<HTMLButtonElement>(".button.primary");
+    // Native owns validation of the full catalog scope, beyond this dialog's primary model.
+    expect(apply.element.disabled).toBe(false);
+    bridge.call.mockRejectedValueOnce(
+      new OrbitError("codex_catalog_scope_invalid", "synthetic-private-scope"),
+    );
+    await apply.trigger("click");
+    await flushPromises();
+    expect(bridge.call).toHaveBeenCalledWith("apply_client_config", {
+      preview_id: value.id,
+      confirmed: true,
+    });
+    expect(apply.element.disabled).toBe(true);
+    expect(store.notice?.text).toContain("模型目录、权限或连接状态已变化");
+    expect(store.notice?.text).not.toContain("synthetic-private-scope");
+    await apply.trigger("click");
+    expect(bridge.call).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["codex_binding_unavailable", "当前模型缺少可用的 Codex 模板声明"],
+    ["codex_reasoning_unavailable", "当前推理档位策略不足"],
+    ["codex_catalog_template_unavailable", "当前模型目录无法安全生成"],
+    ["codex_runtime_unverified", "尚未核验目标桌面应用的执行来源"],
+    ["codex_runtime_changed", "目标桌面应用的执行来源已变化"],
+    ["codex_catalog_scope_changed", "模型目录、权限或连接状态已变化"],
+    ["codex_catalog_context_unverified", "缺少可核验的恢复上下文"],
+    ["codex_config_override_unverified", "现有显式设置可能覆盖本次配置"],
+  ])("explains blocked previews for %s", (code, explanation) => {
+    const value = preview();
+    value.can_apply = false;
+    value.blocking_reason = code!;
+    value.codex_catalog = null;
+    const view = show(value);
+    expect(view.text()).toContain(explanation);
+    expect(view.text()).not.toContain(code);
+    expect(
+      view.get<HTMLButtonElement>(".button.primary").element.disabled,
+    ).toBe(true);
+  });
+
+  it("explains a native runtime rejection in English without exposing exception details", async () => {
+    const state = bootstrap("synthetic-account-a", 2);
+    state.settings.locale = "en";
+    const store = useOrbitStore();
+    store.acceptState(state);
+    const view = show(preview());
+    bridge.call.mockRejectedValueOnce(
+      new OrbitError(
+        "codex_runtime_changed",
+        "synthetic-private-runtime-value",
+      ),
+    );
+    const apply = view.get<HTMLButtonElement>(".button.primary");
+    await apply.trigger("click");
+    await flushPromises();
+    expect(store.notice?.text).toContain("execution source changed");
+    expect(store.notice?.text).not.toContain("synthetic-private-runtime-value");
+    expect(store.notice?.text).not.toContain("codex_runtime_changed");
+    expect(apply.element.disabled).toBe(true);
     await apply.trigger("click");
     expect(bridge.call).toHaveBeenCalledTimes(1);
   });

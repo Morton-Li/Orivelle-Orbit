@@ -2,6 +2,7 @@ import { emptyState } from "../src/stores/orbit";
 import type {
   BootstrapView,
   ClientView,
+  ConfigPreview,
   ModelView,
   TaskView,
 } from "../src/shared/contracts";
@@ -95,6 +96,8 @@ export function imageModel(id = "synthetic-image"): ModelView {
     execution_profile: "openai_images",
     image_billing_mode: "image_tokens_v1",
     reasoning_efforts: [],
+    reasoning: null,
+    codex_catalog_binding: null,
     support_status: "unverified",
     image_parameters: {
       max_results: 5,
@@ -117,6 +120,61 @@ export function imageModel(id = "synthetic-image"): ModelView {
       ],
     },
     official_price: null,
+  };
+}
+export function syntheticCodexModel(id = "synthetic-text"): ModelView {
+  return {
+    ...imageModel(id),
+    category: "text",
+    capabilities: [CAPABILITIES.responses, CAPABILITIES.messages],
+    image_parameters: null,
+    image_billing_mode: null,
+    sales_price: null,
+    reasoning_efforts: ["medium", "high"],
+    reasoning: {
+      state: "unrestricted",
+      capability_status: "supported",
+      supported_efforts: ["medium", "high"],
+      allowed_efforts: null,
+      default_effort: "high",
+      revision: 1,
+    },
+    codex_catalog_binding: {
+      state: "declared",
+      verified: false,
+      profile_id: "codex-cli-0.163.0-alpha.10.2",
+      cli_version: "0.163.0-alpha.10.2",
+      source_sha256:
+        "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+      template_slug: "gpt-6.1-sol",
+    },
+  };
+}
+// UI-only synthetic IPC summaries; these do not attest to a compiler or Desktop runtime.
+export function syntheticCodexCatalog(): NonNullable<
+  ConfigPreview["codex_catalog"]
+> {
+  return {
+    profile_id: "codex-cli-0.163.0-alpha.10.2",
+    cli_version: "0.163.0-alpha.10.2",
+    source_sha256:
+      "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+    sha256: "synthetic-catalog-sha256",
+    scope_revision: "synthetic-catalog-scope-revision",
+    path: "/fixture/codex-model-catalog.json",
+    bytes: 123456,
+    aliases: ["synthetic-text"],
+    default_alias: "synthetic-text",
+    default_reasoning_effort: "high",
+  };
+}
+export function syntheticCodexRuntime(): NonNullable<
+  ConfigPreview["codex_runtime"]
+> {
+  return {
+    state: "verified",
+    cli_version: "0.163.0-alpha.10.2",
+    revision: "synthetic-runtime-revision",
   };
 }
 export function task(state: TaskView["state"] = "completed"): TaskView {

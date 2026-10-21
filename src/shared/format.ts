@@ -9,6 +9,36 @@ import { locale, t } from "./i18n";
 export function configPolicyMessage(code: string): string | null {
   if (code === "managed_policy_unverified") return t("access.policyUnverified");
   if (code === "managed_policy_changed") return t("access.policyChanged");
+  if (code === "codex_binding_unavailable")
+    return t("access.codexBindingUnavailable");
+  if (code === "codex_reasoning_unavailable")
+    return t("access.codexReasoningUnavailable");
+  if (
+    code === "codex_catalog_scope_invalid" ||
+    code === "codex_catalog_scope_changed"
+  )
+    return t("access.codexCatalogChanged");
+  if (code === "codex_runtime_unverified")
+    return t("access.codexRuntimeUnavailable");
+  if (code === "codex_runtime_changed") return t("access.codexRuntimeChanged");
+  if (code === "codex_catalog_context_unverified")
+    return t("access.codexRestoreContextUnavailable");
+  if (code === "codex_config_override_unverified")
+    return t("access.codexOverrideUnavailable");
+  if (
+    [
+      "codex_catalog_version_unverified",
+      "codex_catalog_source_unverified",
+      "codex_catalog_invalid_plan",
+      "codex_catalog_limit_exceeded",
+      "codex_catalog_alias_unauthorized",
+      "codex_catalog_dependency_invalid",
+      "codex_catalog_reasoning_invalid",
+      "codex_catalog_default_invalid",
+      "codex_catalog_template_unavailable",
+    ].includes(code)
+  )
+    return t("access.codexCatalogUnavailable");
   return null;
 }
 

@@ -14,14 +14,14 @@
 
 | 层级 | 当前证据 | 未覆盖 |
 | --- | --- | --- |
-| 前端语义 | format、零 warning lint、typecheck、27/27 单元测试、生产 build 与排除测试 fixture 检查通过；包括参考价来源/缺失语义、同账户正常刷新保留草稿、首次账户缓存缺失后的只读恢复、策略变化及原生拒绝后旧配置确认持续失效 | 真实 IPC 和目标客户端 |
+| 前端语义 | format、零 warning lint、typecheck、44/44 单元测试、生产 build 与排除测试 fixture 检查通过；包括目录声明与独立 runtime 展示、旧确认退役，以及既有草稿、价格、策略和缓存恢复语义 | 真实 IPC 和目标客户端 |
 | Desktop 协议 fixture | 项目内 Responses/Messages 网关 61/61；主/辅助模型、单/并行工具续轮、JSON/SSE、故障与资源预算；连同既有打包专项共 71/71 Node 测试通过，无跳过 | 真实 Desktop 的内置工具适配、实际请求/重试行为、HTTPS、模型菜单、载入与连接证据 |
-| Codex 目录编译 | 固定 CLI0.163.0-alpha.10.2 的完整官方目录；12/12 针对性测试通过，覆盖 11 个原始模板、字段保留、授权子集、辅助引用、reasoning 与 1 MiB 上限 | Panel 生产映射、配置及恢复接线、运行实例来源、真实 Desktop 载入/模型菜单与能力 |
-| 浏览器界面 | Chrome 隔离 profile 15/15 通过；深浅色、390/1280/1600 宽度、键盘、弹窗焦点、无重发、单图删除、旧确认失效、授权拒绝/取消、会话刷新与过期、维护限制、无登录的冲突恢复预览；视觉复核已完成 | 原生窗口、安全存储、桌面应用接入 |
-| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core109/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；含目录编译、策略来源/晚变化、14组更新恢复故障夹具及图片出口、撤销、配额、授权、账务和锁回归 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
-| Panel | 阶段整合树独立复核六组2884项：2861 passed / 23 existing skipped、36897 assertions；隔离 MySQL8.4.11专项15/15，241 assertions；前端240/240及完整quality通过 | 后续其他任务推进的 develop 不属于此测试快照；真实 native/客户端/生产；未执行远端 GitLab pipeline |
+| Codex 目录与接线 | 固定 CLI0.163.0-alpha.10.2 完整官方目录的12项编译用例、10项作用域用例和10项双文件接线用例通过；已消费 Panel 显式绑定及真实整数 reasoning revision，联合 journal 覆盖配置、目录和授权恢复 | 运行实例来源、真实 Desktop 载入/模型菜单与能力、全部 runtime reasoning 路径 |
+| 浏览器界面 | 最新 Chrome 隔离 profile 的4/4受影响模型预览、冲突恢复和Claude导出用例通过，其余11项无变更流程未重跑；此前完整15/15及深浅色、390/1280/1600宽度和视觉记录保留 | 原生窗口、安全存储、桌面应用接入 |
+| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core128/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；普通 signer 入口1 ignored；包含双文件恢复及既有故障、授权、账务和锁回归 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
+| Panel | 绑定阶段源afbfe38a：隔离MySQL13/13（660 assertions）；三个受影响CI分组、前端329/329、PHP及前端quality通过，历史单项失败和复验见下文；最终安全构建179文件独立核对 | 真实 native/客户端/生产；未执行远端 GitLab pipeline；后来推进的 develop 不属于此快照 |
 | Edge | 本任务没有修改；合同以现有源码/测试核查 | 真实客户端与 fake gateway 的当前联调 |
-| macOS arm64 | 当前 Mac release helper/GUI、`.app` 与 ZIP 构建成功；实际单 arm64、minOS15.0/SDK15.4、helper 完整内嵌、前端 custom-protocol 内嵌；未运行 GUI | macOS 15、原生真实运行和完整客户端流程 |
+| macOS arm64 | 此前42900ddd源码的 release helper/GUI、`.app` 与 ZIP 构建成功；实际单 arm64、minOS15.0/SDK15.4、helper 和前端完整内嵌；尚未重建当前目录与双文件接线源码 | 最新源码打包、macOS 15、原生真实运行和完整客户端流程 |
 | Windows x64 | 无实际运行证据 | 编译、原生 vault/文件/ACL、客户端、安装与更新 |
 | 发布候选 | Mac `.app` 与约9.2 MB ZIP 有完整包/归档 SHA-256、源码前后一致检查和解包回读；仅 linker ad-hoc，未设置 TeamIdentifier，正式签名/更新关闭 | 正式签名、公证、安装、更新失败恢复；Windows 候选 |
 | 打包/CI 准备 | 2026-10-14 当前 Mac preflight/release/app/ZIP 实际成功；6/6候选证据专项、脚本格式/零warning lint/语法与5个 GitLab job YAML解析通过；项目镜像/cache与禁止 rustup自动安装保留 | Windows脚本与runner存在未核实，远端pipeline未运行 |
@@ -38,7 +38,15 @@
 
 ## 尚待完成的实现
 
-2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。2026-10-21 已实现固定版本完整目录的[纯编译器](codex-catalog.md)；Panel 生产映射、Service/config 和目录联合恢复仍未接线。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。2026-10-21 已实现固定版本完整目录、Panel显式绑定消费、Service/config和目录联合恢复，见[目录与接线](codex-catalog.md)；生产runtime仍为unverified，没有实际来源生产入口。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+
+2026-10-21 从develop `e7c7072b50abd0b5dd39928bbadb0656968c64bb` 建立 `feature/orbit-codex-config-catalog`。作用域规划提交 `d8c783806ff71262d532d8089cf27b5aba8ad1a0`；界面与固定错误分节提交 `2def6e62dd2e8292cd80c0fb79a4e2f00339a4cd`、`972095eb3a7f2578f9c2f8a677104344f129851b`。独立审查关闭了bootstrap仅刷新模型导致节点/权限/密钥陈旧，以及Claude导出可能覆盖新增目录的两项P2；补齐受影响反例，原强断言保留。双文件上下文覆盖完整模型范围，失效预览永久退役，旧无上下文journal不猜测恢复，退出后原字节恢复不会复活旧授权。
+
+本阶段最终Rust五个门禁实际exit0：完整core128/helper1、rustfmt、helper build、default/system typed check，源码前后摘要相同且无warning。前端完整check为44/44，受影响浏览器4/4；首轮浏览器在沙箱内启动阶段报告SIGABRT、清理时报告kill EPERM，四项页面断言未执行；获准的项目profile/mock-keychain复验才实际通过，失败日志保留。源码未变的其他浏览器流程、协议网关、signer探针与打包未重复运行。实际argv、环境覆盖、源码/日志摘要和本地合并以 `.cache/evidence/codex-config-catalog-20261021/` 内最终交付清单为准。当前生产runtime正向身份只允许测试构造；编译与合成成功不会开启真实自动配置，也不生成loaded/connection证据。
+
+Panel绑定阶段从develop `6281359f6739bee613e2183ece078cf7850f16db` 开始，源 `afbfe38a83668e8473e7b1dbc85410a1eea7c20e` 显式合入本地develop `19d74cc7cbea49d73c3b4cab9139bb805dd886db`。受影响CI：platform803通过、1项409失败后稳定构建上单项复验1/1；data1395通过/17既有skip；database88通过。409发生时Vite正在改manifest，与用例冻结Inertia版本冲突是源码及时间推断，未捕获实际响应头；不记作一次804/804。专项SQLite首轮15通过/9失败的raw snapshot差异修正为fresh()->getRawOriginal后，仅复验9/9；不记作一次24/24。隔离MySQL13/13含实际旧版升级、全新安装、重复迁移及回退保护。
+
+该Panel快照的最初标准Vite构建按项目默认读取了.env，日志保留并标为隔离/产物选择已替代。最终使用真实空envDir、剥离继承VITE变量的安全构建，179个文件独立核对；manifest摘要 `44d5deda0935ee4786f0925c8226d5cbae9a86c47b21e72f8bb988aea36d308d`，REVISION为afbfe38a。Composer、Pint、PHPStan及前端format/lint/type、329/329单测和产物专项通过。项目临时.env.testing经owner/hash检查后移除，本任务loopback/tmpfs MySQL容器已按ID/标签核对停止删除；真实.env未编辑。完整事实与旧日志见Panel `storage/framework/testing/orbit-codex-binding-evidence/codex-binding-delivery-20261021.json`；不代表生产、原生或后来提交。
 
 2026-10-21 用户明确恢复后，从干净 develop `9576fafed7fe758740fd2fe80654d9c968285d93` 建立 `feature/orbit-codex-catalog`。完整原始目录及许可证/NOTICE/来源单独提交 `8e0a7049e28828372de56a510a07b3ed1904219e`；纯编译 API 和 12 组用例提交 `e6e49c42f2fcd8b502b523b780319c4533d547b3`。当前公共安装包为 Desktop26.1013.40934/CLI0.163.0-alpha.10.2，官方固定提交 `4ebc485ca321243727539187169425fcf972f2c4` 的目录与内嵌字节仅差 LF；旧 0.162 证据保留，未当作当前版本。原始数据按完整 JSON 值保留，未通过有损 ModelInfo DTO 重建。编译调用方声明版本、授权和辅助依赖，编译器不提供这些声明的外部真实性证明。
 

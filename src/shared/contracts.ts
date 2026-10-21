@@ -150,6 +150,24 @@ export type ClientEvidence = {
   node_id: string;
   model_id: string;
 };
+export type CodexCatalogBinding =
+  | { state: "unavailable"; verified: false }
+  | {
+      state: "declared";
+      verified: false;
+      profile_id: string;
+      cli_version: string;
+      source_sha256: string;
+      template_slug: string;
+    };
+export type ModelReasoning = {
+  state: "unrestricted" | "restricted";
+  capability_status: "supported" | "unknown" | "not_applicable";
+  supported_efforts: string[];
+  allowed_efforts: string[] | null;
+  default_effort: string | null;
+  revision: number | null;
+};
 export type ModelView = {
   id: string;
   label: string;
@@ -160,6 +178,8 @@ export type ModelView = {
   execution_profile: string | null;
   image_billing_mode: "image_count" | "image_tokens_v1" | null;
   reasoning_efforts: string[];
+  reasoning: ModelReasoning | null;
+  codex_catalog_binding: CodexCatalogBinding | null;
   support_status: "verified" | "unverified" | "unsupported";
   image_parameters: ImageParameterConstraints | null;
   sales_price: PriceView | null;
@@ -295,6 +315,23 @@ type ConfigPreviewBase = {
   can_apply: boolean;
   can_export_import: boolean;
   blocking_reason: string | null;
+  codex_catalog: {
+    profile_id: string;
+    cli_version: string;
+    source_sha256: string;
+    sha256: string;
+    scope_revision: string;
+    path: string;
+    bytes: number;
+    aliases: string[];
+    default_alias: string;
+    default_reasoning_effort: string;
+  } | null;
+  codex_runtime: {
+    state: "unverified" | "verified";
+    cli_version: string | null;
+    revision: string | null;
+  } | null;
 };
 export type ConfigPreview = ConfigPreviewBase &
   (

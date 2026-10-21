@@ -1,8 +1,9 @@
 use crate::{
-    dto::{ClientKind, ClientView},
+    dto::{ClientKind, ClientView, CodexRuntimeView},
     error::{Result, fail},
     store::private_directory,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::Read,
@@ -25,8 +26,76 @@ pub struct SystemPaths {
     #[cfg(test)]
     pub(crate) fixture_policy:
         Option<std::sync::Arc<dyn Fn(&ClientView) -> crate::policy::Snapshot + Send + Sync>>,
+    #[cfg(test)]
+    pub(crate) fixture_codex_runtime:
+        Option<std::sync::Arc<dyn Fn() -> CodexRuntimeSnapshot + Send + Sync>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CodexRuntimeIdentity {
+    pub(crate) cli_version: String,
+    pub(crate) revision: String,
+}
+
+pub(crate) struct CodexRuntimeSnapshot {
+    identity: Option<CodexRuntimeIdentity>,
+}
+impl CodexRuntimeSnapshot {
+    pub(crate) fn unverified() -> Self {
+        Self { identity: None }
+    }
+    pub(crate) fn require_verified(&self) -> Result<CodexRuntimeIdentity> {
+        self.identity
+            .clone()
+            .filter(|identity| {
+                identity.cli_version == crate::codex_catalog::SUPPORTED_CLI_VERSION
+                    && identity.revision.len() == 64
+                    && identity
+                        .revision
+                        .bytes()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            })
+            .ok_or_else(|| fail("codex_runtime_unverified"))
+    }
+    pub(crate) fn view(&self) -> CodexRuntimeView {
+        let verified = self.require_verified().ok();
+        CodexRuntimeView {
+            state: if verified.is_some() {
+                "verified"
+            } else {
+                "unverified"
+            }
+            .into(),
+            cli_version: verified
+                .as_ref()
+                .map(|identity| identity.cli_version.clone()),
+            revision: verified.map(|identity| identity.revision),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn synthetic(marker: &str) -> Self {
+        Self {
+            identity: Some(CodexRuntimeIdentity {
+                cli_version: crate::codex_catalog::SUPPORTED_CLI_VERSION.into(),
+                revision: crate::identity::sha256(format!("synthetic-runtime:{marker}").as_bytes()),
+            }),
+        }
+    }
 }
 impl SystemPaths {
+    pub fn codex_catalog(&self) -> PathBuf {
+        self.codex_config
+            .with_file_name("orivelle-orbit.models.json")
+    }
+    pub(crate) fn codex_runtime(&self) -> CodexRuntimeSnapshot {
+        #[cfg(test)]
+        if let Some(adapter) = &self.fixture_codex_runtime {
+            return adapter();
+        }
+        // An installed package/version is not evidence of the executable or
+        // daemon selected by Desktop. No production verified producer exists.
+        CodexRuntimeSnapshot::unverified()
+    }
     pub fn isolated(root: &Path) -> Result<Self> {
         let client = root.join("client-fixtures");
         private_directory(&client)?;
@@ -50,6 +119,8 @@ impl SystemPaths {
             fixture_clients: None,
             #[cfg(test)]
             fixture_policy: None,
+            #[cfg(test)]
+            fixture_codex_runtime: None,
         })
     }
     /// Called only by a build with the explicitly authorized system-integration feature.
@@ -80,6 +151,8 @@ impl SystemPaths {
             fixture_clients: None,
             #[cfg(test)]
             fixture_policy: None,
+            #[cfg(test)]
+            fixture_codex_runtime: None,
         })
     }
     pub fn ensure_configuration_parent(&self, client: ClientKind) -> Result<()> {
@@ -121,10 +194,13 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
         version: None,
         bundle_id: None,
         app_path: None,
-        config_paths: vec![match client {
-            ClientKind::Codex => paths.codex_config.display().to_string(),
-            ClientKind::Claude => paths.claude_library.display().to_string(),
-        }],
+        config_paths: match client {
+            ClientKind::Codex => vec![
+                paths.codex_catalog().display().to_string(),
+                paths.codex_config.display().to_string(),
+            ],
+            ClientKind::Claude => vec![paths.claude_library.display().to_string()],
+        },
         platform_supported: cfg!(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "windows", target_arch = "x86_64")

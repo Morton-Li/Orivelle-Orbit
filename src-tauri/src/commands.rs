@@ -273,22 +273,25 @@ pub async fn preview_client_config(
     native: State<'_, Native>,
     request: Preview,
 ) -> Result<ConfigPreview> {
-    let _ = native.service.list_models(&request.connection_id).await?;
-    native.service.preview_client_config(
-        &request.connection_id,
-        request.expected_revision,
-        request.client,
-        &request.model_id,
-    )
+    native
+        .service
+        .preview_client_config_refreshed(
+            &request.connection_id,
+            request.expected_revision,
+            request.client,
+            &request.model_id,
+        )
+        .await
 }
 #[tauri::command]
-pub fn apply_client_config(
+pub async fn apply_client_config(
     native: State<'_, Native>,
     request: Confirmation,
 ) -> Result<ConfigResult> {
     native
         .service
-        .apply_client_config(&request.preview_id, request.confirmed, false)
+        .apply_client_config_refreshed(&request.preview_id, request.confirmed)
+        .await
 }
 #[tauri::command]
 pub async fn export_claude_import(
