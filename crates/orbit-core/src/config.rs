@@ -659,6 +659,73 @@ pub fn codex_patch(
     provider["auth"] = Item::Table(auth);
     Ok(doc.to_string().into_bytes())
 }
+pub fn codex_catalog_patch(
+    original: Option<&[u8]>,
+    base_url: &str,
+    model: &str,
+    helper: &Path,
+    binding: &str,
+    catalog_path: &Path,
+    default_effort: &str,
+) -> Result<Vec<u8>> {
+    if !catalog_path.is_absolute()
+        || default_effort.is_empty()
+        || default_effort.len() > 128
+        || !default_effort.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(fail("invalid_configuration"));
+    }
+    let after = codex_patch(original, base_url, model, helper, binding)?;
+    let mut document = std::str::from_utf8(&after)
+        .map_err(|_| fail("invalid_configuration"))?
+        .parse::<DocumentMut>()
+        .map_err(|_| fail("invalid_configuration"))?;
+    let owned = [
+        "model",
+        "model_provider",
+        "model_catalog_json",
+        "model_reasoning_effort",
+    ];
+    if document.get("profile").is_some()
+        || document
+            .get("profiles")
+            .and_then(Item::as_table_like)
+            .is_some_and(|profiles| {
+                profiles
+                    .iter()
+                    .any(|(_, profile)| owned.iter().any(|key| profile.get(key).is_some()))
+            })
+    {
+        return Err(fail("codex_config_override_unverified"));
+    }
+    document["model_catalog_json"] =
+        value(catalog_path.to_str().ok_or_else(|| fail("invalid_path"))?);
+    document["model_reasoning_effort"] = value(default_effort);
+    let bytes = document.to_string().into_bytes();
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(fail("invalid_configuration"));
+    }
+    Ok(bytes)
+}
+pub fn codex_configuration_revision(config: &Path, catalog: &Path) -> Result<Option<String>> {
+    let files = [(config, read_file(config)?), (catalog, read_file(catalog)?)];
+    if files.iter().all(|(_, bytes)| bytes.is_none()) {
+        return Ok(None);
+    }
+    let framed: Vec<_> = files
+        .iter()
+        .map(|(path, bytes)| {
+            (
+                path.to_string_lossy(),
+                bytes.is_some(),
+                bytes.as_ref().map(|bytes| sha256(bytes)),
+            )
+        })
+        .collect();
+    Ok(Some(sha256(
+        &serde_json::to_vec(&(1u32, framed)).map_err(|_| fail("serialization_failed"))?,
+    )))
+}
 pub fn claude_import_diagnostic(
     base_url: &str,
     helper: &Path,
@@ -727,6 +794,9 @@ pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String
                 {
                     return "<redacted previous helper value>".into();
                 }
+                if previous && path.last() == Some(&"model_catalog_json") {
+                    return "<redacted previous catalog path>".into();
+                }
                 if previous && path.last() == Some(&"base_url") {
                     let wrapped = format!("value={value}");
                     let suspicious = wrapped
@@ -763,6 +833,8 @@ pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String
     let paths: Vec<Vec<&str>> = vec![
         vec!["model"],
         vec!["model_provider"],
+        vec!["model_catalog_json"],
+        vec!["model_reasoning_effort"],
         vec!["model_providers", "orivelle_orbit", "name"],
         vec!["model_providers", "orivelle_orbit", "base_url"],
         vec!["model_providers", "orivelle_orbit", "wire_api"],

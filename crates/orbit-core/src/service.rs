@@ -2621,6 +2621,7 @@ impl Service {
         }
         if !path.is_absolute()
             || path == self.paths.codex_config
+            || path == self.paths.codex_catalog()
             || path.starts_with(&self.paths.claude_library)
             || (self.paths.isolated && !path.starts_with(&self.store.root))
         {
@@ -6073,6 +6074,40 @@ mod tests {
             preview.blocking_reason.as_deref(),
             Some("schema_unverified")
         );
+        // Diagnostic exports cannot replace either member of the Codex journal.
+        for protected in [
+            service.paths.codex_config.clone(),
+            service.paths.codex_catalog(),
+        ] {
+            let blocked = service
+                .preview_client_config(
+                    &record.view.id,
+                    record.view.revision,
+                    ClientKind::Claude,
+                    &model,
+                )
+                .unwrap();
+            assert!(blocked.can_export_import);
+            let before = read_file(&protected).unwrap();
+            let revision = service.store.snapshot().unwrap().revision;
+            assert_eq!(
+                service
+                    .export_claude_import(&blocked.id, true, &protected)
+                    .unwrap_err()
+                    .code,
+                "invalid_path"
+            );
+            assert_eq!(read_file(&protected).unwrap(), before);
+            assert_eq!(service.store.snapshot().unwrap().revision, revision);
+            assert!(
+                service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+                    .iter()
+                    .all(|binding| !binding.enabled)
+            );
+        }
         let target = service.store.root.join("official-v2-diagnostic.json");
         service
             .export_claude_import(&preview.id, true, &target)

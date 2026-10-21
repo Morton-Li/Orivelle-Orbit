@@ -27,6 +27,10 @@ pub struct SystemPaths {
         Option<std::sync::Arc<dyn Fn(&ClientView) -> crate::policy::Snapshot + Send + Sync>>,
 }
 impl SystemPaths {
+    pub fn codex_catalog(&self) -> PathBuf {
+        self.codex_config
+            .with_file_name("orivelle-orbit.models.json")
+    }
     pub fn isolated(root: &Path) -> Result<Self> {
         let client = root.join("client-fixtures");
         private_directory(&client)?;
