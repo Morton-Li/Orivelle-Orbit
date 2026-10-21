@@ -16,8 +16,9 @@
 | --- | --- | --- |
 | 前端语义 | format、零 warning lint、typecheck、27/27 单元测试、生产 build 与排除测试 fixture 检查通过；包括参考价来源/缺失语义、同账户正常刷新保留草稿、首次账户缓存缺失后的只读恢复、策略变化及原生拒绝后旧配置确认持续失效 | 真实 IPC 和目标客户端 |
 | Desktop 协议 fixture | 项目内 Responses/Messages 网关 61/61；主/辅助模型、单/并行工具续轮、JSON/SSE、故障与资源预算；连同既有打包专项共 71/71 Node 测试通过，无跳过 | 真实 Desktop 的内置工具适配、实际请求/重试行为、HTTPS、模型菜单、载入与连接证据 |
+| Codex 目录编译 | 固定 CLI0.163.0-alpha.10.2 的完整官方目录；12/12 针对性测试通过，覆盖 11 个原始模板、字段保留、授权子集、辅助引用、reasoning 与 1 MiB 上限 | Panel 生产映射、配置及恢复接线、运行实例来源、真实 Desktop 载入/模型菜单与能力 |
 | 浏览器界面 | Chrome 隔离 profile 15/15 通过；深浅色、390/1280/1600 宽度、键盘、弹窗焦点、无重发、单图删除、旧确认失效、授权拒绝/取消、会话刷新与过期、维护限制、无登录的冲突恢复预览；视觉复核已完成 | 原生窗口、安全存储、桌面应用接入 |
-| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core97/helper1 fake 回归、rustfmt、默认和嵌入 helper 的 system-integration typed cargo check通过；策略来源/晚变化、14组更新恢复故障夹具及图片出口、撤销、配额、授权、账务和锁回归通过 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
+| Rust/native | 已有 CLT clang21 + SDK15.4：最新 core109/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；含目录编译、策略来源/晚变化、14组更新恢复故障夹具及图片出口、撤销、配额、授权、账务和锁回归 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
 | Panel | 阶段整合树独立复核六组2884项：2861 passed / 23 existing skipped、36897 assertions；隔离 MySQL8.4.11专项15/15，241 assertions；前端240/240及完整quality通过 | 后续其他任务推进的 develop 不属于此测试快照；真实 native/客户端/生产；未执行远端 GitLab pipeline |
 | Edge | 本任务没有修改；合同以现有源码/测试核查 | 真实客户端与 fake gateway 的当前联调 |
 | macOS arm64 | 当前 Mac release helper/GUI、`.app` 与 ZIP 构建成功；实际单 arm64、minOS15.0/SDK15.4、helper 完整内嵌、前端 custom-protocol 内嵌；未运行 GUI | macOS 15、原生真实运行和完整客户端流程 |
@@ -37,7 +38,11 @@
 
 ## 尚待完成的实现
 
-2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。Codex 的固定版本完整目录已作静态来源核查，目录编译和生产映射仍未适配。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。2026-10-21 已实现固定版本完整目录的[纯编译器](codex-catalog.md)；Panel 生产映射、Service/config 和目录联合恢复仍未接线。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+
+2026-10-21 用户明确恢复后，从干净 develop `9576fafed7fe758740fd2fe80654d9c968285d93` 建立 `feature/orbit-codex-catalog`。完整原始目录及许可证/NOTICE/来源单独提交 `8e0a7049e28828372de56a510a07b3ed1904219e`；纯编译 API 和 12 组用例提交 `e6e49c42f2fcd8b502b523b780319c4533d547b3`。当前公共安装包为 Desktop26.1013.40934/CLI0.163.0-alpha.10.2，官方固定提交 `4ebc485ca321243727539187169425fcf972f2c4` 的目录与内嵌字节仅差 LF；旧 0.162 证据保留，未当作当前版本。原始数据按完整 JSON 值保留，未通过有损 ModelInfo DTO 重建。编译调用方声明版本、授权和辅助依赖，编译器不提供这些声明的外部真实性证明。
+
+本阶段最少检查实际通过：目录专项12/12、完整 core109/helper1、rustfmt、helper 编译、default/system typed check；没有重复无变更的 UI、浏览器、协议网关、签名探针或打包。普通 Cargo 回归中原有 CLI signer 入口仍为1 ignored，本阶段未另行执行。日志为 `runtime/logs/catalog-{targeted,final-fmt,final-core-helper,final-helper-build,final-default-check,final-system-check}-20261021-1.log`，源码和日志摘要及最终本地合并以 `.cache/evidence/codex-catalog-delivery-20261021.json` 为准。独立源码、用例及来源审查无本阶段 P1/P2。没有实际执行 Desktop/GUI/helper、读取认证资料、访问 Vault、修改用户配置或调用上游，先前 42900ddd 候选包不能代表本模块的打包或运行证据。
 
 2026-10-15 协议隔离网关阶段从 develop `67f1cd65d685097042b1a0aa32c117ac9ec95db1` 创建 `feature/orbit-desktop-fake-gateway`，按基础 fixture、CI、工具/连接修复、故障与边界用例、文档分组提交。模块源码提交为 `80db039d525d17c5f9062572611a1020529c5c5d`，三文件及八份日志绑定 `.cache/evidence/fake-gateway-final-source-20261015.json`。网关最终 61/61、含既有打包专项的全 Node 71/71、前端完整 check 的 27/27 单测通过；格式、lint、语法及 YAML 五个 job 解析通过。两平台验证 job 均已接入，远端 pipeline 和 Windows 未运行。
 
