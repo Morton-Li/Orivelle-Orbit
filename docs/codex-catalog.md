@@ -6,7 +6,7 @@
 
 本阶段只接受 CLI `0.163.0-alpha.10.2`，固定官方标签 `rust-v0.163.0-alpha.10.2` 对应的提交 `4ebc485ca321243727539187169425fcf972f2c4`。完整原始目录为 472072 字节，SHA-256 为 `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`，含 11 个条目、50 种原始字段。
 
-原件、Apache-2.0 `LICENSE`、完整 `NOTICE` 和来源清单保存在 [`crates/orbit-core/resources/codex/0.163.0-alpha.10.2/`](../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json)。模板包含完整指令、工具、上下文、reasoning 和嵌套元数据；只列模型 ID 不能替代这些内容。原件不修改，新版本应增加独立来源固定、合同复核和测试，不能安装时动态追踪 latest。实际分发模板的后续接线还须同时保留许可证和 NOTICE。
+原件、Apache-2.0 `LICENSE`、完整 `NOTICE` 和来源清单保存在 [`crates/orbit-core/resources/codex/0.163.0-alpha.10.2/`](../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json)。模板包含完整指令、工具、上下文、reasoning 和嵌套元数据；只列模型 ID 不能替代这些内容。原件不修改，新版本应增加独立来源固定、合同复核和测试，不能安装时动态追踪 latest。候选打包将三份许可证/来源材料映射到固定资源路径，并在实际包和 ZIP 解包副本中逐项核对，见[候选打包](build-candidates.md)。
 
 2026-10-21 仅只读检查公共安装包：Desktop `26.1013.40934` 捆绑该 CLI，内嵌目录与官方原件只差末尾 LF。证据在项目忽略目录 `.cache/evidence/codex-catalog-readonly-provenance-20261021.json`。Desktop 可选择其他 CLI 或 daemon，因此安装包相符不能证明运行实例的来源、有效配置或载入状态。
 
@@ -62,4 +62,4 @@ Service 从当前账户、节点和 provider 的完整模型范围规划目录�
 
 最终源码、实际 argv、源码前后摘要、日志、历史失败及本地提交/合并记录见项目忽略目录 `.cache/evidence/codex-config-catalog-20261021/`。没有启动 Desktop、helper 或 Orbit GUI，没有读取用户认证资料、修改真实配置、调用系统安全存储或发送推理请求。
 
-Panel 声明与纯目录编译不证明运行实例的 CLI 选择；组织远端策略仍为未知。自动配置仍需要独立的来源与策略门禁，不会据此生成 `loaded_evidence` 或 `connection_evidence`，也不代表实际模型菜单、流式或工具调用已经验收。现有 Mac 候选包仍绑定此前的源码，不能作为本模块的打包或运行证据。后续包含模板的新候选还需把固定来源的许可证和完整 NOTICE 纳入实际分发产物并回读验证。
+Panel 声明与目录编译不证明运行实例的 CLI 选择；组织远端策略仍为未知。自动配置仍需要独立的来源与策略门禁，不会据此生成 `loaded_evidence` 或 `connection_evidence`，也不代表实际模型菜单、流式或工具调用已经验收。历史 `42900ddd` Mac 候选不包含本模块；新候选必须以 `runtime/logs/candidate-manifest.json` 和来源材料阶段交付清单的完整源码、实际包/ZIP 摘要及三文件回读结果为准，构建不能替代运行验收。

@@ -3,6 +3,41 @@ import { createReadStream } from "node:fs";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
+export const CODEX_SOURCE_MATERIALS = Object.freeze({
+  project: "OpenAI Codex",
+  cli_version: "0.163.0-alpha.10.2",
+  source_commit: "4ebc485ca321243727539187169425fcf972f2c4",
+  catalog_sha256:
+    "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+  files: Object.freeze(
+    [
+      {
+        name: "LICENSE",
+        bytes: 10926,
+        sha256:
+          "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+      },
+      {
+        name: "NOTICE",
+        bytes: 242,
+        sha256:
+          "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915",
+      },
+      {
+        name: "PROVENANCE.json",
+        bytes: 2557,
+        sha256:
+          "fc8f61f12508b61ae615b069442f86f4efe6c4f8d9f73ca2b39489580f22ea68",
+      },
+    ].map((file) =>
+      Object.freeze({
+        ...file,
+        path: `Contents/Resources/licenses/codex/0.163.0-alpha.10.2/${file.name}`,
+      }),
+    ),
+  ),
+});
+
 export function freezeSource(inspect) {
   const head = inspect("git", ["rev-parse", "HEAD"]);
   const tree = inspect("git", ["rev-parse", "HEAD^{tree}"]);
@@ -87,6 +122,24 @@ export async function inspectMacApp({
   entries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
+  // Required independently of caller expectations, including archive readback.
+  const retained = CODEX_SOURCE_MATERIALS.files.map((required) => {
+    const actual = entries.find((item) => item.path === required.path);
+    if (
+      !actual ||
+      actual.kind !== "file" ||
+      actual.bytes !== required.bytes ||
+      actual.sha256 !== required.sha256
+    )
+      throw new Error(
+        "App Codex source material differs from the fixed resource pin.",
+      );
+    return {
+      path: actual.path,
+      bytes: actual.bytes,
+      sha256: actual.sha256,
+    };
+  });
   const info = entries.find((item) => item.path === "Contents/Info.plist");
   if (!info || info.kind !== "file") throw new Error("App has no Info.plist.");
   const plist = await metadata(path.join(appRoot, "Contents/Info.plist"));
@@ -122,6 +175,13 @@ export async function inspectMacApp({
     minimum_system: plist.LSMinimumSystemVersion,
     executable: plist.CFBundleExecutable,
     bytes: totalBytes,
+    codex_source_materials: {
+      project: CODEX_SOURCE_MATERIALS.project,
+      cli_version: CODEX_SOURCE_MATERIALS.cli_version,
+      source_commit: CODEX_SOURCE_MATERIALS.source_commit,
+      catalog_sha256: CODEX_SOURCE_MATERIALS.catalog_sha256,
+      files: retained,
+    },
     package_sha256: createHash("sha256")
       .update(JSON.stringify(entries))
       .digest("hex"),

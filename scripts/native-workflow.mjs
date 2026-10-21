@@ -73,6 +73,7 @@ for (const key of Object.keys(inheritedEnv)) {
     normalized.startsWith("TAURI_PRIVATE_") ||
     normalized.startsWith("APPLE_") ||
     normalized.startsWith("NPM_CONFIG_") ||
+    normalized.startsWith("VITE") ||
     normalized.startsWith("CARGO_REGISTRIES_") ||
     normalized.startsWith("DITTO") ||
     [
@@ -80,10 +81,18 @@ for (const key of Object.keys(inheritedEnv)) {
       "RUSTC_WORKSPACE_WRAPPER",
       "CARGO_BUILD_TARGET",
       "TAURI_CONFIG",
+      "NODE_ENV",
     ].includes(normalized)
   )
     delete inheritedEnv[key];
 }
+const npmGlobalConfig = path.join(root, ".cache/npm/disabled-global.npmrc");
+const existingNpmGlobalConfig = await lstat(npmGlobalConfig).catch((error) => {
+  if (error.code === "ENOENT") return null;
+  throw error;
+});
+if (existingNpmGlobalConfig)
+  throw new Error("The isolated npm global configuration path must be absent.");
 const env = {
   ...inheritedEnv,
   PATH: `${rustBin}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -100,6 +109,8 @@ const env = {
   NPM_CONFIG_CACHE: path.join(root, ".cache", "npm"),
   NPM_CONFIG_REGISTRY: "https://registry.npmmirror.com/",
   NPM_CONFIG_UPDATE_NOTIFIER: "false",
+  NPM_CONFIG_USERCONFIG: os.devNull,
+  NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig,
 };
 function inspect(binary, args) {
   const result = spawnSync(binary, args, {
@@ -420,6 +431,7 @@ if (mode === "preflight") {
       archiveEvidence = {
         ...(await digest(archive)),
         app_roundtrip_verified: true,
+        codex_source_materials: restored.codex_source_materials,
       };
     } finally {
       await rm(extracted, { recursive: true, force: true });
