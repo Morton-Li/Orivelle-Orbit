@@ -4843,6 +4843,187 @@ mod tests {
             .unwrap();
         f.service.store.get("journal", id).unwrap().unwrap()
     }
+    #[test]
+    fn codex_config_joint_menu_patch_revision_and_single_use() {
+        let f = policy_fixture(ClientKind::Codex);
+        catalog_menu(&f);
+        std::fs::write(&f.service.paths.codex_config,
+            b"model='old'\nmodel_reasoning_effort='ultra'\nplan_mode_reasoning_effort='low'\n[features]\ncustom=true\n").unwrap();
+        let preview = f.preview();
+        assert!(preview.can_apply);
+        let summary = preview.codex_catalog.as_ref().unwrap();
+        assert_eq!(summary.aliases, [f.model.clone(), "menu-alias".into()]);
+        assert_eq!(summary.default_alias, f.model);
+        assert_eq!(summary.default_reasoning_effort, "medium");
+        assert!(preview.redacted_diff.contains("model_reasoning_effort"));
+        assert!(preview.redacted_diff.contains("model_catalog_json"));
+        assert!(!preview.redacted_diff.contains("instructions_template"));
+        let journal = prepared_catalog(&f, &preview);
+        let files = f.service.config_engine().synthetic_files(&journal).unwrap();
+        assert_eq!(
+            journal.paths,
+            [
+                f.service.paths.codex_catalog().display().to_string(),
+                f.service.paths.codex_config.display().to_string()
+            ]
+        );
+        assert!(!f.service.paths.codex_catalog().exists());
+        let result = f
+            .service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        for file in &files {
+            assert_eq!(read_file(Path::new(&file.path)).unwrap(), file.after);
+        }
+        let catalog: Value = serde_json::from_slice(files[0].after.as_ref().unwrap()).unwrap();
+        let models = catalog["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["slug"], f.model);
+        assert_eq!(models[1]["slug"], "menu-alias");
+        assert_eq!(models[1]["default_reasoning_level"], "high");
+        assert_eq!(
+            models[1]["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|option| option["effort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["medium", "high"]
+        );
+        let document = std::str::from_utf8(files[1].after.as_ref().unwrap())
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(document["model_reasoning_effort"].as_str(), Some("medium"));
+        assert_eq!(document["plan_mode_reasoning_effort"].as_str(), Some("low"));
+        assert_eq!(document["features"]["custom"].as_bool(), Some(true));
+        assert_eq!(result.backup_group_id, Some(journal.id));
+        assert_eq!(
+            f.service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+        let saved = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Codex)
+            .unwrap();
+        let snapshot_revision = f.service.store.snapshot().unwrap().revision;
+        std::fs::write(f.service.paths.codex_catalog(), b"external catalog").unwrap();
+        let changed = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Codex)
+            .unwrap();
+        assert_ne!(changed.configuration_revision, saved.configuration_revision);
+        assert_eq!(changed.configuration_state, "conflict");
+        assert_eq!(changed.loaded_state, "unconfirmed");
+        assert_eq!(
+            f.service.store.snapshot().unwrap().revision,
+            snapshot_revision
+        );
+    }
+    #[test]
+    fn codex_config_full_menu_and_actor_changes_reject_before_vault() {
+        for change in [
+            "menu-revision",
+            "menu-removed",
+            "menu-binding",
+            "menu-reasoning",
+            "node",
+            "provider",
+            "account",
+            "epoch",
+            "active",
+        ] {
+            let f = policy_fixture(ClientKind::Codex);
+            catalog_menu(&f);
+            let preview = f.preview();
+            let bindings = f.bindings();
+            let mut cache = f.service.account_cache(&f.record).unwrap();
+            let mut record = f.record.clone();
+            let menu = cache
+                .models
+                .iter_mut()
+                .find(|model| model.id == "menu-alias")
+                .unwrap();
+            match change {
+                "menu-revision" => menu.revision = sha256(b"late revision"),
+                "menu-removed" => cache.models.retain(|model| model.id != "menu-alias"),
+                "menu-binding" => menu.codex_catalog_binding = None,
+                "menu-reasoning" => {
+                    menu.reasoning.as_mut().unwrap().default_effort = Some("medium".into())
+                }
+                "node" => {
+                    cache
+                        .nodes
+                        .iter_mut()
+                        .find(|node| Some(&node.id) == record.view.node_id.as_ref())
+                        .unwrap()
+                        .revision = sha256(b"late node")
+                }
+                "provider" => record.view.provider_id = "anthropic".into(),
+                "account" => record.view.account_id = "other-actor".into(),
+                "epoch" => f
+                    .service
+                    .store
+                    .set_meta(
+                        &authorization_epoch_reference(
+                            &record.view.panel_origin,
+                            &record.installation_id,
+                            &record.view.account_id,
+                        ),
+                        "999",
+                    )
+                    .unwrap(),
+                "active" => f.service.store.set_meta("active_connection", "").unwrap(),
+                _ => unreachable!(),
+            }
+            f.service
+                .store
+                .put(
+                    "account-cache",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &cache,
+                )
+                .unwrap();
+            f.service
+                .store
+                .put(
+                    "connection",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &record,
+                )
+                .unwrap();
+            f.reset();
+            assert_eq!(
+                f.service
+                    .apply_client_config(&preview.id, true, false)
+                    .unwrap_err()
+                    .code,
+                "codex_catalog_scope_changed",
+                "{change}"
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
+            assert!(!f.service.paths.codex_catalog().exists());
+            assert_eq!(f.bindings(), bindings);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0, "{change}");
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+        }
+    }
     #[tokio::test]
     async fn codex_config_runtime_and_policy_gate_precede_command_refresh_and_service_mutations() {
         for gate in ["runtime", "policy"] {
@@ -4914,6 +5095,390 @@ mod tests {
                 "preview_expired"
             );
             assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+        }
+    }
+    #[tokio::test]
+    async fn codex_config_bootstrap_refresh_rejects_late_node_permission_and_key_changes() {
+        for change in ["node-url", "node-state", "permission", "key"] {
+            let f = policy_fixture(ClientKind::Codex);
+            let mut wire = golden()["bootstrap_reply"].clone();
+            let model = &f.service.account_cache(&f.record).unwrap().models[0];
+            wire["data"]["models"][0]["codex_catalog_binding"] =
+                serde_json::to_value(&model.codex_catalog_binding).unwrap();
+            wire["data"]["models"][0]["reasoning"] =
+                serde_json::to_value(&model.reasoning).unwrap();
+            let stage = Arc::new(AtomicU64::new(0));
+            let remote_stage = stage.clone();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let requests = calls.clone();
+            f.service.http.scripted(Arc::new(move |request| {
+                let mut reply = wire.clone();
+                let is_bootstrap = request.url.ends_with("/api/v1/orbit/bootstrap");
+                requests.lock().unwrap().push(if is_bootstrap { "bootstrap" } else { "models" });
+                let response = if is_bootstrap {
+                    if remote_stage.load(Ordering::SeqCst) == 1 {
+                        match change {
+                            "node-url" => reply["data"]["nodes"][0]["connection_url"] = json!("https://new-edge.example.test/v1"),
+                            "node-state" => reply["data"]["nodes"][0]["service_state"] = json!("unavailable"),
+                            "permission" => reply["data"]["inference_credential_allowed"] = json!(false),
+                            "key" => reply["data"]["inference_keys"][0]["state"] = json!("revoked"),
+                            _ => unreachable!(),
+                        }
+                    }
+                    reply
+                } else {
+                    assert!(request.url.contains("/api/v1/orbit/models?node_id="));
+                    json!({"data": reply["data"]["models"], "meta": {"revision": reply["data"]["meta"]["catalog_revision"]}})
+                };
+                Box::pin(async move { Ok(crate::network::RemoteResponse { status: 200, request_id: None,
+                    bytes: serde_json::to_vec(&response).unwrap() }) })
+            }));
+            let preview = f
+                .service
+                .preview_client_config_refreshed(
+                    &f.record.view.id,
+                    f.record.view.revision,
+                    ClientKind::Codex,
+                    &f.model,
+                )
+                .await
+                .unwrap();
+            assert!(preview.can_apply);
+            let journal = prepared_catalog(&f, &preview);
+            let bindings = f.bindings();
+            stage.store(1, Ordering::SeqCst);
+            assert_eq!(
+                f.service
+                    .apply_client_config_refreshed(&preview.id, true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "codex_catalog_scope_changed",
+                "{change}"
+            );
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                ["bootstrap", "models", "bootstrap"]
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
+            assert!(!f.service.paths.codex_catalog().exists());
+            assert_eq!(f.bindings(), bindings);
+            let after: Journal = f
+                .service
+                .store
+                .get("journal", &journal.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.phase, "prepared");
+            assert_eq!(after.ciphertext, journal.ciphertext);
+            assert!(
+                f.service
+                    .store
+                    .list::<Journal>("backup", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            stage.store(0, Ordering::SeqCst);
+            assert_eq!(
+                f.service
+                    .apply_client_config_refreshed(&preview.id, true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "preview_expired"
+            );
+            assert_eq!(calls.lock().unwrap().len(), 3);
+        }
+    }
+    #[test]
+    fn codex_config_runtime_or_menu_late_during_vault_read_stops_first_file_write() {
+        for late in ["runtime", "menu"] {
+            let f = policy_fixture(ClientKind::Codex);
+            catalog_menu(&f);
+            let preview = f.preview();
+            let bindings = f.bindings();
+            let (entered, waiting) = std::sync::mpsc::channel();
+            let (resume, released) = std::sync::mpsc::channel();
+            *f.vault.pause.lock().unwrap() = Some((entered, released));
+            let worker = f.service.clone();
+            let thread =
+                std::thread::spawn(move || worker.apply_client_config(&preview.id, true, false));
+            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+            if late == "runtime" {
+                f.runtime.store(1, Ordering::SeqCst);
+            } else {
+                let mut cache = f.service.account_cache(&f.record).unwrap();
+                cache
+                    .models
+                    .iter_mut()
+                    .find(|model| model.id == "menu-alias")
+                    .unwrap()
+                    .revision = sha256(b"after vault began");
+                f.service
+                    .store
+                    .put(
+                        "account-cache",
+                        &f.record.view.id,
+                        &f.record.view.account_id,
+                        &cache,
+                    )
+                    .unwrap();
+            }
+            resume.send(()).unwrap();
+            assert_eq!(
+                thread.join().unwrap().unwrap_err().code,
+                if late == "runtime" {
+                    "codex_runtime_changed"
+                } else {
+                    "codex_catalog_scope_changed"
+                }
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
+            assert!(!f.service.paths.codex_catalog().exists());
+            assert_eq!(f.bindings(), bindings);
+        }
+    }
+    #[test]
+    fn codex_config_context_change_after_pair_publish_never_enables_final_grant() {
+        for late in ["runtime", "menu"] {
+            let f = policy_fixture(ClientKind::Codex);
+            catalog_menu(&f);
+            let mut paths = f.service.paths.clone();
+            let config = paths.codex_config.clone();
+            if late == "runtime" {
+                paths.fixture_codex_runtime = Some(Arc::new(move || {
+                    crate::system::CodexRuntimeSnapshot::synthetic(
+                        if std::fs::read(&config).unwrap() == b"model='old'\n" {
+                            "fixture-0"
+                        } else {
+                            "late-runtime"
+                        },
+                    )
+                }));
+            } else {
+                let store = f.service.store.clone();
+                let id = f.record.view.id.clone();
+                let account = f.record.view.account_id.clone();
+                let once = AtomicBool::new(false);
+                paths.fixture_policy = Some(Arc::new(move |target| {
+                    if std::fs::read(&config).unwrap() != b"model='old'\n"
+                        && !once.swap(true, Ordering::SeqCst)
+                    {
+                        let mut cache: AccountCache =
+                            store.get("account-cache", &id).unwrap().unwrap();
+                        cache
+                            .models
+                            .iter_mut()
+                            .find(|model| model.id == "menu-alias")
+                            .unwrap()
+                            .revision = sha256(b"late final grant scope");
+                        store.put("account-cache", &id, &account, &cache).unwrap();
+                    }
+                    crate::policy::Snapshot::fixture(
+                        target,
+                        crate::policy::State::No,
+                        "synthetic-source-0",
+                    )
+                }));
+            }
+            let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+            let preview = service
+                .preview_client_config(
+                    &f.record.view.id,
+                    f.record.view.revision,
+                    ClientKind::Codex,
+                    &f.model,
+                )
+                .unwrap();
+            let bindings = serde_json::to_value(
+                service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                service
+                    .apply_client_config(&preview.id, true, false)
+                    .unwrap_err()
+                    .code,
+                if late == "runtime" {
+                    "codex_runtime_changed"
+                } else {
+                    "codex_catalog_scope_changed"
+                }
+            );
+            assert_ne!(
+                std::fs::read(&service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
+            assert!(service.paths.codex_catalog().exists());
+            assert_eq!(
+                serde_json::to_value(
+                    service
+                        .store
+                        .list::<HelperBinding>("binding", None)
+                        .unwrap()
+                )
+                .unwrap(),
+                bindings
+            );
+            assert!(
+                service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+                    .iter()
+                    .all(|binding| !binding.enabled)
+            );
+            assert!(
+                service
+                    .pending_configuration_recovery(ClientKind::Codex)
+                    .unwrap()
+            );
+            assert!(
+                service
+                    .store
+                    .list::<Journal>("backup", None)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+    #[test]
+    fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
+        for mode in ["old-null", "null-default", "profile", "profile-table"] {
+            let f = policy_fixture(ClientKind::Codex);
+            if ["old-null", "null-default"].contains(&mode) {
+                let mut cache = f.service.account_cache(&f.record).unwrap();
+                if mode == "old-null" {
+                    cache.models[0].codex_catalog_binding = None;
+                } else {
+                    cache.models[0].reasoning.as_mut().unwrap().default_effort = None;
+                }
+                f.service
+                    .store
+                    .put(
+                        "account-cache",
+                        &f.record.view.id,
+                        &f.record.view.account_id,
+                        &cache,
+                    )
+                    .unwrap();
+            } else {
+                std::fs::write(
+                    &f.service.paths.codex_config,
+                    if mode == "profile" {
+                        "profile='custom'\n[profiles.custom]\nmodel='other'\n"
+                    } else {
+                        "[profiles.custom]\nmodel_reasoning_effort='ultra'\n"
+                    },
+                )
+                .unwrap();
+            }
+            let before = std::fs::read(&f.service.paths.codex_config).unwrap();
+            let revision = f.service.store.snapshot().unwrap().revision;
+            f.reset();
+            let error = f
+                .service
+                .preview_client_config(
+                    &f.record.view.id,
+                    f.record.view.revision,
+                    ClientKind::Codex,
+                    &f.model,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                match mode {
+                    "old-null" => "codex_binding_unavailable",
+                    "null-default" => "codex_reasoning_unavailable",
+                    _ => "codex_config_override_unverified",
+                }
+            );
+            assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                before
+            );
+            assert!(!f.service.paths.codex_catalog().exists());
+        }
+    }
+    #[test]
+    fn codex_config_restore_original_pair_after_logout_never_revives_prior_grant() {
+        let f = policy_fixture(ClientKind::Codex);
+        catalog_menu(&f);
+        let first = f
+            .service
+            .apply_client_config(&f.preview().id, true, false)
+            .unwrap();
+        let original_config = std::fs::read(&f.service.paths.codex_config).unwrap();
+        let original_catalog = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+        let second = f
+            .service
+            .apply_client_config(&f.preview().id, true, false)
+            .unwrap();
+        assert_ne!(first.backup_group_id, second.backup_group_id);
+        f.service.commit_logout(&f.record.view.id).unwrap();
+        let restore = f
+            .service
+            .preview_restore(second.backup_group_id.as_ref().unwrap())
+            .unwrap();
+        assert!(restore.can_apply);
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&f.service.paths.codex_config).unwrap(),
+            original_config
+        );
+        assert_eq!(
+            std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+            original_catalog
+        );
+        assert!(
+            f.service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|binding| !binding.enabled)
+        );
+    }
+    #[test]
+    fn codex_config_unverified_recovery_has_no_vault_or_store_side_effects() {
+        for gate in ["runtime", "policy"] {
+            let f = policy_fixture(ClientKind::Codex);
+            let mut journal = prepared_catalog(&f, &f.preview());
+            journal.phase = "publishing".into();
+            f.service
+                .store
+                .put("journal", &journal.id, &journal.account_id, &journal)
+                .unwrap();
+            if gate == "runtime" {
+                f.runtime.store(2, Ordering::SeqCst);
+            } else {
+                f.epoch.store(3, Ordering::SeqCst);
+            }
+            let revision = f.service.store.snapshot().unwrap().revision;
+            f.reset();
+            f.service.coordinate_configuration_recovery().unwrap();
+            assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+            assert!(!f.service.paths.codex_catalog().exists());
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                b"model='old'\n"
+            );
         }
     }
     #[test]
