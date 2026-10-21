@@ -141,7 +141,7 @@ pub struct ImageParameterConstraints {
     pub backgrounds: Vec<String>,
     pub verified: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
 pub enum CodexCatalogBindingView {
     Declared {
@@ -155,7 +155,7 @@ pub enum CodexCatalogBindingView {
         verified: bool,
     },
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReasoningPolicyView {
     pub state: String,

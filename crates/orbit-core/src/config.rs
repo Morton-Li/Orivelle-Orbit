@@ -1,8 +1,9 @@
 use crate::{
-    dto::ClientKind,
+    dto::{ClientKind, CodexCatalogBindingView, ReasoningPolicyView},
     error::{Result, fail},
     identity::{HelperBinding, Installation, sha256, uuid},
     store::{Store, private_file},
+    system::CodexRuntimeIdentity,
     vault::Vault,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -20,6 +21,46 @@ use std::{
 use toml_edit::{DocumentMut, Item, Table, value};
 
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CodexModelInput {
+    pub(crate) id: String,
+    pub(crate) provider_id: String,
+    pub(crate) revision: String,
+    pub(crate) category: String,
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) binding: Option<CodexCatalogBindingView>,
+    pub(crate) reasoning: Option<ReasoningPolicyView>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CodexContext {
+    pub(crate) panel_origin: String,
+    pub(crate) account_id: String,
+    pub(crate) installation_id: String,
+    pub(crate) connection_id: String,
+    pub(crate) connection_revision: u64,
+    pub(crate) authorization_epoch: u64,
+    pub(crate) credential_revision: String,
+    pub(crate) credential_reference: String,
+    pub(crate) credential_expires_at: Option<i64>,
+    pub(crate) api_key_id: Option<String>,
+    pub(crate) node_id: String,
+    pub(crate) node_revision: String,
+    pub(crate) edge_base_url: String,
+    pub(crate) provider_id: String,
+    pub(crate) catalog_revision: String,
+    pub(crate) models: Vec<CodexModelInput>,
+    pub(crate) profile_id: String,
+    pub(crate) source_sha256: String,
+    pub(crate) scope_revision: String,
+    pub(crate) catalog_sha256: String,
+    pub(crate) catalog_size: u64,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) default_alias: String,
+    pub(crate) default_reasoning_effort: String,
+    pub(crate) catalog_path: String,
+    pub(crate) config_path: String,
+    pub(crate) runtime: CodexRuntimeIdentity,
+}
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct FileChange {
     pub path: String,
@@ -44,6 +85,9 @@ struct Operation {
     #[zeroize(skip)]
     #[serde(default)]
     source_journal_id: Option<String>,
+    #[zeroize(skip)]
+    #[serde(default)]
+    codex_context: Option<CodexContext>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Journal {
@@ -80,6 +124,7 @@ pub struct ConfigEngine<'a> {
     pub vault: &'a dyn Vault,
     pub allowed_roots: Vec<PathBuf>,
     pub(crate) policy_guard: Option<&'a dyn Fn() -> Result<()>>,
+    pub(crate) context_guard: Option<&'a dyn Fn(Option<&CodexContext>, bool) -> Result<()>>,
 }
 pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {
     let metadata = match fs::symlink_metadata(path) {
@@ -125,6 +170,81 @@ fn equal_current(file: &FileChange, expected: &Option<Vec<u8>>) -> Result<bool> 
     Ok(read_file(Path::new(&file.path))? == *expected)
 }
 impl ConfigEngine<'_> {
+    fn check_context(&self, journal: &Journal, operation: &Operation) -> Result<()> {
+        self.check_context_for(journal, operation, false)
+    }
+    fn check_context_for(
+        &self,
+        journal: &Journal,
+        operation: &Operation,
+        restoring: bool,
+    ) -> Result<()> {
+        if journal.client != ClientKind::Codex {
+            return Ok(());
+        }
+        if let Some(context) = &operation.codex_context {
+            if context.panel_origin != journal.installation.origin
+                || context.installation_id != journal.installation.id
+                || context.account_id != journal.account_id
+                || journal.paths
+                    != operation
+                        .files
+                        .iter()
+                        .map(|file| file.path.clone())
+                        .collect::<Vec<_>>()
+                || operation.files.len() != 2
+                || operation.files[0].path != context.catalog_path
+                || operation.files[1].path != context.config_path
+                || context.catalog_path == context.config_path
+                || context.models.len() > crate::codex_catalog::MAX_AUTHORIZED_ALIASES
+                || context.aliases.is_empty()
+                || context.aliases.len() > crate::codex_catalog::MAX_MODELS
+            {
+                return Err(fail("codex_catalog_context_unverified"));
+            }
+            if !operation.restore {
+                let catalog = operation.files[0]
+                    .after
+                    .as_ref()
+                    .ok_or_else(|| fail("backup_invalid"))?;
+                if catalog.len() as u64 != context.catalog_size
+                    || catalog.len() > crate::codex_catalog::MAX_OUTPUT_BYTES
+                    || sha256(catalog) != context.catalog_sha256
+                {
+                    return Err(fail("backup_invalid"));
+                }
+                let bytes = operation.files[1]
+                    .after
+                    .as_ref()
+                    .ok_or_else(|| fail("backup_invalid"))?;
+                let document = std::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(|text| text.parse::<DocumentMut>().ok())
+                    .ok_or_else(|| fail("backup_invalid"))?;
+                if document.get("model").and_then(Item::as_str)
+                    != Some(context.default_alias.as_str())
+                    || document.get("model_catalog_json").and_then(Item::as_str)
+                        != Some(context.catalog_path.as_str())
+                    || document
+                        .get("model_reasoning_effort")
+                        .and_then(Item::as_str)
+                        != Some(context.default_reasoning_effort.as_str())
+                {
+                    return Err(fail("backup_invalid"));
+                }
+            }
+        }
+        if let Some(guard) = self.context_guard {
+            return guard(
+                operation.codex_context.as_ref(),
+                operation.restore || restoring,
+            );
+        }
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        Err(fail("codex_catalog_context_unverified"))
+    }
     fn check_policy(&self) -> Result<()> {
         if let Some(guard) = self.policy_guard {
             return guard();
@@ -175,6 +295,7 @@ impl ConfigEngine<'_> {
     fn cipher(&self, installation: &Installation) -> Result<XChaCha20Poly1305> {
         self.check_policy()?;
         let key = self.vault.get(&installation.backup_reference)?;
+        self.check_policy()?;
         XChaCha20Poly1305::new_from_slice(&key).map_err(|_| fail("vault_unavailable"))
     }
     fn aad(journal: &Journal) -> String {
@@ -239,6 +360,17 @@ impl ConfigEngine<'_> {
             return Err(fail("invalid_configuration"));
         }
         for file in &files {
+            if file
+                .before
+                .as_ref()
+                .is_some_and(|bytes| bytes.len() as u64 > MAX_CONFIG_BYTES)
+                || file
+                    .after
+                    .as_ref()
+                    .is_some_and(|bytes| bytes.len() as u64 > MAX_CONFIG_BYTES)
+            {
+                return Err(fail("invalid_configuration"));
+            }
             self.validate_path(Path::new(&file.path))?;
             if !equal_current(file, &file.before)? {
                 return Err(fail("configuration_conflict"));
@@ -271,6 +403,7 @@ impl ConfigEngine<'_> {
             grants_after: Vec::new(),
             restore: false,
             source_journal_id: None,
+            codex_context: None,
         };
         let mut operation = operation;
         for id in operation
@@ -336,8 +469,32 @@ impl ConfigEngine<'_> {
         journal.target_policy_revision = Some(revision.into());
         self.persist_operation(journal, &operation)
     }
+    pub(crate) fn freeze_codex_context(
+        &self,
+        journal: &mut Journal,
+        context: CodexContext,
+    ) -> Result<()> {
+        let mut operation = self.decrypt(journal)?;
+        operation.codex_context = Some(context);
+        self.check_context(journal, &operation)?;
+        self.persist_operation(journal, &operation)
+    }
+    pub(crate) fn codex_context(&self, journal: &Journal) -> Result<Option<CodexContext>> {
+        Ok(self.decrypt(journal)?.codex_context.clone())
+    }
+    #[cfg(test)]
+    pub(crate) fn synthetic_files(&self, journal: &Journal) -> Result<Vec<FileChange>> {
+        Ok(self.decrypt(journal)?.files.clone())
+    }
+    #[cfg(test)]
+    pub(crate) fn synthetic_without_context(&self, journal: &mut Journal) -> Result<()> {
+        let mut operation = self.decrypt(journal)?;
+        operation.codex_context = None;
+        self.persist_operation(journal, &operation)
+    }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
         self.check_policy()?;
+        self.check_context(journal, operation)?;
         if let Some(id) = &operation.source_journal_id {
             let source = self
                 .store
@@ -411,6 +568,7 @@ impl ConfigEngine<'_> {
             .put("journal", &journal.id, &journal.account_id, journal)?;
         for file in &operation.files {
             self.check_policy()?;
+            self.check_context(journal, operation)?;
             if equal_current(file, &file.after)? {
                 continue;
             }
@@ -421,6 +579,7 @@ impl ConfigEngine<'_> {
                 return Err(fail("configuration_conflict"));
             }
             self.check_policy()?;
+            self.check_context(journal, operation)?;
             match &file.after {
                 Some(bytes) => atomic_write(Path::new(&file.path), bytes)?,
                 None => {
@@ -437,6 +596,7 @@ impl ConfigEngine<'_> {
             if let Some(mut b) = self.store.get::<HelperBinding>("binding", id)? {
                 b.enabled = false;
                 self.check_policy()?;
+                self.check_context(journal, operation)?;
                 self.store.put("binding", id, &b.account_id, &b)?;
             }
         }
@@ -449,16 +609,19 @@ impl ConfigEngine<'_> {
                     .ok_or_else(|| fail("binding_disabled"))?;
                 b.enabled = true;
                 self.check_policy()?;
+                self.check_context(journal, operation)?;
                 self.store.put("binding", id, &b.account_id, &b)?;
             }
         }
         for grant in grants {
             self.check_policy()?;
+            self.check_context(journal, operation)?;
             self.store
                 .put("binding", &grant.id, &grant.account_id, &grant)?;
         }
         journal.phase = "committed".into();
         self.check_policy()?;
+        self.check_context(journal, operation)?;
         self.store
             .commit_configuration(journal, operation.source_journal_id.as_deref())?;
         self.prune_backups_locked(journal.client)?;
@@ -470,11 +633,12 @@ impl ConfigEngine<'_> {
             .store
             .get::<Journal>("journal", id)?
             .ok_or_else(|| fail("preview_expired"))?;
-        let _lock = self.lock(journal.client)?;
         if journal.phase != "prepared" {
             return Err(fail("configuration_conflict"));
         }
         let operation = self.decrypt(&journal)?;
+        self.check_context(&journal, &operation)?;
+        let _lock = self.lock(journal.client)?;
         for file in &operation.files {
             if !equal_current(file, &file.before)? {
                 return Err(fail("configuration_conflict"));
@@ -489,18 +653,20 @@ impl ConfigEngine<'_> {
             .store
             .get::<Journal>("journal", id)?
             .ok_or_else(|| fail("backup_invalid"))?;
+        let operation = self.decrypt(&journal)?;
+        self.check_context(&journal, &operation)?;
         let _lock = self.lock(journal.client)?;
         if journal.phase == "conflict" {
             return Err(fail("configuration_conflict"));
         }
         if journal.phase == "committed" {
-            let operation = self.decrypt(&journal)?;
             for file in &operation.files {
                 if !equal_current(file, &file.after)? {
                     return Err(fail("configuration_conflict"));
                 }
             }
             self.check_policy()?;
+            self.check_context(&journal, &operation)?;
             self.store
                 .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
             return Ok(journal);
@@ -508,7 +674,6 @@ impl ConfigEngine<'_> {
         if journal.phase != "publishing" {
             return Err(fail("preview_expired"));
         }
-        let operation = self.decrypt(&journal)?;
         self.publish(&mut journal, &operation)?;
         Ok(journal)
     }
@@ -528,6 +693,7 @@ impl ConfigEngine<'_> {
             return Err(fail("backup_expired"));
         }
         let original = self.decrypt(&journal)?;
+        self.check_context_for(&journal, &original, true)?;
         let mut files = Vec::new();
         for file in &original.files {
             let current = read_file(Path::new(&file.path))?;
@@ -552,6 +718,7 @@ impl ConfigEngine<'_> {
         operation.restore = true;
         operation.source_journal_id = Some(journal.id.clone());
         operation.grants_after = original.grants_before.clone();
+        operation.codex_context = original.codex_context.clone();
         operation.grants_before = operation
             .grants_after
             .iter()
@@ -887,6 +1054,7 @@ mod tests {
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
+            context_guard: None,
         };
         let journal = legacy
             .prepare(
@@ -910,6 +1078,7 @@ mod tests {
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: Some(&clear),
+            context_guard: None,
         };
         let mut restore = current.prepare_restore(&journal.id).unwrap();
         current
@@ -936,6 +1105,7 @@ mod tests {
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: Some(&guard),
+            context_guard: None,
         };
         let mut journal = engine
             .prepare(
@@ -991,6 +1161,7 @@ mod tests {
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
+            context_guard: None,
         };
         let j = engine
             .prepare(
@@ -1065,6 +1236,7 @@ mod tests {
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
+            context_guard: None,
         };
         let j = engine
             .prepare(
@@ -1151,6 +1323,7 @@ mod tests {
                 vault: &vault,
                 allowed_roots: vec![dir.path().to_path_buf()],
                 policy_guard: None,
+                context_guard: None,
             };
             let applied = engine
                 .prepare(
@@ -1210,6 +1383,7 @@ mod tests {
             vault: &vault,
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
+            context_guard: None,
         };
         let preview = engine
             .prepare(

@@ -1,6 +1,9 @@
 use crate::{
     clipboard::{ClipboardImage, ImageClipboardSink},
-    config::{ConfigEngine, FileChange, Journal, codex_patch, read_file},
+    config::{
+        CodexContext, CodexModelInput, ConfigEngine, FileChange, Journal, codex_catalog_patch,
+        codex_configuration_revision, read_file,
+    },
     dto::*,
     error::{Result, fail},
     identity::{
@@ -10,7 +13,7 @@ use crate::{
     images::{self, InputRecord, TaskSnapshot},
     network::{CredentialDelivery, Http, ProofSession, TokenResponse},
     store::Store,
-    system::{SystemPaths, detect_clients},
+    system::{CodexRuntimeIdentity, SystemPaths, detect_clients},
     vault::Vault,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -91,6 +94,14 @@ struct PreviewEntry {
     journal_id: Option<String>,
     import_candidate: Option<(Vec<u8>, String)>,
     policy: crate::policy::Snapshot,
+    runtime: Option<CodexRuntimeIdentity>,
+    catalog_context: Option<CodexContext>,
+}
+struct ConfigObservation {
+    target: ClientView,
+    policy: crate::policy::Snapshot,
+    runtime: Option<CodexRuntimeIdentity>,
+    runtime_view: Option<CodexRuntimeView>,
 }
 struct ForgetEntry {
     view: ForgetInstallationPreview,
@@ -836,6 +847,11 @@ impl Service {
                 }
             })
             .collect();
+        let mut clients = snapshot.list::<ClientView>("client-state", Some("local"))?;
+        for client in &mut clients {
+            self.project_configuration_revision(client);
+            crate::policy::observe(&self.paths, client).project(client);
+        }
         Ok(BootstrapView {
             schema_version: 1,
             state_revision: snapshot.revision,
@@ -857,7 +873,7 @@ impl Service {
             installations,
             nodes,
             active_connection_id: active.map(|r| r.view.id),
-            clients: snapshot.list("client-state", Some("local"))?,
+            clients,
             settings: snapshot.get("settings", "local")?.unwrap_or_default(),
             tasks,
             image_history: history,
@@ -2133,15 +2149,289 @@ impl Service {
             vault: self.vault.as_ref(),
             allowed_roots: self.paths.configuration_roots.clone(),
             policy_guard: None,
+            context_guard: None,
         }
     }
-    fn guarded_config_engine<'a>(&'a self, guard: &'a dyn Fn() -> Result<()>) -> ConfigEngine<'a> {
+    fn codex_engine<'a>(
+        &'a self,
+        guard: &'a dyn Fn() -> Result<()>,
+        context_guard: &'a dyn Fn(Option<&CodexContext>, bool) -> Result<()>,
+    ) -> ConfigEngine<'a> {
         ConfigEngine {
             store: &self.store,
             vault: self.vault.as_ref(),
             allowed_roots: self.paths.configuration_roots.clone(),
             policy_guard: Some(guard),
+            context_guard: Some(context_guard),
         }
+    }
+    fn observe_configuration(&self, client: ClientKind) -> Result<ConfigObservation> {
+        let (target, policy) = self.client_policy(client)?;
+        let (runtime, runtime_view) = if client == ClientKind::Codex {
+            let snapshot = self.paths.codex_runtime();
+            (snapshot.require_verified().ok(), Some(snapshot.view()))
+        } else {
+            (None, None)
+        };
+        Ok(ConfigObservation {
+            target,
+            policy,
+            runtime,
+            runtime_view,
+        })
+    }
+    fn require_configuration(
+        &self,
+        observation: &ConfigObservation,
+        expected_policy: Option<&crate::policy::Snapshot>,
+        expected_runtime: Option<&CodexRuntimeIdentity>,
+    ) -> Result<()> {
+        if !self.paths.writes_authorized {
+            return Err(fail("integration_authorization_required"));
+        }
+        if observation.target.client == ClientKind::Codex {
+            let current = observation
+                .runtime
+                .as_ref()
+                .ok_or_else(|| fail("codex_runtime_unverified"))?;
+            if expected_runtime.is_some_and(|expected| expected != current) {
+                return Err(fail("codex_runtime_changed"));
+            }
+        }
+        if let Some(expected) = expected_policy {
+            expected.matches(&observation.policy)?;
+        } else {
+            observation.policy.require_clear()?;
+        }
+        if !observation.target.installed
+            || !observation.target.platform_supported
+            || observation.target.version.is_none()
+        {
+            return Err(fail("client_unsupported"));
+        }
+        Ok(())
+    }
+    /// Used before any account/session refresh, Vault access or configuration mutation.
+    pub fn configuration_preflight(&self, client: ClientKind) -> Result<()> {
+        self.require_configuration(&self.observe_configuration(client)?, None, None)
+    }
+    fn validate_configuration(
+        &self,
+        client: ClientKind,
+        policy: &crate::policy::Snapshot,
+        runtime: Option<&CodexRuntimeIdentity>,
+    ) -> Result<()> {
+        self.require_configuration(&self.observe_configuration(client)?, Some(policy), runtime)
+    }
+    fn codex_inputs(
+        &self,
+        record: &ConnectionRecord,
+        cache: &AccountCache,
+    ) -> Vec<CodexModelInput> {
+        cache
+            .models
+            .iter()
+            .filter(|model| {
+                model.provider_id == record.view.provider_id
+                    && model.category == "text"
+                    && model
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == "openai.responses")
+            })
+            .map(|model| CodexModelInput {
+                id: model.id.clone(),
+                provider_id: model.provider_id.clone(),
+                revision: model.revision.clone(),
+                category: model.category.clone(),
+                capabilities: model.capabilities.clone(),
+                binding: model.codex_catalog_binding.clone(),
+                reasoning: model.reasoning.clone(),
+            })
+            .collect()
+    }
+    fn plan_codex(
+        &self,
+        record: &ConnectionRecord,
+        cache: &AccountCache,
+        selected: &str,
+    ) -> Result<crate::codex_binding::PlannedCatalog> {
+        crate::codex_binding::compile_scope(
+            &crate::codex_binding::CatalogScope {
+                context: crate::codex_binding::ScopeContext {
+                    panel_origin: &record.view.panel_origin,
+                    account_id: &record.view.account_id,
+                    installation_id: &record.installation_id,
+                    connection_id: &record.view.id,
+                    connection_revision: record.view.revision,
+                    authorization_epoch: record.authorization_epoch,
+                    credential_revision: record
+                        .view
+                        .credential_revision
+                        .as_deref()
+                        .ok_or_else(|| fail("credential_missing"))?,
+                    node_id: record
+                        .view
+                        .node_id
+                        .as_deref()
+                        .ok_or_else(|| fail("node_unavailable"))?,
+                    provider_id: &record.view.provider_id,
+                    catalog_revision: &cache.catalog_revision,
+                },
+                models: &cache.models,
+            },
+            selected,
+        )
+    }
+    fn freeze_codex(
+        &self,
+        record: &ConnectionRecord,
+        cache: &AccountCache,
+        planned: &crate::codex_binding::PlannedCatalog,
+        runtime: &CodexRuntimeIdentity,
+    ) -> Result<CodexContext> {
+        let node = cache
+            .nodes
+            .iter()
+            .find(|node| Some(&node.id) == record.view.node_id.as_ref() && node.available)
+            .ok_or_else(|| fail("node_unavailable"))?;
+        if Some(&node.base_url) != record.view.edge_base_url.as_ref() {
+            return Err(fail("codex_catalog_scope_changed"));
+        }
+        Ok(CodexContext {
+            panel_origin: record.view.panel_origin.clone(),
+            account_id: record.view.account_id.clone(),
+            installation_id: record.installation_id.clone(),
+            connection_id: record.view.id.clone(),
+            connection_revision: record.view.revision,
+            authorization_epoch: record.authorization_epoch,
+            credential_revision: record
+                .view
+                .credential_revision
+                .clone()
+                .ok_or_else(|| fail("credential_missing"))?,
+            credential_reference: record
+                .credential_reference
+                .clone()
+                .ok_or_else(|| fail("credential_missing"))?,
+            credential_expires_at: record.credential_expires_at,
+            api_key_id: record.api_key_id.clone(),
+            node_id: node.id.clone(),
+            node_revision: node.revision.clone(),
+            edge_base_url: node.base_url.clone(),
+            provider_id: record.view.provider_id.clone(),
+            catalog_revision: cache.catalog_revision.clone(),
+            models: self.codex_inputs(record, cache),
+            profile_id: crate::codex_binding::PROFILE_ID.into(),
+            source_sha256: crate::codex_catalog::SOURCE_SHA256.into(),
+            scope_revision: sha256(
+                &serde_json::to_vec(&(planned.scope_revision(), &node.revision, &node.base_url))
+                    .map_err(|_| fail("serialization_failed"))?,
+            ),
+            catalog_sha256: planned.catalog().sha256().into(),
+            catalog_size: planned.catalog().bytes().len() as u64,
+            aliases: planned.catalog().main_aliases().to_vec(),
+            default_alias: planned.catalog().default_alias().into(),
+            default_reasoning_effort: planned.default_reasoning_effort().into(),
+            catalog_path: self
+                .paths
+                .codex_catalog()
+                .to_str()
+                .ok_or_else(|| fail("invalid_path"))?
+                .into(),
+            config_path: self
+                .paths
+                .codex_config
+                .to_str()
+                .ok_or_else(|| fail("invalid_path"))?
+                .into(),
+            runtime: runtime.clone(),
+        })
+    }
+    fn validate_codex_context(&self, context: Option<&CodexContext>, restore: bool) -> Result<()> {
+        let Some(context) = context else {
+            return Err(fail("codex_catalog_context_unverified"));
+        };
+        if Path::new(&context.catalog_path) != self.paths.codex_catalog()
+            || Path::new(&context.config_path) != self.paths.codex_config
+        {
+            return Err(fail("codex_catalog_scope_changed"));
+        }
+        let installation = self
+            .store
+            .installation(&context.panel_origin)?
+            .ok_or_else(|| fail("account_scope_mismatch"))?;
+        if installation.id != context.installation_id || installation.origin != context.panel_origin
+        {
+            return Err(fail("account_scope_mismatch"));
+        }
+        self.ensure_installation_available(&installation.id)?;
+        if restore {
+            return Ok(());
+        }
+        let (record, cache) = self
+            .current_connection(&context.connection_id, context.connection_revision)
+            .map_err(|_| fail("codex_catalog_scope_changed"))?;
+        let node = cache
+            .nodes
+            .iter()
+            .find(|node| node.id == context.node_id && node.available);
+        let epoch = self
+            .store
+            .meta(&authorization_epoch_reference(
+                &context.panel_origin,
+                &context.installation_id,
+                &context.account_id,
+            ))?
+            .and_then(|value| value.parse::<u64>().ok());
+        if context.profile_id != crate::codex_binding::PROFILE_ID
+            || context.source_sha256 != crate::codex_catalog::SOURCE_SHA256
+            || record.view.panel_origin != context.panel_origin
+            || record.view.account_id != context.account_id
+            || record.installation_id != context.installation_id
+            || record.authorization_epoch != context.authorization_epoch
+            || epoch != Some(context.authorization_epoch)
+            || record.view.credential_revision.as_ref() != Some(&context.credential_revision)
+            || record.credential_reference.as_ref() != Some(&context.credential_reference)
+            || record.credential_expires_at != context.credential_expires_at
+            || record.api_key_id != context.api_key_id
+            || cache.account.id != context.account_id
+            || record.view.node_id.as_ref() != Some(&context.node_id)
+            || record.view.provider_id != context.provider_id
+            || record.view.edge_base_url.as_ref() != Some(&context.edge_base_url)
+            || node.is_none_or(|node| {
+                node.revision != context.node_revision || node.base_url != context.edge_base_url
+            })
+            || cache.catalog_revision != context.catalog_revision
+            || self.codex_inputs(&record, &cache) != context.models
+            || self.paths.codex_runtime().require_verified()? != context.runtime
+        {
+            return Err(fail("codex_catalog_scope_changed"));
+        }
+        Ok(())
+    }
+    fn project_configuration_revision(&self, target: &mut ClientView) {
+        if target.client != ClientKind::Codex {
+            return;
+        }
+        target.config_paths = vec![
+            self.paths.codex_catalog().display().to_string(),
+            self.paths.codex_config.display().to_string(),
+        ];
+        let observed =
+            codex_configuration_revision(&self.paths.codex_config, &self.paths.codex_catalog());
+        if observed.as_ref().is_err()
+            || target.configuration_revision != observed.as_ref().ok().cloned().flatten()
+        {
+            target.loaded_evidence = None;
+            target.connection_evidence = None;
+            target.loaded_state = "unconfirmed".into();
+            target.connection_state = "not_tested".into();
+            if target.configuration_state == "saved" {
+                target.configuration_state = "conflict".into();
+            }
+        }
+        target.configuration_revision = observed.ok().flatten();
     }
     fn client_policy(&self, client: ClientKind) -> Result<(ClientView, crate::policy::Snapshot)> {
         let mut target = self
@@ -2152,7 +2442,7 @@ impl Service {
             .find(|c| c.client == client)
             .cloned()
             .ok_or_else(|| fail("client_unsupported"))?;
-        let before = serde_json::to_vec(&target).map_err(|_| fail("serialization_failed"))?;
+        self.project_configuration_revision(&mut target);
         let policy = crate::policy::observe(&self.paths, &target);
         policy.project(&mut target);
         if policy.state != crate::policy::State::No {
@@ -2166,20 +2456,6 @@ impl Service {
             .into();
             target.connection_state = "not_tested".into();
         }
-        if before != serde_json::to_vec(&target).map_err(|_| fail("serialization_failed"))? {
-            for current in self
-                .clients
-                .lock()
-                .map_err(|_| fail("state_unavailable"))?
-                .iter_mut()
-                .filter(|c| c.client == client)
-            {
-                *current = target.clone();
-            }
-            self.store
-                .put("client-state", client.as_str(), "local", &target)?;
-            self.changed();
-        }
         Ok((target, policy))
     }
     fn validate_policy(
@@ -2188,9 +2464,6 @@ impl Service {
         expected: &crate::policy::Snapshot,
     ) -> Result<()> {
         let (_, current) = self.client_policy(client)?;
-        if expected.revision != current.revision {
-            self.invalidate_evidence()?;
-        }
         expected.matches(&current)
     }
     fn pending_configuration_recovery(&self, client: ClientKind) -> Result<bool> {
@@ -2213,17 +2486,21 @@ impl Service {
             {
                 continue;
             }
-            let (target, policy) = self.client_policy(journal.client)?;
-            let qualified = self.paths.writes_authorized
-                && journal.client == ClientKind::Codex
-                && target.installed
-                && target.platform_supported
-                && target.managed == "no"
-                && target.version.is_some()
-                && target.version == journal.target_version
+            let observation = self.observe_configuration(journal.client)?;
+            // Unknown provenance/policy cannot access Vault or mutate recovery state.
+            if journal.client != ClientKind::Codex
+                || self
+                    .require_configuration(&observation, None, None)
+                    .is_err()
+            {
+                continue;
+            }
+            let target = &observation.target;
+            let qualified = target.version == journal.target_version
                 && target.bundle_id.is_some()
                 && target.bundle_id == journal.target_bundle_id
-                && journal.target_policy_revision.as_deref() == Some(policy.revision.as_str())
+                && journal.target_policy_revision.as_deref()
+                    == Some(observation.policy.revision.as_str())
                 && self
                     .store
                     .installation(&journal.installation.origin)?
@@ -2231,13 +2508,28 @@ impl Service {
                 && self
                     .ensure_installation_available(&journal.installation.id)
                     .is_ok();
-            let guard = || self.validate_policy(journal.client, &policy);
+            let guard = || {
+                self.validate_configuration(
+                    journal.client,
+                    &observation.policy,
+                    observation.runtime.as_ref(),
+                )
+            };
+            let context_guard = |context: Option<&CodexContext>, restore: bool| {
+                self.validate_codex_context(context, restore)
+            };
             let recovered = qualified
                 && journal.phase != "conflict"
                 && self
-                    .guarded_config_engine(&guard)
+                    .codex_engine(&guard, &context_guard)
                     .recover(&journal.id)
                     .is_ok();
+            guard()?;
+            let revision = if recovered {
+                codex_configuration_revision(&self.paths.codex_config, &self.paths.codex_catalog())?
+            } else {
+                None
+            };
             for client in self
                 .clients
                 .lock()
@@ -2246,6 +2538,9 @@ impl Service {
                 .filter(|c| c.client == journal.client)
             {
                 client.configuration_state = if recovered { "saved" } else { "conflict" }.into();
+                if recovered {
+                    client.configuration_revision = revision.clone();
+                }
                 client.loaded_evidence = None;
                 client.connection_evidence = None;
                 client.loaded_state = if recovered {
@@ -2255,12 +2550,27 @@ impl Service {
                 }
                 .into();
                 client.connection_state = "not_tested".into();
-                client.manual_steps.push(if recovered {"已协调此前用户确认的整组本地操作；尚需重启，未证明加载或连通。"} else {"整组配置操作尚待恢复：先核验安装、版本、托管策略及安全存储并协调外部修改；同客户端新应用已阻止。"}.into());
+                client.manual_steps.push(if recovered { "已协调此前用户确认的整组本地操作；尚需重启，未证明加载或连通。" }
+                    else { "整组配置操作尚待恢复：先核验执行来源、完整账户目录上下文、托管策略与安全存储并协调外部修改；同客户端新应用已阻止。" }.into());
                 self.store
                     .put("client-state", client.client.as_str(), "local", client)?;
             }
         }
         Ok(())
+    }
+    /// Refresh only after the native, read-only configuration gate succeeds.
+    pub async fn preview_client_config_refreshed(
+        &self,
+        id: &str,
+        revision: u64,
+        client: ClientKind,
+        model_id: &str,
+    ) -> Result<ConfigPreview> {
+        self.configuration_preflight(client)?;
+        self.refresh_account_cache(id, false).await?;
+        self.configuration_preflight(client)?;
+        let _ = self.list_models(id).await?;
+        self.preview_client_config(id, revision, client, model_id)
     }
     pub fn preview_client_config(
         &self,
@@ -2270,6 +2580,12 @@ impl Service {
         model_id: &str,
     ) -> Result<ConfigPreview> {
         let _operation = self.begin_mutation()?;
+        let observation = self.observe_configuration(client)?;
+        let gate_error = self.require_configuration(&observation, None, None).err();
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let (record, cache) = self.current_connection(id, revision)?;
         let model = cache
             .models
@@ -2279,23 +2595,34 @@ impl Service {
             })
             .ok_or_else(|| fail("model_unavailable"))?;
         let context = self.context(&record, &cache, model)?;
-        let (target, policy) = self.client_policy(client)?;
-        let guard = || self.validate_policy(client, &policy);
+        let planned = if client == ClientKind::Codex {
+            Some(self.plan_codex(&record, &cache, model_id)?)
+        } else {
+            None
+        };
+        let catalog_context = planned
+            .as_ref()
+            .zip(observation.runtime.as_ref())
+            .map(|(planned, runtime)| self.freeze_codex(&record, &cache, planned, runtime))
+            .transpose()?;
+        let target = &observation.target;
+        let policy = &observation.policy;
+        let runtime = observation.runtime.as_ref();
+        let guard = || self.validate_configuration(client, policy, runtime);
+        let context_guard = |current: Option<&CodexContext>, restore: bool| {
+            if restore || current != catalog_context.as_ref() {
+                return Err(fail("codex_catalog_context_unverified"));
+            }
+            self.validate_codex_context(current, false)
+        };
         let now = chrono::Utc::now();
         let mut preview = ConfigPreview {
-            id: uuid(),
-            client,
-            operation: "apply".into(),
-            target_version: target.version.clone(),
-            paths: target.config_paths.clone(),
-            model_id: Some(model_id.into()),
-            context: Some(context),
-            restore_owner: None,
+            id: uuid(), client, operation: "apply".into(), target_version: target.version.clone(),
+            paths: target.config_paths.clone(), model_id: Some(model_id.into()), context: Some(context), restore_owner: None,
             impact: match client {
                 ClientKind::Codex => vec![
-                    "修改用户默认模型和 Orivelle provider；Codex、CLI 与 IDE 可能共用此配置。"
-                        .into(),
-                    "应用后需重启；保存配置不会自动发送推理请求。".into(),
+                    "修改用户默认模型、推理默认值、Orivelle provider 与独立模型目录；Codex、CLI 与 IDE 可能共用此配置。".into(),
+                    "应用后需重启；保存不证明客户端载入或连通，也不约束其他启动参数与 plan mode 等调用路径。".into(),
                 ],
                 ClientKind::Claude => vec![
                     "第三方模式影响 Claude 整个桌面应用，包括 Chat、Code 与 Cowork。".into(),
@@ -2303,23 +2630,25 @@ impl Service {
                 ],
             },
             redacted_diff: "No file mutation is permitted for this preview.".into(),
-            expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(),
-            can_apply: false,
-            can_export_import: false,
-            blocking_reason: None,
-            codex_catalog: None,
-            codex_runtime: None,
+            expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(), can_apply: false,
+            can_export_import: false, blocking_reason: None,
+            codex_catalog: planned.as_ref().map(|planned| CodexCatalogPreview {
+                profile_id: crate::codex_binding::PROFILE_ID.into(), cli_version: crate::codex_catalog::SUPPORTED_CLI_VERSION.into(),
+                source_sha256: crate::codex_catalog::SOURCE_SHA256.into(), sha256: planned.catalog().sha256().into(),
+                scope_revision: catalog_context.as_ref().map(|context| context.scope_revision.clone())
+                    .unwrap_or_else(|| planned.scope_revision().into()),
+                path: self.paths.codex_catalog().display().to_string(), bytes: planned.catalog().bytes().len() as u64,
+                aliases: planned.catalog().main_aliases().to_vec(), default_alias: planned.catalog().default_alias().into(),
+                default_reasoning_effort: planned.default_reasoning_effort().into(),
+            }),
+            codex_runtime: observation.runtime_view.clone(),
         };
         let mut journal_id = None;
         let mut import_candidate = None;
-        if self.pending_configuration_recovery(client)? {
+        if let Some(error) = gate_error {
+            preview.blocking_reason = Some(error.code);
+        } else if self.pending_configuration_recovery(client)? {
             preview.blocking_reason = Some("configuration_recovery_required".into());
-        } else if !self.paths.writes_authorized {
-            preview.blocking_reason = Some("integration_authorization_required".into());
-        } else if !target.installed || !target.platform_supported || target.version.is_none() {
-            preview.blocking_reason = Some("client_unsupported".into());
-        } else if target.managed != "no" {
-            preview.blocking_reason = Some("managed_policy_unverified".into());
         } else if !self.paths.helper_available() {
             preview.blocking_reason = Some("helper_unavailable".into());
         } else if !model.capabilities.iter().any(|c| {
@@ -2331,16 +2660,46 @@ impl Service {
         }) {
             preview.blocking_reason = Some("model_unsupported".into());
         } else {
+            guard()?;
             if client == ClientKind::Codex {
-                guard()?;
                 self.paths.ensure_configuration_parent(client)?;
             }
             let install = self.installation(&record)?;
             let binding_id = uuid();
-            let credential_ref = record
-                .credential_reference
-                .clone()
-                .ok_or_else(|| fail("credential_missing"))?;
+            // Finish the catalog/owned patch before any helper credential or durable mutation.
+            let changes = if let Some(planned) = &planned {
+                self.validate_codex_context(catalog_context.as_ref(), false)?;
+                let before = read_file(&self.paths.codex_config)?;
+                let after = codex_catalog_patch(
+                    before.as_deref(),
+                    record
+                        .view
+                        .edge_base_url
+                        .as_deref()
+                        .ok_or_else(|| fail("node_unavailable"))?,
+                    model_id,
+                    &self.paths.helper,
+                    &binding_id,
+                    &self.paths.codex_catalog(),
+                    planned.default_reasoning_effort(),
+                )?;
+                preview.redacted_diff =
+                    crate::config::codex_redacted_diff(before.as_deref(), &after)?;
+                Some(vec![
+                    FileChange {
+                        path: self.paths.codex_catalog().display().to_string(),
+                        before: read_file(&self.paths.codex_catalog())?,
+                        after: Some(planned.catalog().bytes().to_vec()),
+                    },
+                    FileChange {
+                        path: self.paths.codex_config.display().to_string(),
+                        before,
+                        after: Some(after),
+                    },
+                ])
+            } else {
+                None
+            };
             let binding = HelperBinding {
                 id: binding_id.clone(),
                 client,
@@ -2353,7 +2712,10 @@ impl Service {
                     .credential_revision
                     .clone()
                     .ok_or_else(|| fail("credential_missing"))?,
-                secret_reference: credential_ref,
+                secret_reference: record
+                    .credential_reference
+                    .clone()
+                    .ok_or_else(|| fail("credential_missing"))?,
                 enabled: false,
                 expires_at: record.credential_expires_at,
                 authorization_epoch: record.authorization_epoch,
@@ -2361,6 +2723,9 @@ impl Service {
             let mut checked = binding.clone();
             checked.enabled = true;
             guard()?;
+            if client == ClientKind::Codex {
+                self.validate_codex_context(catalog_context.as_ref(), false)?;
+            }
             let _ = bound_helper_token(
                 &checked,
                 client,
@@ -2370,6 +2735,9 @@ impl Service {
                 now.timestamp(),
             )?;
             guard()?;
+            if client == ClientKind::Codex {
+                self.validate_codex_context(catalog_context.as_ref(), false)?;
+            }
             self.store
                 .put("binding", &binding_id, &record.view.account_id, &binding)?;
             if client == ClientKind::Claude {
@@ -2398,20 +2766,6 @@ impl Service {
                 preview.blocking_reason = Some("schema_unverified".into());
                 import_candidate = Some((bytes, binding_id));
             } else {
-                let before = read_file(&self.paths.codex_config)?;
-                let after = codex_patch(
-                    before.as_deref(),
-                    record
-                        .view
-                        .edge_base_url
-                        .as_ref()
-                        .ok_or_else(|| fail("node_unavailable"))?,
-                    model_id,
-                    &self.paths.helper,
-                    &binding_id,
-                )?;
-                preview.redacted_diff =
-                    crate::config::codex_redacted_diff(before.as_deref(), &after)?;
                 let previous = self
                     .store
                     .list::<HelperBinding>("binding", None)?
@@ -2419,26 +2773,28 @@ impl Service {
                     .filter(|b| b.client == client && b.enabled)
                     .map(|b| b.id)
                     .collect();
-                let mut journal = self.guarded_config_engine(&guard).prepare(
+                let engine = self.codex_engine(&guard, &context_guard);
+                let mut journal = engine.prepare(
                     client,
                     &record.view.account_id,
                     &install,
-                    vec![FileChange {
-                        path: self.paths.codex_config.display().to_string(),
-                        before,
-                        after: Some(after),
-                    }],
+                    changes.ok_or_else(|| fail("codex_catalog_context_unverified"))?,
                     Some(binding_id),
                     previous,
                 )?;
                 journal.account_label = cache.account.label.clone();
-                self.guarded_config_engine(&guard).freeze_target(
+                engine.freeze_target(
                     &mut journal,
                     target.version.clone(),
                     target.bundle_id.clone(),
                 )?;
-                self.guarded_config_engine(&guard)
-                    .freeze_policy(&mut journal, &policy.revision)?;
+                engine.freeze_policy(&mut journal, &policy.revision)?;
+                engine.freeze_codex_context(
+                    &mut journal,
+                    catalog_context
+                        .clone()
+                        .ok_or_else(|| fail("codex_catalog_context_unverified"))?,
+                )?;
                 journal_id = Some(journal.id);
                 preview.can_apply = true;
             }
@@ -2455,7 +2811,9 @@ impl Service {
                     view: preview.clone(),
                     journal_id,
                     import_candidate,
-                    policy,
+                    policy: observation.policy,
+                    runtime: observation.runtime,
+                    catalog_context,
                 },
             );
         Ok(preview)
@@ -2489,17 +2847,11 @@ impl Service {
         &self,
         preview: &ConfigPreview,
         policy: &crate::policy::Snapshot,
+        runtime: Option<&CodexRuntimeIdentity>,
     ) -> Result<()> {
-        self.validate_policy(preview.client, policy)?;
-        let target = self
-            .clients
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .iter()
-            .find(|c| c.client == preview.client)
-            .cloned()
-            .ok_or_else(|| fail("client_unsupported"))?;
-        if target.version != preview.target_version || !target.installed || target.managed != "no" {
+        let observation = self.observe_configuration(preview.client)?;
+        self.require_configuration(&observation, Some(policy), runtime)?;
+        if observation.target.version != preview.target_version {
             return Err(fail("client_version_changed"));
         }
         if preview.operation == "restore" {
@@ -2515,7 +2867,7 @@ impl Service {
                 return Err(fail("account_scope_mismatch"));
             }
             self.ensure_installation_available(&install.id)?;
-            self.validate_policy(preview.client, policy)?;
+            self.validate_configuration(preview.client, policy, runtime)?;
             let _ = self.vault.get(&install.backup_reference)?;
             return Ok(());
         }
@@ -2541,6 +2893,61 @@ impl Service {
         }
         Ok(())
     }
+    pub async fn apply_client_config_refreshed(
+        &self,
+        id: &str,
+        confirmed: bool,
+    ) -> Result<ConfigResult> {
+        if !confirmed {
+            return Err(fail("confirmation_required"));
+        }
+        validate_uuid(id)?;
+        let (view, policy, runtime) = {
+            let previews = self
+                .previews
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?;
+            let entry = previews.get(id).ok_or_else(|| fail("preview_expired"))?;
+            (
+                entry.view.clone(),
+                entry.policy.clone(),
+                entry.runtime.clone(),
+            )
+        };
+        let result = async {
+            if view.operation != "apply"
+                || !view.can_apply
+                || parse_timestamp(&view.expires_at)? <= chrono::Utc::now().timestamp()
+            {
+                return Err(fail(
+                    view.blocking_reason.as_deref().unwrap_or("preview_expired"),
+                ));
+            }
+            // This gate precedes fresh_session(), including its Vault and cache writes.
+            self.validate_configuration(view.client, &policy, runtime.as_ref())?;
+            let context = view
+                .context
+                .as_ref()
+                .ok_or_else(|| fail("preview_expired"))?;
+            self.refresh_account_cache(&context.connection_id, false)
+                .await?;
+            self.validate_configuration(view.client, &policy, runtime.as_ref())?;
+            if view.client == ClientKind::Codex {
+                self.current_connection(&context.connection_id, context.connection_revision)
+                    .map_err(|_| fail("codex_catalog_scope_changed"))?;
+            }
+            let _ = self.list_models(&context.connection_id).await?;
+            self.apply_client_config(id, true, false)
+        }
+        .await;
+        if result.is_err() {
+            self.previews
+                .lock()
+                .map_err(|_| fail("state_unavailable"))?
+                .remove(id);
+        }
+        result
+    }
     pub fn apply_client_config(
         &self,
         id: &str,
@@ -2559,15 +2966,51 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
-        let _ = self.validate_preview_context(&entry.view, &entry.policy)?;
-        let guard = || self.validate_policy(entry.view.client, &entry.policy);
-        let journal = self.guarded_config_engine(&guard).apply(
+        let guard = || {
+            self.validate_configuration(entry.view.client, &entry.policy, entry.runtime.as_ref())
+        };
+        guard()?;
+        // Compare all scoped candidates and output after refresh, under the actor lock.
+        if entry.view.client == ClientKind::Codex && !restore {
+            let frozen = entry
+                .catalog_context
+                .as_ref()
+                .ok_or_else(|| fail("codex_catalog_context_unverified"))?;
+            let current = (|| {
+                let (record, cache) =
+                    self.current_connection(&frozen.connection_id, frozen.connection_revision)?;
+                let planned = self.plan_codex(&record, &cache, &frozen.default_alias)?;
+                self.freeze_codex(
+                    &record,
+                    &cache,
+                    &planned,
+                    entry
+                        .runtime
+                        .as_ref()
+                        .ok_or_else(|| fail("codex_runtime_unverified"))?,
+                )
+            })()
+            .map_err(|_| fail("codex_catalog_scope_changed"))?;
+            if current != *frozen {
+                return Err(fail("codex_catalog_scope_changed"));
+            }
+            self.validate_codex_context(Some(frozen), false)?;
+        }
+        self.validate_preview_context(&entry.view, &entry.policy, entry.runtime.as_ref())?;
+        let context_guard = |current: Option<&CodexContext>, restoring: bool| {
+            if restoring != restore || current != entry.catalog_context.as_ref() {
+                return Err(fail("codex_catalog_context_unverified"));
+            }
+            self.validate_codex_context(current, restoring)
+        };
+        let journal = self.codex_engine(&guard, &context_guard).apply(
             entry
                 .journal_id
                 .as_deref()
                 .ok_or_else(|| fail("preview_expired"))?,
         )?;
-        let revision = read_file(&self.paths.codex_config)?.map(|b| sha256(&b));
+        let revision =
+            codex_configuration_revision(&self.paths.codex_config, &self.paths.codex_catalog())?;
         for client in self
             .clients
             .lock()
@@ -2631,7 +3074,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
-        self.validate_preview_context(&entry.view, &entry.policy)?;
+        self.validate_preview_context(&entry.view, &entry.policy, entry.runtime.as_ref())?;
         if !self.paths.helper_available() {
             return Err(fail("helper_unavailable"));
         }
@@ -2674,6 +3117,18 @@ impl Service {
                 .get::<Journal>("journal", backup_id)?
                 .filter(|j| ["publishing", "conflict", "committed"].contains(&j.phase.as_str())))
             .ok_or_else(|| fail("backup_invalid"))?;
+        let observation = self.observe_configuration(backup.client)?;
+        let mut blocked = self
+            .require_configuration(&observation, None, None)
+            .err()
+            .map(|error| error.code);
+        if backup.client != ClientKind::Codex {
+            blocked = Some("schema_unverified".into());
+        }
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let install = self
             .store
             .installation(&backup.installation.origin)?
@@ -2681,19 +3136,28 @@ impl Service {
         if install.id != backup.installation.id {
             return Err(fail("account_scope_mismatch"));
         }
-        let (target, policy) = self.client_policy(backup.client)?;
-        let guard = || self.validate_policy(backup.client, &policy);
-        let authorized = self.paths.writes_authorized
-            && backup.client == ClientKind::Codex
-            && target.installed
-            && target.platform_supported
-            && target.managed == "no";
-        let journal_id = if authorized {
-            let mut journal = self
-                .guarded_config_engine(&guard)
-                .prepare_restore(backup_id)?;
-            self.guarded_config_engine(&guard)
-                .freeze_policy(&mut journal, &policy.revision)?;
+        self.ensure_installation_available(&install.id)?;
+        let guard = || {
+            self.validate_configuration(
+                backup.client,
+                &observation.policy,
+                observation.runtime.as_ref(),
+            )
+        };
+        let context_guard =
+            |context: Option<&CodexContext>, _: bool| self.validate_codex_context(context, true);
+        let engine = self.codex_engine(&guard, &context_guard);
+        let mut catalog_context = None;
+        let journal_id = if blocked.is_none() {
+            catalog_context = engine.codex_context(&backup)?;
+            self.validate_codex_context(catalog_context.as_ref(), true)?;
+            let mut journal = engine.prepare_restore(backup_id)?;
+            engine.freeze_target(
+                &mut journal,
+                observation.target.version.clone(),
+                observation.target.bundle_id.clone(),
+            )?;
+            engine.freeze_policy(&mut journal, &observation.policy.revision)?;
             Some(journal.id)
         } else {
             None
@@ -2702,7 +3166,7 @@ impl Service {
             id: uuid(),
             client: backup.client,
             operation: "restore".into(),
-            target_version: target.version,
+            target_version: observation.target.version,
             paths: backup.paths,
             model_id: None,
             context: None,
@@ -2718,29 +3182,17 @@ impl Service {
             }),
             impact: vec![
                 "恢复所选原账户的操作前配置；客户端仍需重启。".into(),
-                "恢复不依赖当前推理 key、节点或会话；第三方修改时整组停止覆盖。".into(),
+                "恢复不依赖当前推理 key、节点或会话；第三方修改时整组停止覆盖，失效授权不会复活。"
+                    .into(),
             ],
             redacted_diff:
                 "Restore encrypted original configuration; original secrets stay redacted.".into(),
             expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
-            can_apply: authorized,
+            can_apply: blocked.is_none(),
             can_export_import: false,
             codex_catalog: None,
-            codex_runtime: None,
-            blocking_reason: if authorized {
-                None
-            } else {
-                Some(
-                    if backup.client == ClientKind::Claude {
-                        "schema_unverified"
-                    } else if !self.paths.writes_authorized {
-                        "integration_authorization_required"
-                    } else {
-                        "client_unsupported"
-                    }
-                    .into(),
-                )
-            },
+            codex_runtime: observation.runtime_view,
+            blocking_reason: blocked,
         };
         self.previews
             .lock()
@@ -2751,7 +3203,9 @@ impl Service {
                     view: preview.clone(),
                     journal_id,
                     import_candidate: None,
-                    policy,
+                    policy: observation.policy,
+                    runtime: observation.runtime,
+                    catalog_context,
                 },
             );
         Ok(preview)
@@ -4233,6 +4687,7 @@ mod tests {
         epoch: Arc<AtomicU64>,
         model: String,
         client: ClientKind,
+        runtime: Arc<AtomicU64>,
     }
     impl PolicyFixture {
         fn preview(&self) -> ConfigPreview {
@@ -4296,6 +4751,16 @@ mod tests {
                 &format!("synthetic-source-{value}"),
             )
         }));
+        let runtime = Arc::new(AtomicU64::new(0));
+        let runtime_signal = runtime.clone();
+        paths.fixture_codex_runtime = Some(Arc::new(move || {
+            match runtime_signal.load(Ordering::SeqCst) {
+                2 => crate::system::CodexRuntimeSnapshot::unverified(),
+                value => {
+                    crate::system::CodexRuntimeSnapshot::synthetic(&format!("fixture-{value}"))
+                }
+            }
+        }));
         let vault = Arc::new(PolicyVault {
             inner: vault,
             calls: AtomicU64::new(0),
@@ -4307,6 +4772,23 @@ mod tests {
         cache.models[0]
             .capabilities
             .extend(["openai.responses".into(), "anthropic.messages".into()]);
+        // The immutable old wire is still a compatibility input. Only this
+        // positive synthetic factory adds the newly required declarations.
+        cache.models[0].codex_catalog_binding = Some(CodexCatalogBindingView::Declared {
+            verified: false,
+            profile_id: crate::codex_binding::PROFILE_ID.into(),
+            cli_version: crate::codex_catalog::SUPPORTED_CLI_VERSION.into(),
+            source_sha256: crate::codex_catalog::SOURCE_SHA256.into(),
+            template_slug: "gpt-5.5".into(),
+        });
+        cache.models[0].reasoning = Some(ReasoningPolicyView {
+            state: "restricted".into(),
+            capability_status: "supported".into(),
+            supported_efforts: vec!["low".into(), "medium".into(), "high".into()],
+            allowed_efforts: Some(vec!["medium".into(), "high".into()]),
+            default_effort: Some("medium".into()),
+            revision: Some(1),
+        });
         let model = cache.models[0].id.clone();
         service
             .store
@@ -4325,6 +4807,113 @@ mod tests {
             epoch,
             model,
             client,
+            runtime,
+        }
+    }
+    fn catalog_menu(f: &PolicyFixture) {
+        let mut cache = f.service.account_cache(&f.record).unwrap();
+        let mut menu = cache.models[0].clone();
+        menu.id = "menu-alias".into();
+        menu.revision = sha256(b"synthetic menu revision");
+        menu.reasoning.as_mut().unwrap().default_effort = Some("high".into());
+        let mut unbound = menu.clone();
+        unbound.id = "unbound-alias".into();
+        unbound.codex_catalog_binding = None;
+        let mut foreign = menu.clone();
+        foreign.id = "foreign-provider".into();
+        foreign.provider_id = "anthropic".into();
+        cache.models.extend([menu, unbound, foreign]);
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+    }
+    fn prepared_catalog(f: &PolicyFixture, preview: &ConfigPreview) -> Journal {
+        let previews = f.service.previews.lock().unwrap();
+        let id = previews
+            .get(&preview.id)
+            .unwrap()
+            .journal_id
+            .as_ref()
+            .unwrap();
+        f.service.store.get("journal", id).unwrap().unwrap()
+    }
+    #[tokio::test]
+    async fn codex_config_runtime_and_policy_gate_precede_command_refresh_and_service_mutations() {
+        for gate in ["runtime", "policy"] {
+            let f = policy_fixture(ClientKind::Codex);
+            if gate == "runtime" {
+                f.runtime.store(2, Ordering::SeqCst);
+            } else {
+                f.epoch.store(3, Ordering::SeqCst);
+            }
+            let expected = if gate == "runtime" {
+                "codex_runtime_unverified"
+            } else {
+                "managed_policy_unverified"
+            };
+            let revision = f.service.store.snapshot().unwrap().revision;
+            let bindings = f.bindings();
+            f.reset();
+            assert_eq!(
+                f.service
+                    .preview_client_config_refreshed(
+                        &f.record.view.id,
+                        f.record.view.revision,
+                        ClientKind::Codex,
+                        &f.model
+                    )
+                    .await
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+            let preview = f.preview();
+            assert_eq!(preview.blocking_reason.as_deref(), Some(expected));
+            assert!(!preview.can_apply);
+            assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+            assert_eq!(f.bindings(), bindings);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+            assert!(!f.service.paths.codex_catalog().exists());
+        }
+        for runtime in [1, 2] {
+            let f = policy_fixture(ClientKind::Codex);
+            let preview = f.preview();
+            let bindings = f.bindings();
+            let revision = f.service.store.snapshot().unwrap().revision;
+            f.runtime.store(runtime, Ordering::SeqCst);
+            f.reset();
+            assert_eq!(
+                f.service
+                    .apply_client_config_refreshed(&preview.id, true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                if runtime == 1 {
+                    "codex_runtime_changed"
+                } else {
+                    "codex_runtime_unverified"
+                }
+            );
+            assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+            assert_eq!(f.bindings(), bindings);
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+            f.runtime.store(0, Ordering::SeqCst);
+            assert_eq!(
+                f.service
+                    .apply_client_config_refreshed(&preview.id, true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "preview_expired"
+            );
+            assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
         }
     }
     #[test]
@@ -5724,7 +6313,8 @@ mod tests {
         }
     }
     #[test]
-    fn service_rebuild_coordinates_only_authorized_publishing_and_repairs_backup_projection() {
+    fn codex_config_service_rebuild_coordinates_only_authenticated_pair_and_repairs_backup_projection()
+     {
         for mode in [
             "publishing",
             "external-conflict",
@@ -5732,83 +6322,100 @@ mod tests {
             "prepared",
             "forgetting",
             "legacy-no-policy",
+            "missing-context",
+            "cache-missing",
+            "epoch",
+            "logout",
         ] {
-            let (_dir, old, vault, record, install) = setup();
-            let path = old.paths.codex_config.clone();
-            let other = path.parent().unwrap().join("secondary.toml");
-            std::fs::write(&path, b"model='old'\n").unwrap();
-            std::fs::write(&other, b"model='old-aux'\n").unwrap();
-            let mut target = old.clients.lock().unwrap()[0].clone();
-            target.installed = true;
-            target.platform_supported = true;
-            target.managed = "no".into();
-            target.version = Some("synthetic-version-1".into());
-            target.bundle_id = Some("synthetic.codex".into());
-            let engine = old.config_engine();
-            let mut journal = engine
-                .prepare(
-                    ClientKind::Codex,
-                    &record.view.account_id,
-                    &install,
-                    vec![
-                        FileChange {
-                            path: path.display().to_string(),
-                            before: Some(b"model='old'\n".to_vec()),
-                            after: Some(b"model='new'\n".to_vec()),
-                        },
-                        FileChange {
-                            path: other.display().to_string(),
-                            before: Some(b"model='old-aux'\n".to_vec()),
-                            after: Some(b"model='new-aux'\n".to_vec()),
-                        },
-                    ],
-                    None,
-                    vec![],
-                )
-                .unwrap();
-            engine
-                .freeze_target(
-                    &mut journal,
-                    target.version.clone(),
-                    target.bundle_id.clone(),
-                )
-                .unwrap();
-            if mode != "legacy-no-policy" {
-                let policy = crate::policy::observe(&old.paths, &target);
-                engine
-                    .freeze_policy(&mut journal, &policy.revision)
+            let f = policy_fixture(ClientKind::Codex);
+            catalog_menu(&f);
+            let mut journal = prepared_catalog(&f, &f.preview());
+            let engine = f.service.config_engine();
+            let files = engine.synthetic_files(&journal).unwrap();
+            if mode == "legacy-no-policy" {
+                let context = engine.codex_context(&journal).unwrap().unwrap();
+                journal = engine
+                    .prepare(
+                        ClientKind::Codex,
+                        &f.record.view.account_id,
+                        &journal.installation,
+                        files.clone(),
+                        None,
+                        vec![],
+                    )
                     .unwrap();
+                engine
+                    .freeze_target(
+                        &mut journal,
+                        Some("2.19675.0-synthetic".into()),
+                        Some("synthetic.codex".into()),
+                    )
+                    .unwrap();
+                engine.freeze_codex_context(&mut journal, context).unwrap();
+            } else if mode == "missing-context" {
+                engine.synthetic_without_context(&mut journal).unwrap();
             }
             if mode == "committed-gap" {
                 engine.apply(&journal.id).unwrap();
-                old.store.delete("backup", &journal.id).unwrap();
+                f.service.store.delete("backup", &journal.id).unwrap();
             } else if mode != "prepared" {
                 journal.phase = "publishing".into();
-                old.store
-                    .put("journal", &journal.id, &record.view.account_id, &journal)
+                f.service
+                    .store
+                    .put("journal", &journal.id, &f.record.view.account_id, &journal)
                     .unwrap();
-                std::fs::write(
-                    &path,
-                    if mode == "external-conflict" {
-                        b"model='external'\n".as_slice()
-                    } else {
-                        b"model='new'\n".as_slice()
-                    },
-                )
-                .unwrap();
+                if mode == "external-conflict" {
+                    std::fs::write(&files[1].path, b"model='external'\n").unwrap();
+                } else {
+                    crate::config::atomic_write(
+                        Path::new(&files[0].path),
+                        files[0].after.as_ref().unwrap(),
+                    )
+                    .unwrap();
+                }
             }
             if mode == "forgetting" {
-                old.store
-                    .set_meta(&format!("installation_forgetting/{}", install.id), "1")
+                f.service
+                    .store
+                    .set_meta(
+                        &format!("installation_forgetting/{}", journal.installation.id),
+                        "1",
+                    )
                     .unwrap();
+            } else if mode == "cache-missing" {
+                f.service
+                    .store
+                    .delete("account-cache", &f.record.view.id)
+                    .unwrap();
+            } else if mode == "epoch" {
+                f.service
+                    .store
+                    .set_meta(
+                        &authorization_epoch_reference(
+                            &f.record.view.panel_origin,
+                            &f.record.installation_id,
+                            &f.record.view.account_id,
+                        ),
+                        "999",
+                    )
+                    .unwrap();
+            } else if mode == "logout" {
+                f.service.commit_logout(&f.record.view.id).unwrap();
             }
-            let mut paths = old.paths.clone();
-            paths.writes_authorized = true;
-            paths.fixture_clients = Some(vec![target]);
-            let rebuilt = Service::new(old.store.clone(), vault, paths).unwrap();
+            let rebuilt = Service::new(
+                f.service.store.clone(),
+                f.vault.clone(),
+                f.service.paths.clone(),
+            )
+            .unwrap();
             if ["publishing", "committed-gap"].contains(&mode) {
-                assert_eq!(std::fs::read(&path).unwrap(), b"model='new'\n");
-                assert_eq!(std::fs::read(&other).unwrap(), b"model='new-aux'\n");
+                for file in &files {
+                    assert_eq!(
+                        read_file(Path::new(&file.path)).unwrap(),
+                        file.after,
+                        "{mode}"
+                    );
+                }
                 assert!(
                     rebuilt
                         .store
@@ -5821,8 +6428,14 @@ mod tests {
                         .pending_configuration_recovery(ClientKind::Codex)
                         .unwrap()
                 );
+                // A second recovery pass has nothing to repair or re-enable.
+                let revision = rebuilt.store.snapshot().unwrap().revision;
+                rebuilt.coordinate_configuration_recovery().unwrap();
+                assert_eq!(rebuilt.store.snapshot().unwrap().revision, revision);
             } else if mode == "prepared" {
-                assert_eq!(std::fs::read(&path).unwrap(), b"model='old'\n");
+                for file in &files {
+                    assert_eq!(read_file(Path::new(&file.path)).unwrap(), file.before);
+                }
                 assert!(
                     rebuilt
                         .store
@@ -5831,7 +6444,21 @@ mod tests {
                         .is_none()
                 );
             } else {
-                assert_eq!(std::fs::read(&other).unwrap(), b"model='old-aux'\n");
+                assert_eq!(
+                    read_file(Path::new(&files[1].path)).unwrap(),
+                    if mode == "external-conflict" {
+                        Some(b"model='external'\n".to_vec())
+                    } else {
+                        files[1].before.clone()
+                    },
+                    "{mode}"
+                );
+                if mode == "external-conflict" {
+                    assert_eq!(
+                        read_file(Path::new(&files[0].path)).unwrap(),
+                        files[0].before
+                    );
+                }
                 assert!(
                     rebuilt
                         .pending_configuration_recovery(ClientKind::Codex)
@@ -5841,16 +6468,30 @@ mod tests {
                 assert!(
                     view.backups
                         .iter()
-                        .any(|b| b.id == journal.id && b.state == "conflict")
+                        .any(|backup| backup.id == journal.id && backup.state == "conflict")
                 );
                 assert_eq!(
                     view.clients
                         .iter()
-                        .find(|c| c.client == ClientKind::Codex)
+                        .find(|client| client.client == ClientKind::Codex)
                         .unwrap()
                         .configuration_state,
                     "conflict"
                 );
+                assert!(
+                    rebuilt
+                        .store
+                        .list::<HelperBinding>("binding", None)
+                        .unwrap()
+                        .iter()
+                        .all(|binding| !binding.enabled)
+                );
+                if mode == "missing-context" {
+                    assert_eq!(
+                        rebuilt.preview_restore(&journal.id).unwrap_err().code,
+                        "codex_catalog_context_unverified"
+                    );
+                }
             }
         }
     }
