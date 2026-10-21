@@ -21,9 +21,9 @@
 | Rust/native | 已有 CLT clang21 + SDK15.4：最新 core128/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；普通 signer 入口1 ignored；包含双文件恢复及既有故障、授权、账务和锁回归 | 真实系统策略/vault/客户端文件/剪贴板/保存对话；不能将编译 feature 当成真实集成 |
 | Panel | 绑定阶段源afbfe38a：隔离MySQL13/13（660 assertions）；三个受影响CI分组、前端329/329、PHP及前端quality通过，历史单项失败和复验见下文；最终安全构建179文件独立核对 | 真实 native/客户端/生产；未执行远端 GitLab pipeline；后来推进的 develop 不属于此快照 |
 | Edge | 本任务没有修改；合同以现有源码/测试核查 | 真实客户端与 fake gateway 的当前联调 |
-| macOS arm64 | 此前42900ddd源码的 release helper/GUI、`.app` 与 ZIP 构建成功；实际单 arm64、minOS15.0/SDK15.4、helper 和前端完整内嵌；尚未重建当前目录与双文件接线源码 | 最新源码打包、macOS 15、原生真实运行和完整客户端流程 |
+| macOS arm64 | 历史42900ddd源码的 release helper/GUI、`.app` 与 ZIP 构建成功；新候选由bundle流程绑定完整源码、单arm64/minOS15.0、helper嵌入和三份Codex来源材料；实际结果须与本地manifest和阶段交付清单匹配 | macOS 15、原生真实运行和完整客户端流程 |
 | Windows x64 | 无实际运行证据 | 编译、原生 vault/文件/ACL、客户端、安装与更新 |
-| 发布候选 | Mac `.app` 与约9.2 MB ZIP 有完整包/归档 SHA-256、源码前后一致检查和解包回读；仅 linker ad-hoc，未设置 TeamIdentifier，正式签名/更新关闭 | 正式签名、公证、安装、更新失败恢复；Windows 候选 |
+| 发布候选 | Mac `.app` 与 ZIP 要求完整包/归档 SHA-256、源码前后一致检查和解包回读；具体版本、大小和来源材料hash以candidate-manifest为准；仅 linker ad-hoc，未设置 TeamIdentifier，正式签名/更新关闭 | 正式签名、公证、安装、更新失败恢复；Windows 候选 |
 | 打包/CI 准备 | 2026-10-14 当前 Mac preflight/release/app/ZIP 实际成功；6/6候选证据专项、脚本格式/零warning lint/语法与5个 GitLab job YAML解析通过；项目镜像/cache与禁止 rustup自动安装保留 | Windows脚本与runner存在未核实，远端pipeline未运行 |
 
 ## 必需回归矩阵
@@ -37,6 +37,8 @@
 平台验证必须在 Windows 11 25H2 x64 和 macOS 15+ Apple Silicon 上分别记录编译、运行、配置、系统安全存储、拖放/文件/复制、两个真实桌面应用的模型选择、流式/工具/辅助模型和错误流程。CLI、跨编译、浏览器、Ubuntu或 fake vault 都不能替代这些验收。
 
 ## 尚待完成的实现
+
+2026-10-21 来源材料候选阶段从本地develop `d8f5ac9f7450a2999839e5dbee86825496730ccd` 创建独立分支，只补固定Codex许可证/NOTICE/provenance的实际包保留及候选证据。打包前源码必须已提交且tracked干净；构建、三文件与ZIP回读、静态检查、完整源码SHA及本地合并结果见 `.cache/evidence/codex-candidate-resources-20261021/`。此前42900ddd ZIP/manifest保留；该源码尚不含完整目录及双文件接线，不能代表新代码。此阶段不重新运行无变更的Rust/前端、浏览器、协议网关或signer探针，也不启动真实程序。
 
 2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。2026-10-21 已实现固定版本完整目录、Panel显式绑定消费、Service/config和目录联合恢复，见[目录与接线](codex-catalog.md)；生产runtime仍为unverified，没有实际来源生产入口。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
 

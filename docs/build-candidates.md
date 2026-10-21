@@ -10,6 +10,8 @@
 
 依赖使用项目 npmmirror/rsproxy 源和锁文件完整性校验。Cargo、npm、临时目录、编译结果及日志均留在项目 `.cache/`、`runtime/`。镜像缺少锁定版本时停止报告，不降级、不自动换官方源。
 
+候选构建清除继承的 `VITE*` 和 `NODE_ENV`，npm 用户配置使用系统空设备，全局配置指向项目内明确不存在的路径；若该路径出现文件则拒绝启动工具。项目 `.npmrc` 仍决定镜像源。隔离构建前还须确认项目没有真实 dotenv 文件，Cargo 可用 `CARGO_NET_OFFLINE=true` 复用已准备的项目缓存。
+
 ## 分阶段命令
 
 ```sh
@@ -37,6 +39,10 @@ node scripts/native-workflow.mjs bundle
 
 macOS 同时生成 `runtime/candidates/Orivelle-Orbit-0.1.0-macos-arm64-candidate.zip`（名称随版本变化）。归档只包含 `.app`，排除扩展属性、资源 fork 和 ACL；在项目临时目录解包，再核对全部文件、目录、权限和内容摘要，验证后清理该临时副本。原 `.app` 和 ZIP 保留在项目内，未执行或安装。
 
+`bundle.resources` 显式将固定 Codex `0.163.0-alpha.10.2` 的 `LICENSE`、完整 `NOTICE` 和 `PROVENANCE.json` 放到 `.app/Contents/Resources/licenses/codex/0.163.0-alpha.10.2/`。原件位于 `crates/orbit-core/resources/codex/0.163.0-alpha.10.2/`；主程序是否保留模板由其编译结果决定，许可证文件仍须独立随包交付。固定来源和完整模板合同见[Codex 目录](codex-catalog.md)。
+
+`inspectMacApp` 无条件要求这三个固定路径是普通文件，大小及 SHA-256 与固定来源一致；缺文件、同长度篡改、错误目录或用目录替代文件均使候选失败，调用方不能用空的资源声明绕过。原 `.app`、ZIP 解包副本及归档完成后的原包均执行同一检查；公开 `codex_source_materials` 摘要与原全包清单并存。来源升级必须同时复核原始材料、固定 hash 和目录合同，不能动态追踪 latest。
+
 Tauri `useLocalToolsDir` 将工具缓存限定到项目 target，行为以锁定 CLI 源码为据：[配置](https://v2.tauri.app/reference/config/#bundleconfig)、[2.12.2 NSIS 实现](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.2/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs)。当前没有 Windows 打包或系统运行证据。
 
 产物摘要位于 `runtime/logs/candidate-manifest.json`。构建前要求已提交、干净的 tracked 树，记录 HEAD/tree；完成包检查后再次核对，变化时拒绝生成有效摘要。文件负责人在构建期间保持源码冻结；任务记录和测试缓存不入 Git。
@@ -45,7 +51,9 @@ Tauri `useLocalToolsDir` 将工具缓存限定到项目 target，行为以锁定
 
 锁定 CLI 2.12.2 的 `--no-sign` 会跳过 macOS 的 keychain、证书签名和公证分支，也跳过 updater 签名：[固定实现](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-bundler/src/bundle/macos/app.rs#L115)。实际 Mach-O 仍有编译链接器产生的 ad-hoc 签名，未设置 TeamIdentifier，Info.plist/资源未封印；这不能证明发布者身份或安全存储的升级连续性。正式证书、公钥与更新渠道未启用。
 
-Mac 证据模块的专项回归命令为 `node --test tests/build/macos-candidate.test.mjs`。覆盖资源/权限变化、可执行文件替换、标识/版本/最低系统不符、路径与 symlink、构建前 dirty 和中途提交变化；Mac CI 运行这些检查并保留 ZIP。实际 `.app`、架构、helper 嵌入和归档回读另行静态核实，均不会启动 Orbit 或 helper。
+Mac 证据模块的专项回归命令为 `node --test tests/build/macos-candidate.test.mjs`。覆盖资源/权限变化、可执行文件替换、标识/版本/最低系统不符、路径与 symlink、构建前 dirty、中途提交变化及上述必需来源材料的反例；Mac CI 运行这些检查并保留 ZIP。实际 `.app`、架构、helper 嵌入和归档回读另行静态核实，均不会启动 Orbit 或 helper。
+
+2026-10-21 的来源材料阶段只改候选配置、证据脚本和专项夹具，最少检查为受影响脚本质量、候选专项及一次提交后 Mac `.app`/ZIP 构建和回读；不重复无变更的应用 Rust/前端、浏览器、协议网关或 signer 探针。实际 argv、源码前后摘要、日志、产物和本地合并以忽略目录 `.cache/evidence/codex-candidate-resources-20261021/` 内交付清单为准。旧 `42900ddd` 的 ZIP 和原 manifest 独立保留，不能被新构建覆盖后继续用作当前源码证据。
 
 ## CI 与验收
 
