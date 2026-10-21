@@ -142,6 +142,30 @@ pub struct ImageParameterConstraints {
     pub verified: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
+pub enum CodexCatalogBindingView {
+    Declared {
+        verified: bool,
+        profile_id: String,
+        cli_version: String,
+        source_sha256: String,
+        template_slug: String,
+    },
+    Unavailable {
+        verified: bool,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReasoningPolicyView {
+    pub state: String,
+    pub capability_status: String,
+    pub supported_efforts: Vec<String>,
+    pub allowed_efforts: Option<Vec<String>>,
+    pub default_effort: Option<String>,
+    pub revision: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelView {
     pub id: String,
     pub label: String,
@@ -152,6 +176,10 @@ pub struct ModelView {
     pub execution_profile: Option<String>,
     pub image_billing_mode: Option<String>,
     pub reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    pub reasoning: Option<ReasoningPolicyView>,
+    #[serde(default)]
+    pub codex_catalog_binding: Option<CodexCatalogBindingView>,
     pub support_status: String,
     pub image_parameters: Option<ImageParameterConstraints>,
     pub sales_price: Option<PriceView>,
@@ -312,6 +340,29 @@ pub struct ConfigPreview {
     pub can_apply: bool,
     pub can_export_import: bool,
     pub blocking_reason: Option<String>,
+    #[serde(default)]
+    pub codex_catalog: Option<CodexCatalogPreview>,
+    #[serde(default)]
+    pub codex_runtime: Option<CodexRuntimeView>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexCatalogPreview {
+    pub profile_id: String,
+    pub cli_version: String,
+    pub source_sha256: String,
+    pub sha256: String,
+    pub scope_revision: String,
+    pub path: String,
+    pub bytes: u64,
+    pub aliases: Vec<String>,
+    pub default_alias: String,
+    pub default_reasoning_effort: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexRuntimeView {
+    pub state: String,
+    pub cli_version: Option<String>,
+    pub revision: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigResult {

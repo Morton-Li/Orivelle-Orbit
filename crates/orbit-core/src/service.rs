@@ -2307,6 +2307,8 @@ impl Service {
             can_apply: false,
             can_export_import: false,
             blocking_reason: None,
+            codex_catalog: None,
+            codex_runtime: None,
         };
         let mut journal_id = None;
         let mut import_candidate = None;
@@ -2722,6 +2724,8 @@ impl Service {
             expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
             can_apply: authorized,
             can_export_import: false,
+            codex_catalog: None,
+            codex_runtime: None,
             blocking_reason: if authorized {
                 None
             } else {
@@ -3875,8 +3879,9 @@ fn map_price(value: &Value, reference: bool) -> Result<Option<PriceView>> {
     }))
 }
 fn map_model(value: &Value, revision: &str) -> Result<ModelView> {
-    let category = text(value, "model_category")?;
-    let image = category == "image";
+    let id = text(value, "id")?;
+    let original_category = text(value, "model_category")?;
+    let image = original_category == "image";
     let category = if image { "image" } else { "text" };
     let capabilities = value["capabilities"]
         .as_array()
@@ -3919,7 +3924,14 @@ fn map_model(value: &Value, revision: &str) -> Result<ModelView> {
         None
     };
     Ok(ModelView {
-        id: text(value, "id")?,
+        codex_catalog_binding: crate::codex_binding::normalize_binding(
+            value.get("codex_catalog_binding"),
+            &id,
+            &original_category,
+            &capabilities,
+        ),
+        reasoning: crate::codex_binding::normalize_reasoning(value.get("reasoning")),
+        id,
         label: text(value, "display_name")?,
         provider_id: text(value, "provider_id")?,
         revision: sha256(
@@ -5659,6 +5671,39 @@ mod tests {
         );
         assert!(service.begin_image_export(&image.id).is_err());
         assert!(service.read_preview_asset("/../../orbit.sqlite3").is_err());
+    }
+    #[test]
+    fn codex_binding_projection_preserves_policy_and_revises_every_raw_change() {
+        let mut wire = golden()["models_reply"]["data"][0].clone();
+        wire["codex_catalog_binding"] = json!({"state":"declared","verified":false,
+            "profile_id":crate::codex_binding::PROFILE_ID,
+            "cli_version":crate::codex_catalog::SUPPORTED_CLI_VERSION,
+            "source_sha256":crate::codex_catalog::SOURCE_SHA256,"template_slug":"gpt-5.5"});
+        wire["reasoning"] = json!({"state":"restricted","capability_status":"supported",
+            "supported_efforts":["low","medium","high"],"allowed_efforts":["medium","high"],
+            "default_effort":"medium","revision":7});
+        let mapped = map_model(&wire, "catalog-a").unwrap();
+        assert_eq!(
+            mapped.reasoning.as_ref().unwrap().default_effort.as_deref(),
+            Some("medium")
+        );
+        assert_eq!(mapped.reasoning.as_ref().unwrap().revision, Some(7));
+        assert_eq!(mapped.reasoning_efforts, ["medium", "high"]);
+        assert!(matches!(
+            mapped.codex_catalog_binding,
+            Some(CodexCatalogBindingView::Declared {
+                verified: false,
+                ..
+            })
+        ));
+        wire["codex_catalog_binding"]["profile_id"] = "unknown-do-not-echo".into();
+        let changed = map_model(&wire, "catalog-a").unwrap();
+        assert_ne!(mapped.revision, changed.revision);
+        assert_eq!(
+            serde_json::to_value(changed.codex_catalog_binding).unwrap(),
+            json!({"state":"unavailable","verified":false})
+        );
+        assert!(changed.reasoning.is_some());
     }
     #[test]
     fn configured_reference_preserves_partial_unknown_and_decimal_values() {
