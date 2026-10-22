@@ -9,6 +9,10 @@ import { locale, t } from "./i18n";
 export function configPolicyMessage(code: string): string | null {
   if (code === "managed_policy_unverified") return t("access.policyUnverified");
   if (code === "managed_policy_changed") return t("access.policyChanged");
+  if (code === "codex_configuration_target_unverified")
+    return t("access.codexConfigurationUnavailable");
+  if (code === "codex_configuration_target_changed")
+    return t("access.codexConfigurationChanged");
   if (code === "codex_binding_unavailable")
     return t("access.codexBindingUnavailable");
   if (code === "codex_reasoning_unavailable")

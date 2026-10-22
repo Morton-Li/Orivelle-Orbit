@@ -13,12 +13,15 @@ vi.mock("../../src/shared/bridge", async (importOriginal) => ({
 }));
 
 import ConfigReviewDialog from "../../src/components/ConfigReviewDialog.vue";
+import ClientRow from "../../src/components/ClientRow.vue";
+import AccessPage from "../../src/pages/AccessPage.vue";
 import { OrbitError } from "../../src/shared/bridge";
-import type { ConfigPreview } from "../../src/shared/contracts";
+import type { ClientView, ConfigPreview } from "../../src/shared/contracts";
 import { useOrbitStore } from "../../src/stores/orbit";
 import {
   bootstrap,
   syntheticCodexCatalog,
+  syntheticCodexConfigurationTarget,
   syntheticCodexModel,
   syntheticCodexRuntime,
 } from "../fixtures";
@@ -48,7 +51,12 @@ function preview(client: "codex" | "claude" = "codex"): ConfigPreview {
         ? ["/fixture/config", "/fixture/codex-model-catalog.json"]
         : ["/fixture/config"],
     codex_catalog: client === "codex" ? syntheticCodexCatalog() : null,
-    codex_runtime: client === "codex" ? syntheticCodexRuntime() : null,
+    codex_configuration_target:
+      client === "codex" ? syntheticCodexConfigurationTarget() : null,
+    codex_runtime:
+      client === "codex"
+        ? { state: "unverified", cli_version: null, revision: null }
+        : null,
     model_id: model.id,
     context: {
       account_id: connection.account_id,
@@ -78,20 +86,23 @@ function show(value: ConfigPreview) {
 }
 
 describe("configuration confirmation follows current policy", () => {
-  it.each(["yes", "unknown"] as const)(
-    "retires an existing confirmation after managed becomes %s, including after it clears again",
-    async (managed) => {
+  it.each(["managed", "blocked", "unverified", "changed target"] as const)(
+    "retires an existing confirmation after local qualification becomes %s, including after it clears again",
+    async (qualification) => {
       const view = show(preview());
       const apply = view.get<HTMLButtonElement>(".button.primary");
       expect(apply.element.disabled).toBe(false);
       const changed = bootstrap("synthetic-account-a", 2);
-      changed.clients[0]!.managed = managed;
+      const client = changed.clients[0]!;
+      if (qualification === "managed") client.managed = "yes";
+      else if (qualification === "changed target")
+        client.configuration_access_revision = "synthetic-new-qualification";
+      else client.configuration_access = qualification;
       useOrbitStore().acceptState(changed);
       await nextTick();
       expect(apply.element.disabled).toBe(true);
       await apply.trigger("click");
       expect(bridge.call).not.toHaveBeenCalled();
-
       useOrbitStore().acceptState(bootstrap("synthetic-account-a", 3));
       await nextTick();
       expect(apply.element.disabled).toBe(true);
@@ -175,8 +186,169 @@ describe("configuration confirmation follows current policy", () => {
 });
 
 describe("Codex catalog confirmation", () => {
+  it.each([
+    "missing access",
+    "missing access revision",
+    "missing preview target",
+    "empty target revision",
+    "different target CLI",
+  ] as const)(
+    "rejects %s even when old or synthetic runtime metadata says verified",
+    async (missing) => {
+      const value = preview();
+      value.codex_runtime = syntheticCodexRuntime();
+      const client = useOrbitStore().state.clients[0]!;
+      if (missing === "missing access")
+        delete (client as Partial<ClientView>).configuration_access;
+      else if (missing === "missing access revision")
+        delete (client as Partial<ClientView>).configuration_access_revision;
+      else if (missing === "missing preview target")
+        delete (value as Partial<ConfigPreview>).codex_configuration_target;
+      else if (missing === "empty target revision")
+        value.codex_configuration_target!.revision = "";
+      else
+        value.codex_configuration_target!.cli_version = "synthetic-other-CLI";
+      const view = show(value);
+      const apply = view.get<HTMLButtonElement>(".button.primary");
+      expect(apply.element.disabled).toBe(true);
+      await apply.trigger("click");
+      expect(bridge.call).not.toHaveBeenCalled();
+      if (missing === "different target CLI") {
+        await view.setProps({
+          preview: {
+            ...value,
+            codex_configuration_target: syntheticCodexConfigurationTarget(),
+          },
+        });
+        expect(apply.element.disabled).toBe(true);
+        await apply.trigger("click");
+        expect(bridge.call).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("shows saved, restart and connection states without treating local qualification as loaded evidence", () => {
+    const store = useOrbitStore();
+    store.state.clients[0]!.managed = "unknown";
+    wrapper = mount(ClientRow, {
+      props: {
+        client: store.state.clients[0]!,
+        connection: store.activeConnection,
+        detected: true,
+      },
+      global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } },
+    });
+    expect(wrapper.text()).toContain("可预览本地用户配置");
+    expect(wrapper.text()).toContain("远端组织策略未确认");
+    expect(wrapper.text()).toContain("配置已保存");
+    expect(wrapper.text()).toContain("待重启 / 载入未确认");
+    expect(wrapper.text()).toContain("连接未验证");
+    expect(wrapper.text()).not.toContain("客户端载入已确认");
+    expect(wrapper.text()).not.toContain("连接验证通过");
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  it("enables the Codex preview entry only for current local write eligibility, including with unknown remote policy", async () => {
+    const store = useOrbitStore();
+    const client = store.state.clients[0]!;
+    client.managed = "unknown";
+    wrapper = mount(AccessPage, {
+      global: {
+        stubs: { ConfigReviewDialog: true, OrbitDialog: true, ClientRow: true },
+      },
+    });
+    await wrapper.get("#model-codex").setValue(model.id);
+    const button = wrapper
+      .findAll(".access-client")[0]!
+      .get<HTMLButtonElement>(".button.primary");
+    expect(button.element.disabled).toBe(false);
+    for (const access of ["blocked", "unverified"] as const) {
+      client.configuration_access = access;
+      await nextTick();
+      expect(button.element.disabled).toBe(true);
+      await button.trigger("click");
+    }
+    client.configuration_access = "allowed";
+    client.managed = "yes";
+    await nextTick();
+    expect(button.element.disabled).toBe(true);
+    await button.trigger("click");
+    client.managed = "unknown";
+    delete (client as Partial<ClientView>).configuration_access;
+    await nextTick();
+    expect(button.element.disabled).toBe(true);
+    await button.trigger("click");
+    expect(bridge.call).not.toHaveBeenCalled();
+    client.configuration_access = "allowed";
+    await nextTick();
+    expect(button.element.disabled).toBe(false);
+    bridge.call.mockResolvedValueOnce(preview());
+    await button.trigger("click");
+    await flushPromises();
+    expect(bridge.call).toHaveBeenCalledWith("preview_client_config", {
+      connection_id: store.activeConnection!.id,
+      expected_revision: store.activeConnection!.revision,
+      client: "codex",
+      model_id: model.id,
+    });
+  });
+
+  it("confirms an eligible Codex restore without runtime proof, a new catalog or an inference credential", async () => {
+    const store = useOrbitStore();
+    const original = preview();
+    const owner = {
+      account_id: "synthetic-account-a",
+      account_label: "Synthetic original account",
+      panel_origin: "https://panel.invalid",
+      installation_id: "synthetic-installation",
+    };
+    store.state.clients[0]!.managed = "unknown";
+    store.state.session.inference_credential_status = "permission_denied";
+    store.state.backups.push({
+      ...owner,
+      id: "synthetic-backup",
+      client: "codex",
+      created_at: "2026-10-22T00:00:00Z",
+      expires_at: "2099-01-01T00:00:00Z",
+      file_count: 2,
+      state: "available",
+    });
+    const value: ConfigPreview = {
+      ...original,
+      operation: "restore",
+      model_id: null,
+      context: null,
+      restore_owner: owner,
+      codex_catalog: null,
+      codex_runtime: null,
+    };
+    const view = show(value);
+    const button = view.get<HTMLButtonElement>(".button.primary");
+    expect(store.ready).toBe(false);
+    expect(button.element.disabled).toBe(false);
+    expect(view.text()).toContain("远端组织策略尚未确认");
+    expect(view.text()).not.toContain("本次预览的执行来源已核验");
+    bridge.call.mockImplementation(async (command) =>
+      command === "bootstrap"
+        ? bootstrap("synthetic-account-a", 2)
+        : {
+            client: "codex",
+            state: "restored",
+            loaded_state: "unconfirmed",
+            backup_group_id: null,
+          },
+    );
+    await button.trigger("click");
+    await flushPromises();
+    expect(bridge.call).toHaveBeenCalledWith("restore_client_config", {
+      preview_id: value.id,
+      confirmed: true,
+    });
+  });
+
   it("shows the compiled menu and explicit defaults separately from client loading and connection", () => {
     const value = preview();
+    value.codex_runtime = syntheticCodexRuntime();
     value.codex_catalog!.aliases.push("synthetic-second");
     value.codex_catalog!.default_alias = "synthetic-second";
     useOrbitStore().models.push(syntheticCodexModel("synthetic-second"));
@@ -187,7 +359,7 @@ describe("Codex catalog confirmation", () => {
         .findAll("li")
         .map((item) => item.text()),
     ).toEqual(["synthetic-text", "synthetic-second"]);
-    const context = view.findAll("dl")[1]!;
+    const context = view.findAll("dl")[2]!;
     expect(context.text()).toContain("默认模型调用名称synthetic-second");
     expect(context.text()).toContain("默认推理档位high");
     expect(context.text()).toContain("0.163.0-alpha.10.2");
@@ -197,13 +369,16 @@ describe("Codex catalog confirmation", () => {
     expect(view.text()).toContain("/fixture/codex-model-catalog.json");
     expect(view.text()).not.toContain(value.codex_catalog!.source_sha256);
     expect(view.text()).not.toContain(value.codex_catalog!.sha256);
+    expect(view.text()).not.toContain(
+      value.codex_configuration_target!.revision,
+    );
     expect(
       view.get<HTMLButtonElement>(".button.primary").element.disabled,
     ).toBe(false);
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
-  const unavailableRuntimes: {
+  const independentRuntimes: {
     name: string;
     runtime: ConfigPreview["codex_runtime"];
     checked: boolean;
@@ -233,25 +408,49 @@ describe("Codex catalog confirmation", () => {
       checked: false,
     },
   ];
-  it.each(unavailableRuntimes)(
-    "cannot apply a declared catalog when the execution source is $name",
+  it.each(independentRuntimes)(
+    "can save qualified local configuration while independently displaying runtime metadata that is $name",
     async ({ runtime, checked }) => {
       const value = preview();
       value.codex_runtime = runtime;
+      useOrbitStore().state.clients[0]!.managed = "unknown";
       const view = show(value);
       const apply = view.get<HTMLButtonElement>(".button.primary");
       expect(value.can_apply).toBe(true);
-      expect(apply.element.disabled).toBe(true);
-      expect(view.text()).toContain("执行来源尚未确认匹配声明目标");
+      expect(apply.element.disabled).toBe(false);
+      expect(apply.text()).toBe("确认保存本地配置");
+      expect(view.text()).toContain(
+        "远端组织策略尚未确认，可能影响本地配置生效",
+      );
+      expect(view.text()).toContain("默认用户配置文件");
+      expect(view.text()).toContain("不代表客户端已载入或连接通过");
       expect(view.text().includes("本次预览的执行来源已核验")).toBe(checked);
+      bridge.call.mockRejectedValueOnce(
+        new OrbitError(
+          "codex_configuration_target_changed",
+          "synthetic-private-target",
+        ),
+      );
       await apply.trigger("click");
-      expect(bridge.call).not.toHaveBeenCalled();
+      await flushPromises();
+      expect(bridge.call).toHaveBeenCalledWith("apply_client_config", {
+        preview_id: value.id,
+        confirmed: true,
+      });
+      expect(apply.element.disabled).toBe(true);
+      expect(useOrbitStore().notice?.text).toContain(
+        "配置目标或本地写入资格已变化",
+      );
+      expect(useOrbitStore().notice?.text).not.toContain(
+        "synthetic-private-target",
+      );
     },
   );
 
   it("requires a generated catalog even with synthetic verified runtime metadata", async () => {
     const value = preview();
     value.codex_catalog = null;
+    value.codex_runtime = syntheticCodexRuntime();
     const view = show(value);
     const apply = view.get<HTMLButtonElement>(".button.primary");
     expect(apply.element.disabled).toBe(true);
@@ -294,6 +493,11 @@ describe("Codex catalog confirmation", () => {
 
   it.each([
     ["codex_binding_unavailable", "当前模型缺少可用的 Codex 模板声明"],
+    [
+      "codex_configuration_target_unverified",
+      "尚未确认已安装 Codex 的配置合同",
+    ],
+    ["codex_configuration_target_changed", "配置目标或本地写入资格已变化"],
     ["codex_reasoning_unavailable", "当前推理档位策略不足"],
     ["codex_catalog_template_unavailable", "当前模型目录无法安全生成"],
     ["codex_runtime_unverified", "尚未核验目标桌面应用的执行来源"],

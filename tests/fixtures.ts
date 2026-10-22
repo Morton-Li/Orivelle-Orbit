@@ -76,6 +76,9 @@ export function client(kind: "codex" | "claude" = "codex"): ClientView {
     config_paths: ["/fixture/config"],
     platform_supported: true,
     managed: "no",
+    configuration_access: kind === "codex" ? "allowed" : "unverified",
+    configuration_access_revision:
+      kind === "codex" ? "synthetic-configuration-qualification" : null,
     configuration_state: "saved",
     loaded_state: "restart_required",
     connection_state: "not_tested",
@@ -151,6 +154,14 @@ export function syntheticCodexModel(id = "synthetic-text"): ModelView {
   };
 }
 // UI-only synthetic IPC summaries; these do not attest to a compiler or Desktop runtime.
+export function syntheticCodexConfigurationTarget(): NonNullable<
+  ConfigPreview["codex_configuration_target"]
+> {
+  return {
+    cli_version: "0.163.0-alpha.10.2",
+    revision: "synthetic-configuration-qualification",
+  };
+}
 export function syntheticCodexCatalog(): NonNullable<
   ConfigPreview["codex_catalog"]
 > {

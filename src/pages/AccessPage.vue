@@ -18,6 +18,16 @@ const manageConnectionId = ref<string | null>(null);
 const manageRevision = ref<number | null>(null);
 const manageCredentialRevision = ref<string | null>(null);
 const recoveryScope = ref("");
+const codexConfigurationAllowed = computed(() => {
+  const client = store.state.clients.find((item) => item.client === "codex");
+  return (
+    client?.installed &&
+    client.platform_supported &&
+    client.managed !== "yes" &&
+    client.configuration_access === "allowed" &&
+    !!client.configuration_access_revision
+  );
+});
 const backupScopes = computed(() =>
   Array.from(
     new Map(
@@ -76,7 +86,12 @@ watch(
 );
 async function requestPreview(client: ClientKind) {
   const connection = store.activeConnection;
-  if (!connection || !selected.value[client]) return;
+  if (
+    !connection ||
+    !selected.value[client] ||
+    (client === "codex" && !codexConfigurationAllowed.value)
+  )
+    return;
   const result = await store.perform(
     `preview-${client}`,
     "preview_client_config",
@@ -90,6 +105,8 @@ async function requestPreview(client: ClientKind) {
   if (result) preview.value = result;
 }
 async function restore(id: string) {
+  const backup = store.state.backups.find((item) => item.id === id);
+  if (backup?.client === "codex" && !codexConfigurationAllowed.value) return;
   const result = await store.perform("preview-restore", "preview_restore", {
     backup_group_id: id,
   });
@@ -259,6 +276,7 @@ function changeNode(event: Event) {
             !client.installed ||
             !selected[client.client] ||
             client.managed === 'yes' ||
+            (client.client === 'codex' && !codexConfigurationAllowed) ||
             store.busy.has(`preview-${client.client}`)
           "
           @click="requestPreview(client.client)"
@@ -321,7 +339,9 @@ function changeNode(event: Event) {
       /><button
         class="button secondary"
         :disabled="
-          backup.state === 'unavailable' || store.busy.has('preview-restore')
+          backup.state === 'unavailable' ||
+          (backup.client === 'codex' && !codexConfigurationAllowed) ||
+          store.busy.has('preview-restore')
         "
         @click="restore(backup.id)"
       >

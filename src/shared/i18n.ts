@@ -71,6 +71,10 @@ const zh = {
   "client.conflict": "配置冲突",
   "client.unsupported": "版本或配置格式待验证",
   "client.managed": "组织管理配置",
+  "client.configurationAllowed": "可预览本地用户配置",
+  "client.configurationBlocked": "本地用户配置写入受阻",
+  "client.configurationUnverified": "本地用户配置写入资格待确认",
+  "client.remotePolicyUnknown": "远端组织策略未确认，可能影响配置生效。",
   "access.eyebrow": "接入管理",
   "access.title": "选择工具，确认每次切换",
   "access.description":
@@ -107,22 +111,33 @@ const zh = {
   "access.previewExpired":
     "预览已失效，或账户、节点、凭据、模型、组织策略及客户端版本已变化，请重新预览。",
   "access.policyUnverified":
-    "尚未确认目标应用的组织管理策略，暂时无法应用或导出配置。请完成策略检测后重新预览。",
+    "尚未确认目标应用的本地配置写入资格或组织管理限制，暂时无法变更或导出配置。请重新检测并预览。",
   "access.policyChanged":
-    "目标应用的组织管理策略已变化，本次确认已失效。请重新检测并预览配置。",
+    "目标应用的本地配置写入资格或组织管理策略已变化，本次确认已失效。请重新检测并预览配置。",
+  "access.saveLocalConfiguration": "确认保存本地配置",
+  "access.codexConfigurationTarget": "已安装 Codex 的配置目标",
+  "access.codexConfigurationCli": "已安装目标的配置 CLI 版本",
+  "access.codexDefaultScope":
+    "本次仅变更下列默认用户配置文件，可能同时影响使用同一目录的 CLI / IDE。远端、云端及自定义配置目录不在本次范围。",
+  "access.remotePolicyWarning":
+    "远端组织策略尚未确认，可能影响本地配置生效。确认后仅变更默认用户配置，载入与连接仍待验证。",
+  "access.codexConfigurationUnavailable":
+    "尚未确认已安装 Codex 的配置合同或默认用户配置路径，本次不能保存或恢复。请重新预览。",
+  "access.codexConfigurationChanged":
+    "已安装 Codex 的配置目标或本地写入资格已变化，本次确认已失效。请重新预览。",
   "access.codexCatalog": "Codex 模型目录",
   "access.codexMenuAliases": "模型菜单调用名称（本次目录）",
   "access.codexDefaultAlias": "默认模型调用名称",
   "access.codexDefaultEffort": "默认推理档位",
-  "access.codexDeclaredCli": "声明目标 CLI（须匹配桌面捆绑版本）",
+  "access.codexDeclaredCli": "声明目标 CLI（须匹配已安装配置目标）",
   "access.codexRuntime": "本机接入来源核验",
   "access.codexRuntimeCli": "本机接入 CLI 版本",
   "access.codexRuntimeVerified": "本机接入：本次预览的执行来源已核验",
   "access.codexRuntimeUnverified": "待核验",
   "access.codexRuntimeBlocked":
-    "本机接入的执行来源尚未确认匹配声明目标，本次不能应用。请核对本机接入使用的 CLI 后重新预览。",
+    "本机运行来源仍待核验。保存本地配置不代表该运行实例已使用此配置。",
   "access.codexRuntimeUnavailable":
-    "本机接入：尚未核验目标桌面应用的执行来源，本次不能变更配置。",
+    "本机接入：尚未核验目标桌面应用的执行来源，请重新预览并核对本次操作是否可用。",
   "access.codexRuntimeChanged":
     "本机接入：目标桌面应用的执行来源已变化，本次确认已失效。请重新预览配置。",
   "access.codexRestoreContextUnavailable":
@@ -130,7 +145,7 @@ const zh = {
   "access.codexOverrideUnavailable":
     "现有显式设置可能覆盖本次配置，暂时不能自动应用。请先手动核对后重新预览。",
   "access.codexEvidenceBoundary":
-    "模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
+    "已安装版本的配置合同、模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
   "access.codexBindingUnavailable":
     "当前模型缺少可用的 Codex 模板声明。请刷新模型列表，或联系管理员补充声明后重新预览。",
   "access.codexReasoningUnavailable":
@@ -363,6 +378,11 @@ const en: Record<keyof typeof zh, string> = {
   "client.conflict": "Configuration conflict",
   "client.unsupported": "Version or format needs verification",
   "client.managed": "Managed configuration",
+  "client.configurationAllowed": "Local user configuration can be previewed",
+  "client.configurationBlocked": "Local user configuration writes blocked",
+  "client.configurationUnverified": "Local configuration write check pending",
+  "client.remotePolicyUnknown":
+    "Remote organization policy is unconfirmed and may affect configuration activation.",
   "access.eyebrow": "ACCESS MANAGEMENT",
   "access.title": "Choose a tool. Review every switch.",
   "access.description":
@@ -401,24 +421,35 @@ const en: Record<keyof typeof zh, string> = {
   "access.previewExpired":
     "This preview is no longer valid, or the account, node, credential, model, organization policy or client version changed. Create a new preview.",
   "access.policyUnverified":
-    "The target application's organization policy is unconfirmed. Configuration cannot be applied or exported. Complete the policy check and create a new preview.",
+    "Local configuration write eligibility or organization restrictions are unconfirmed. Configuration cannot be changed or exported. Check again and create a new preview.",
   "access.policyChanged":
-    "The target application's organization policy changed and this confirmation is no longer valid. Check the policy and create a new preview.",
+    "Local configuration write eligibility or organization policy changed. This confirmation is no longer valid. Check again and create a new preview.",
+  "access.saveLocalConfiguration": "Confirm and save local configuration",
+  "access.codexConfigurationTarget": "Installed Codex configuration target",
+  "access.codexConfigurationCli": "Installed configuration target CLI version",
+  "access.codexDefaultScope":
+    "Only the default user configuration files below will change. CLI / IDE clients using the same directory may also be affected. Remote, cloud and custom configuration directories are outside this scope.",
+  "access.remotePolicyWarning":
+    "Remote organization policy is unconfirmed and may affect whether this configuration takes effect. Confirmation changes only the default user configuration; loading and connection remain unverified.",
+  "access.codexConfigurationUnavailable":
+    "The installed Codex configuration contract or default user configuration path is unconfirmed. Saving or restoring is unavailable. Create a new preview.",
+  "access.codexConfigurationChanged":
+    "The installed Codex configuration target or local write eligibility changed. This confirmation is no longer valid. Create a new preview.",
   "access.codexCatalog": "Codex model catalog",
   "access.codexMenuAliases": "Model menu aliases in this catalog",
   "access.codexDefaultAlias": "Default model alias",
   "access.codexDefaultEffort": "Default reasoning effort",
   "access.codexDeclaredCli":
-    "Declared CLI target (must match the Desktop bundled version)",
+    "Declared CLI target (must match the installed configuration target)",
   "access.codexRuntime": "Local backend source check",
   "access.codexRuntimeCli": "Local backend CLI version",
   "access.codexRuntimeVerified":
     "Local backend execution source checked for this preview",
   "access.codexRuntimeUnverified": "Check pending",
   "access.codexRuntimeBlocked":
-    "The local backend execution source has not been confirmed to match the declared target. Check the CLI used for local access and create a new preview before applying.",
+    "The local runtime source remains unverified. Saving local configuration does not confirm that this runtime instance uses it.",
   "access.codexRuntimeUnavailable":
-    "The target Desktop application's local backend execution source has not been verified. Configuration cannot be changed in this confirmation.",
+    "The target Desktop application's local backend execution source has not been verified. Create a new preview and check whether this operation is available.",
   "access.codexRuntimeChanged":
     "The target Desktop application's local backend execution source changed. This confirmation is no longer valid. Create a new preview.",
   "access.codexRestoreContextUnavailable":
@@ -426,7 +457,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexOverrideUnavailable":
     "Existing explicit settings may override this configuration, so it cannot be applied automatically. Check the settings manually before creating a new preview.",
   "access.codexEvidenceBoundary":
-    "A template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
+    "An installed version's configuration contract, template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
   "access.codexBindingUnavailable":
     "This model has no available Codex template declaration. Refresh the model list or ask an administrator to declare one, then preview again.",
   "access.codexReasoningUnavailable":

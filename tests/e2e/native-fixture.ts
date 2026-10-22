@@ -7,8 +7,8 @@ import {
   bootstrap,
   imageModel,
   syntheticCodexCatalog,
+  syntheticCodexConfigurationTarget,
   syntheticCodexModel,
-  syntheticCodexRuntime,
   task,
 } from "../fixtures";
 
@@ -37,6 +37,7 @@ export async function fixture(
       claudeImport,
       restoreMode,
       codexCatalog,
+      codexConfigurationTarget,
       codexRuntime,
     }) => {
       // Test-only in-memory IPC. This is injected by Playwright and is never included in the application bundle.
@@ -185,6 +186,8 @@ export async function fixture(
               target_version: "synthetic-version",
               paths: ["/fixture/config"],
               codex_catalog: null,
+              codex_configuration_target:
+                backup.client === "codex" ? codexConfigurationTarget : null,
               codex_runtime: null,
               model_id: null,
               context: null,
@@ -224,6 +227,8 @@ export async function fixture(
                   ? ["/fixture/config", codexCatalog.path]
                   : ["/fixture/config"],
               codex_catalog: request.client === "codex" ? codexCatalog : null,
+              codex_configuration_target:
+                request.client === "codex" ? codexConfigurationTarget : null,
               codex_runtime: request.client === "codex" ? codexRuntime : null,
               model_id: request.model_id,
               context: {
@@ -262,7 +267,8 @@ export async function fixture(
       claudeImport: options.claudeImport ?? false,
       restoreMode: options.restoreMode ?? "blocked",
       codexCatalog: syntheticCodexCatalog(),
-      codexRuntime: syntheticCodexRuntime(),
+      codexConfigurationTarget: syntheticCodexConfigurationTarget(),
+      codexRuntime: { state: "unverified", cli_version: null, revision: null },
     },
   );
 }
