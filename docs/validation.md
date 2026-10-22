@@ -10,6 +10,22 @@
 - `lab.lan` 仅个人 Mac 可用，当前不依赖它。Windows 11 25H2 x64 和 macOS 15 最低版本的实际环境尚无验收证据。
 - macOS Intel 已取消，无此目标的设计、构建或验收。
 
+## 2026-10-22：真实 Panel 隔离授权
+
+用户允许 Docker 临时环境后，当前范围收紧为 **Orbit → Panel 的登录与账户接入**。没有搭建 Sub2api 网关、Edge 或推理上游。后端固定 Panel `01d8f67a5af6ba189c933a6f214de5ecfb8010e3` 的源码快照，实际运行 PHP-FPM **8.5.12**、MySQL **8.4.11**、队列和 Scheduler；入口仅发布回环 TLS 端口。基础镜像固定 digest，PHP-FPM 通过镜像源取得，其余镜像和匹配锁文件的项目依赖缓存复用。源码快照不继承 Panel `.env`，Docker 客户端配置、构建缓存、证书和合成凭据均在项目内；系统信任、hosts 和全局工具未改。
+
+默认 ignored 的 macOS 组件入口实际运行 **1/1 通过，2.90 秒，145 filtered**。它调用真实 `Service::start_login`、安装签名、S256 PKCE、token 交换和推理 key 交付，不使用 scripted HTTP 或直接注入账户会话。Node driver 经实际 Fortify 密码登录和明确授权页批准；登录和同意两处缺少 CSRF token 都返回 419。回调发送前匹配本次实际 listener，state/issuer 继续由原生 Service 校验。严格 TLS 正例、错误 CA、错误 SAN 和其他 origin 拒绝均通过，没有跳过证书或名称验证。
+
+两次登录之间先退出桌面会话，再证明相同安装关联的同一推理 key 被复用；未确认撤销被拒，明确撤销后账户读取仍可用，最后退出的旧会话被拒。只读 MySQL 回执实际观测到 **1 个安装、2 个已撤销桌面会话、1 个已撤销专属 key**，合成初始余额仍为精确字符串 `10.00000000`，上游账户、Edge 机器凭据、执行和账本记录均为 0。回执未选择 key、token、hash 或秘密列。
+
+模型证据是公开目录过滤及固定 Codex 绑定：一个公开合成模型可见，一个非公开模型不可见，不能泛化为完整成员授权矩阵。节点如实保持离线，原生 Service 拒绝选用；配置写入也保持禁止。本入口使用项目 Store、MemoryVault 和空客户端清单，未运行共享默认配置或 NativeVault 往返，未启动候选 GUI 或第三方客户端。真实浏览器界面、GUI 登录、可用 Edge、推理计费、配置保存后的客户端载入与连接仍须分别验收，不能称为完整上线验收。
+
+本阶段受影响 Rust 回归为 **core 144 / helper 1**，格式、helper 编译、默认与 `system-integration` typed check 全通过，无编译 warning。普通回归的两个 core 集成入口保持 ignored，NativeVault 与 signer 专项各一个 ignored；随后只显式执行上述 Panel 入口。前端产品代码无变化，没有重复此前已绿的前端或浏览器流程。新 Node 脚本的格式、语法和 scoped ESLint 检查通过。
+
+保留的首轮失败包括 buildx 尝试写全局活动目录被限制、合成 seed 未识别固定迁移自带的 custody 禁用记录，以及 Caddy 文件 capability/临时目录权限和纯内部网络下的入口发布问题。修复限定在临时 fixture：项目 Docker 配置、精确迁移基线检查、非 root 入口的必要 capability 和私有 tmpfs、仅入口加入发布 bridge。只重试失败的 seed 或入口启动，没有重跑已通过的构建和迁移；未清库隐藏失败。
+
+复现入口见[临时 Panel 环境](../tests/acceptance/panel/README.md)。源码、日志和完整性回执在 `.cache/evidence/panel-local-20261022/`；实际后端、首次失败及 MySQL 回执在 `.cache/panel-acceptance/20261022054057-1eba3f/`。最后的分步提交、源码对应关系、资源清理和本地合并以本阶段交付 JSON 为准。此前 `f108f93` Mac 候选保持独立来源，本阶段未重打包或新增其 GUI 运行证据。
+
 ## 分层记录
 
 | 层级 | 当前证据 | 未覆盖 |
