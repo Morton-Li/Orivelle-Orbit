@@ -2,6 +2,20 @@
 
 此文件只记录已取得的证据，最终检查必须绑定提交后的完整 SHA。目标仍在实施中；任何未完成项都不构成平台支持或真实接入验收。
 
+## 2026-10-22 Claude Service 保存与恢复
+
+从本地 develop `830b787` 建 `feature/orbit-claude-config-service`，分节提交完整目标与当前账户资格 `e1f5ae5`、实际保存与恢复接线 `ee618f3`。正常预览生成精确三文件脱敏差异；确认后写入并只显示已保存、待重启。Service 删除并从磁盘重新打开 Store 后可恢复原字节，退出账户、移除 helper 和节点缓存后仍可恢复，失效授权不会复活。直接消费 Panel 授予的 Claude 节点根地址，没有新增网关、后端或 Edge 改动。
+
+初轮切片 14 项针对性测试、core lib check、scoped fmt/diff 通过；独立审查发现启动时旧 journal 快照可能把成功恢复误报为冲突。新增反例在修前明确失败；协调前重读当前记录并重新判断是否待恢复后，两项启动测试通过，原强断言保留。编译没有此前未接线方法的 warning。全部首轮失败、修前反例、日志和冻结源码摘要保存在 `.cache/evidence/claude-config-service-20261022/`。
+
+正式 IPC 所调用的 Service 刷新入口也有合成 Panel transport 正例：两次操作都实际请求合成 bootstrap 和 models，两个接口使用不同的合法目录版本号后仍能保存三文件并恢复。修前会在中间 bootstrap 缓存状态误拒绝；修复仅暂缓该中间状态的目录、模型比较，目标、策略、helper、账户、凭据和节点检查保留，取得 models 后及实际写入边界仍比较完整冻结范围。修前失败和修后通过分别保留在 `b3c-checks-1-red.json`、`b3c-checks-2.json`。
+
+最后六组针对性验收覆盖正式刷新入口、十类晚变且在 Vault 前消费旧预览、刷新后完整模型范围、Vault 返回后晚变、账户及节点切换、待恢复与外部文件冲突。用例发现旧预览可绕过后来出现的待恢复操作；修复在确认及写入边界阻止其他待恢复 journal，排除自身，恢复原字节仍可进行。六组与受影响的三项旧测试共 9 项通过，lib check 无 warning，scoped fmt/diff 通过；修前失败保留。上述修复和验收提交为 `fbaa8a4`。
+
+最终受影响回归绑定源码 `fbaa8a49c8068c722c38945181e53397c86cd004`：core 185/helper 1 通过，core 内 2、独立 Vault 1、signer 1 保持 ignored；完整 Rust 格式和默认 Tauri check 通过，无编译 warning。133 个源码和测试文件前后摘要不变，证据为 `b3-final-checks-1.json`。没有重复无新变更的界面 51 项、五个受影响浏览器用例、真实 Panel 授权、协议网关或签名探针。
+
+本阶段 Mac 候选按最终冻结提交构建；实际来源、helper、整个应用包、ZIP 摘要和解包回读结果以 `runtime/logs/candidate-manifest.json` 及本节证据目录的构建记录为准，保留旧 `f108f93` 候选和清单。生产前端及 system-integration release 编译包含在候选构建中。以上 Service 验证使用项目内合成配置、账户和 MemoryVault，没有操作真实 Claude 用户配置、系统安全存储或客户端界面，不证明真实 Desktop 载入、Code 请求、最低 macOS 15 或 Windows 验收。
+
 ## 2026-10-22 Claude 配置事务引擎
 
 从本地 develop `becfaae8` 建 `feature/orbit-claude-config-transaction`，分别提交认证上下文 `5f8d62d`、整组保存与逆序恢复 `85e3646`。本节只完成原生事务引擎；Service 的预览、确认、启动恢复和客户端状态接线仍待下一分支完成。Orbit 直接对接 Panel，继续使用其授予的现有节点和模型，本节没有新增网关或后端服务。

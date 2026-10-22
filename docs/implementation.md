@@ -32,7 +32,7 @@ Panel 复用现有网页登录、验证、2FA/passkey 与权限服务。独立�
 
 Codex 桌面使用用户 `config.toml` 的自定义 provider 和 command credential helper。macOS 为 `~/.codex/config.toml`，Windows 为 `%USERPROFILE%\.codex\config.toml`。用户配置可能影响 CLI/IDE，保存后需完整重启。只修改负责字段与独立 provider，不改 `auth.json` 或 OAuth 身份。[官方接入](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)。
 
-Claude Desktop 使用官方第三方推理配置和 helper；macOS 配置 library 位于 `~/Library/Application Support/Claude-3p/configLibrary/`，Windows 为 `%LOCALAPPDATA%\Claude-3p\configLibrary\`。V2 body schema 有官方依据，profile envelope 与 `_meta.json` 仍需获准的合成导出证据，当前自动 library 写入应阻止。第三方模式作用于整个 Desktop，首期以 Code 为验证重点，保留模式选择、组织策略和原登录资料。[配置](https://claude.com/docs/third-party/claude-desktop/configuration)、[凭据 helper](https://claude.com/docs/third-party/claude-desktop/credential-helper)、[V2 schema](https://claude.com/docs/third-party/claude-desktop/schemas/bootstrap-config-v2.schema.json)。
+Claude Desktop 使用官方第三方推理配置和 helper。首个自动配置目标限定为 macOS arm64 `2.19675.0` 的默认 `~/Library/Application Support/Claude-3p/`：创建新的扁平 `configLibrary/<UUID>.json`、更新 `_meta.json` 的选择，并在同一根目录切换 `claude_desktop_config.json` 的模式；V2 导入正文不能直接当作本地 profile。Service 已接通预览、确认、整组保存及逆序恢复，具体资格和边界见[本地配置合同](claude-configuration.md)；其他版本、非默认目录和 Windows 目标仍待对应核验。第三方模式作用于整个 Desktop，首期以 Code 为验证重点，保留组织策略和原登录资料。[配置](https://claude.com/docs/third-party/claude-desktop/configuration)、[凭据 helper](https://claude.com/docs/third-party/claude-desktop/credential-helper)。
 
 当前权限能力使用 `openai.responses`、`anthropic.messages`、`openai.images.generations`、`openai.images.edits`。未经实际客户端观测，不承诺非 Claude 上游与 Claude Code 的能力等价、任意别名自动出现、Fast/tier/reasoning 的速度提升。保存配置不自动执行收费推理。
 
