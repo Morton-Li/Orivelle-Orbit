@@ -22,6 +22,8 @@ pub struct SystemPaths {
     pub writes_authorized: bool,
     pub isolated: bool,
     pub(crate) codex_user_home: Option<PathBuf>,
+    #[cfg(target_os = "macos")]
+    claude_configuration_cache: std::sync::Arc<std::sync::Mutex<Option<ClaudeConfigurationTarget>>>,
     #[cfg(test)]
     pub fixture_clients: Option<Vec<ClientView>>,
     #[cfg(test)]
@@ -59,6 +61,20 @@ const CONFIGURATION_MATERIALS: [(&str, u64, &str); 3] = [
         "c40b0e6b87b94ef5a232ab8312678c5db2156428f57c3f3d6c32525373be7f59",
     ),
 ];
+const CLAUDE_BUNDLE_ID: &str = "com.anthropic.claudefordesktop";
+#[cfg(target_os = "macos")]
+const CLAUDE_MATERIALS: [(&str, u64, &str); 2] = [
+    (
+        "Contents/Info.plist",
+        12_456,
+        "f18af671edea570f867f3f59ddd0ac8f9341275cb61f6262f85afb986ce68c31",
+    ),
+    (
+        "Contents/Resources/app.asar",
+        49_827_880,
+        "817767bfbad77ea60678e22df90baba2cbabba9dda90201c65a49f0176fc7306",
+    ),
+];
 #[cfg(target_os = "macos")]
 const MAX_CONFIGURATION_INFO_BYTES: u64 = 1024 * 1024;
 
@@ -80,6 +96,145 @@ struct ConfigurationRootAnchor {
     device: u64,
     inode: u64,
     owner: u32,
+}
+
+/// An installed Claude schema and the intended default local user destination.
+/// This receipt says nothing about a running client, its selected configuration,
+/// loaded state, connectivity or remote organization policy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeConfigurationTarget {
+    contract_version: u32,
+    pub app_path: String,
+    pub bundle_id: String,
+    pub app_version: String,
+    pub source_member_sha256: String,
+    pub config_root: PathBuf,
+    root_anchors: Vec<ConfigurationRootAnchor>,
+    materials: Vec<String>,
+    pub revision: String,
+}
+
+impl ClaudeConfigurationTarget {
+    pub fn validate_root(&self) -> Result<()> {
+        if self.contract_version != 1
+            || self.bundle_id != CLAUDE_BUNDLE_ID
+            || self.app_version != crate::claude_config::SUPPORTED_APP_VERSION
+            || self.source_member_sha256 != crate::claude_config::SOURCE_MEMBER_SHA256
+            || !configuration_digest(&self.revision)
+        {
+            return Err(fail("claude_configuration_target_unverified"));
+        }
+        if claude_configuration_root(&self.config_root)? != self.root_anchors {
+            return Err(fail("claude_configuration_target_changed"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn claude_target_error(error: crate::error::PublicError) -> crate::error::PublicError {
+    fail(if error.code == "codex_configuration_target_changed" {
+        "claude_configuration_target_changed"
+    } else {
+        "claude_configuration_target_unverified"
+    })
+}
+
+fn claude_configuration_root(root: &Path) -> Result<Vec<ConfigurationRootAnchor>> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let home = root
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
+        if root != home.join("Library/Application Support/Claude-3p") {
+            return Err(fail("claude_configuration_target_unverified"));
+        }
+        let owner = unsafe { libc::geteuid() };
+        let mut anchors = Vec::new();
+        for (index, path) in [
+            home.to_path_buf(),
+            home.join("Library"),
+            home.join("Library/Application Support"),
+            root.to_path_buf(),
+            root.join("configLibrary"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            match fs::symlink_metadata(path) {
+                Err(error) if index >= 3 && error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(_) => return Err(fail("claude_configuration_target_unverified")),
+                Ok(_) => {}
+            }
+            let file = configuration_directory(path).map_err(claude_target_error)?;
+            let before = file
+                .metadata()
+                .map_err(|_| fail("claude_configuration_target_unverified"))?;
+            if before.uid() != owner || before.mode() & 0o022 != 0 {
+                return Err(fail("claude_configuration_target_unverified"));
+            }
+            let after = configuration_directory(path)
+                .map_err(claude_target_error)?
+                .metadata()
+                .map_err(|_| fail("claude_configuration_target_unverified"))?;
+            if before.dev() != after.dev()
+                || before.ino() != after.ino()
+                || before.uid() != after.uid()
+            {
+                return Err(fail("claude_configuration_target_changed"));
+            }
+            // The three stable ancestors establish the intended default scope.
+            // Creating our two directories or changing their contents must not
+            // invalidate this receipt while its journal is publishing.
+            if index < 3 {
+                anchors.push(ConfigurationRootAnchor {
+                    device: before.dev(),
+                    inode: before.ino(),
+                    owner,
+                });
+            }
+        }
+        Ok(anchors)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = root;
+        Err(fail("claude_configuration_target_unverified"))
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn claude_verify_cached(
+    cache: &std::sync::Mutex<Option<ClaudeConfigurationTarget>>,
+    before: ClaudeConfigurationTarget,
+    current: impl FnOnce() -> Result<ClaudeConfigurationTarget>,
+    verify_signature: impl FnOnce() -> Result<()>,
+    verify_large_hash: impl FnOnce() -> Result<()>,
+) -> Result<ClaudeConfigurationTarget> {
+    let cached = cache
+        .lock()
+        .map_err(|_| fail("claude_configuration_target_unverified"))?
+        .as_ref()
+        == Some(&before);
+    if !cached {
+        verify_large_hash()?;
+    }
+    // The stamp cache covers only the large pinned ASAR hash. A signature
+    // covers additional executable/resources that are deliberately not part of
+    // that cache key, so its result must never be reused.
+    verify_signature()?;
+    if before != current()? {
+        return Err(fail("claude_configuration_target_changed"));
+    }
+    *cache
+        .lock()
+        .map_err(|_| fail("claude_configuration_target_unverified"))? = Some(before.clone());
+    Ok(before)
 }
 
 /// An installed schema and an explicit user configuration destination. This
@@ -407,6 +562,206 @@ impl CodexRuntimeSnapshot {
     }
 }
 impl SystemPaths {
+    /// Metadata-only installation freshness; configuration state and existing
+    /// saved/conflict evidence stay with the caller's cached view.
+    pub fn fresh_claude_client(&self, cached: &ClientView) -> ClientView {
+        if self.isolated {
+            return cached.clone();
+        }
+        let mut target = cached.clone();
+        target.installed = false;
+        target.version = None;
+        target.bundle_id = None;
+        target.app_path = None;
+        #[cfg(target_os = "macos")]
+        {
+            let mut candidates = cached
+                .app_path
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            candidates.push(PathBuf::from("/Applications/Claude.app"));
+            if let Some(home) = &self.codex_user_home {
+                candidates.push(home.join("Applications/Claude.app"));
+            }
+            for app in candidates {
+                let Ok(file) = configuration_file(&app.join("Contents/Info.plist")) else {
+                    continue;
+                };
+                let Some(value) = bounded_configuration_info(file) else {
+                    continue;
+                };
+                let Some(dict) = value.as_dictionary() else {
+                    continue;
+                };
+                if dict
+                    .get("CFBundleIdentifier")
+                    .and_then(plist::Value::as_string)
+                    != Some(CLAUDE_BUNDLE_ID)
+                {
+                    continue;
+                }
+                target.installed = true;
+                target.bundle_id = Some(CLAUDE_BUNDLE_ID.into());
+                target.version = dict
+                    .get("CFBundleShortVersionString")
+                    .and_then(plist::Value::as_string)
+                    .map(str::to_owned);
+                target.app_path = Some(app.display().to_string());
+                break;
+            }
+        }
+        target
+    }
+
+    /// Lightweight qualification projection, without a signature process or a
+    /// full ASAR hash. It is not a receipt and does not enable any writer.
+    pub fn claude_configuration_hint(&self, target: &ClientView) -> Result<String> {
+        Ok(self.claude_configuration_draft(target)?.revision)
+    }
+
+    pub fn claude_configuration_target(
+        &self,
+        target: &ClientView,
+    ) -> Result<ClaudeConfigurationTarget> {
+        let before = self.claude_configuration_draft(target)?;
+        #[cfg(target_os = "macos")]
+        {
+            claude_verify_cached(
+                &self.claude_configuration_cache,
+                before,
+                || self.claude_configuration_draft(target),
+                || {
+                    let app = Path::new(
+                        target
+                            .app_path
+                            .as_deref()
+                            .ok_or_else(|| fail("claude_configuration_target_unverified"))?,
+                    );
+                    let mut command = Command::new("/usr/bin/codesign");
+                    command.args([
+                        "--verify", "--strict", "--deep", "-R",
+                        "=identifier \"com.anthropic.claudefordesktop\" and anchor apple generic and certificate leaf[subject.OU] = \"Q6L2SF6YDW\"",
+                    ]).arg(app);
+                    if bounded_command(command).is_none() {
+                        return Err(fail("claude_configuration_target_unverified"));
+                    }
+                    Ok(())
+                },
+                || {
+                    let app = Path::new(
+                        target
+                            .app_path
+                            .as_deref()
+                            .ok_or_else(|| fail("claude_configuration_target_unverified"))?,
+                    );
+                    let (relative, bytes, digest) = CLAUDE_MATERIALS[1];
+                    if configuration_hash(&app.join(relative), bytes)
+                        .map_err(claude_target_error)?
+                        != digest
+                    {
+                        return Err(fail("claude_configuration_target_unverified"));
+                    }
+                    Ok(())
+                },
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = before;
+            Err(fail("claude_configuration_target_unverified"))
+        }
+    }
+
+    fn claude_configuration_draft(&self, target: &ClientView) -> Result<ClaudeConfigurationTarget> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.isolated
+                || !target.installed
+                || !target.platform_supported
+                || target.client != ClientKind::Claude
+                || target.version.as_deref() != Some(crate::claude_config::SUPPORTED_APP_VERSION)
+                || target.bundle_id.as_deref() != Some(CLAUDE_BUNDLE_ID)
+                || std::env::var_os("CLAUDE_USER_DATA_DIR").is_some()
+                || std::env::var_os("CLAUDE_E2E_MANAGED_PLIST").is_some()
+            {
+                return Err(fail("claude_configuration_target_unverified"));
+            }
+            let app_path = target
+                .app_path
+                .clone()
+                .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
+            let home = self
+                .codex_user_home
+                .as_ref()
+                .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
+            let root = home.join("Library/Application Support/Claude-3p");
+            if self.claude_library != root.join("configLibrary")
+                || !self.configuration_roots.contains(&root)
+            {
+                return Err(fail("claude_configuration_target_unverified"));
+            }
+            let root_anchors = claude_configuration_root(&root)?;
+            let mut materials = Vec::new();
+            for (index, (relative, bytes, digest)) in CLAUDE_MATERIALS.iter().enumerate() {
+                let path = Path::new(&app_path).join(relative);
+                let file = configuration_file(&path).map_err(claude_target_error)?;
+                let before = file
+                    .metadata()
+                    .map_err(|_| fail("claude_configuration_target_unverified"))?;
+                if before.len() != *bytes {
+                    return Err(fail("claude_configuration_target_unverified"));
+                }
+                // Info is small and pins version/bundle identity on each hint.
+                // ASAR is streamed only for a new full receipt; its complete
+                // metadata stamp participates in the receipt/cache revision.
+                if index == 0
+                    && configuration_hash(&path, *bytes).map_err(claude_target_error)? != *digest
+                {
+                    return Err(fail("claude_configuration_target_unverified"));
+                }
+                let after = configuration_file(&path)
+                    .map_err(claude_target_error)?
+                    .metadata()
+                    .map_err(|_| fail("claude_configuration_target_unverified"))?;
+                if configuration_stamp(&before) != configuration_stamp(&after) {
+                    return Err(fail("claude_configuration_target_changed"));
+                }
+                materials.push(configuration_stamp(&after));
+            }
+            let revision = crate::identity::sha256(
+                &serde_json::to_vec(&(
+                    "claude-installed-user-config-v1",
+                    &app_path,
+                    CLAUDE_BUNDLE_ID,
+                    crate::claude_config::SUPPORTED_APP_VERSION,
+                    crate::claude_config::SOURCE_MEMBER_SHA256,
+                    crate::claude_config::SCHEMA_KEYS_SHA256,
+                    &root,
+                    &root_anchors,
+                    &materials,
+                ))
+                .map_err(|_| fail("serialization_failed"))?,
+            );
+            Ok(ClaudeConfigurationTarget {
+                contract_version: 1,
+                app_path,
+                bundle_id: CLAUDE_BUNDLE_ID.into(),
+                app_version: crate::claude_config::SUPPORTED_APP_VERSION.into(),
+                source_member_sha256: crate::claude_config::SOURCE_MEMBER_SHA256.into(),
+                config_root: root,
+                root_anchors,
+                materials,
+                revision,
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = target;
+            Err(fail("claude_configuration_target_unverified"))
+        }
+    }
+
     pub fn codex_catalog(&self) -> PathBuf {
         self.codex_config
             .with_file_name("orivelle-orbit.models.json")
@@ -644,6 +999,8 @@ impl SystemPaths {
             writes_authorized: false,
             isolated: true,
             codex_user_home: None,
+            #[cfg(target_os = "macos")]
+            claude_configuration_cache: Default::default(),
             #[cfg(test)]
             fixture_clients: None,
             #[cfg(test)]
@@ -679,6 +1036,8 @@ impl SystemPaths {
             writes_authorized: true,
             isolated: false,
             codex_user_home: Some(home.into()),
+            #[cfg(target_os = "macos")]
+            claude_configuration_cache: Default::default(),
             #[cfg(test)]
             fixture_clients: None,
             #[cfg(test)]
@@ -911,6 +1270,171 @@ pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn claude_receipt(root: PathBuf) -> ClaudeConfigurationTarget {
+        ClaudeConfigurationTarget {
+            contract_version: 1,
+            app_path: "synthetic-installed-Claude.app".into(),
+            bundle_id: CLAUDE_BUNDLE_ID.into(),
+            app_version: crate::claude_config::SUPPORTED_APP_VERSION.into(),
+            source_member_sha256: crate::claude_config::SOURCE_MEMBER_SHA256.into(),
+            config_root: root,
+            root_anchors: Vec::new(),
+            materials: vec!["synthetic-public-material".into()],
+            revision: crate::identity::sha256(b"synthetic-installed-target"),
+        }
+    }
+    #[test]
+    fn claude_b1_cached_verification_rechecks_bookends_and_revalidates_changed_materials() {
+        use std::cell::Cell;
+        let receipt = claude_receipt(PathBuf::from("synthetic-default-root"));
+        let cache = std::sync::Mutex::new(None);
+        let hash_calls = Cell::new(0);
+        let signature_calls = Cell::new(0);
+        let verify_signature = || {
+            signature_calls.set(signature_calls.get() + 1);
+            Ok(())
+        };
+        let verify_hash = || {
+            hash_calls.set(hash_calls.get() + 1);
+            Ok(())
+        };
+        assert_eq!(
+            claude_verify_cached(
+                &cache,
+                receipt.clone(),
+                || Ok(receipt.clone()),
+                verify_signature,
+                verify_hash
+            )
+            .unwrap(),
+            receipt
+        );
+        claude_verify_cached(
+            &cache,
+            receipt.clone(),
+            || Ok(receipt.clone()),
+            verify_signature,
+            verify_hash,
+        )
+        .unwrap();
+        assert_eq!(
+            hash_calls.get(),
+            1,
+            "identical public materials reuse only the large hash"
+        );
+        assert_eq!(signature_calls.get(), 2);
+        assert!(
+            claude_verify_cached(
+                &cache,
+                receipt.clone(),
+                || Ok(receipt.clone()),
+                || Err(fail("claude_configuration_target_unverified")),
+                verify_hash
+            )
+            .is_err_and(|error| error.code == "claude_configuration_target_unverified")
+        );
+        assert_eq!(
+            hash_calls.get(),
+            1,
+            "a cached hash cannot qualify a bad signature"
+        );
+        let mut changed = receipt.clone();
+        changed.materials[0] = "replaced-entity".into();
+        changed.revision = crate::identity::sha256(b"replacement");
+        assert!(
+            claude_verify_cached(
+                &cache,
+                changed.clone(),
+                || Ok(changed.clone()),
+                verify_signature,
+                || {
+                    hash_calls.set(hash_calls.get() + 1);
+                    Err(fail("claude_configuration_target_unverified"))
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(hash_calls.get(), 2);
+        // Cache hits still observe the current target; they cannot skip a
+        // replacement that happens during the observation itself.
+        assert!(
+            claude_verify_cached(
+                &cache,
+                receipt.clone(),
+                || Ok(changed),
+                verify_signature,
+                verify_hash
+            )
+            .is_err_and(|error| error.code == "claude_configuration_target_changed")
+        );
+        assert_eq!(hash_calls.get(), 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_b1_default_root_qualification_is_read_only_and_stable_across_owned_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        fs::create_dir_all(home.join("Library/Application Support")).unwrap();
+        let root = home.join("Library/Application Support/Claude-3p");
+        let mut receipt = claude_receipt(root.clone());
+        receipt.root_anchors = claude_configuration_root(&root).unwrap();
+        receipt.validate_root().unwrap();
+        assert!(!root.exists(), "qualification never creates the user root");
+        fs::create_dir_all(root.join("configLibrary")).unwrap();
+        fs::write(root.join("configLibrary/_meta.json"), b"{}").unwrap();
+        fs::write(root.join("claude_desktop_config.json"), b"{}").unwrap();
+        receipt.validate_root().unwrap();
+        fs::set_permissions(
+            root.join("configLibrary"),
+            fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        assert!(receipt.validate_root().is_err());
+        fs::set_permissions(
+            root.join("configLibrary"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&home, &root).unwrap();
+        assert!(receipt.validate_root().is_err());
+        fs::remove_file(&root).unwrap();
+        let support = home.join("Library/Application Support");
+        fs::rename(&support, home.join("Library/previous-support")).unwrap();
+        fs::create_dir(&support).unwrap();
+        assert!(receipt.validate_root().is_err());
+    }
+
+    #[test]
+    fn claude_b1_unknown_installation_schema_and_root_cannot_supply_a_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SystemPaths::isolated(dir.path()).unwrap();
+        let mut target = base_view(ClientKind::Claude, &paths);
+        target.installed = true;
+        target.bundle_id = Some(CLAUDE_BUNDLE_ID.into());
+        target.version = Some(crate::claude_config::SUPPORTED_APP_VERSION.into());
+        assert!(paths.claude_configuration_hint(&target).is_err());
+        assert!(paths.claude_configuration_target(&target).is_err());
+        assert!(
+            paths
+                .ensure_configuration_parent(ClientKind::Claude)
+                .is_err()
+        );
+        let mut receipt = claude_receipt(dir.path().join("different-root"));
+        receipt.app_version = "2.19675.1".into();
+        assert!(receipt.validate_root().is_err());
+        receipt.app_version = crate::claude_config::SUPPORTED_APP_VERSION.into();
+        receipt.source_member_sha256 = "unknown".into();
+        assert!(receipt.validate_root().is_err());
+        receipt.source_member_sha256 = crate::claude_config::SOURCE_MEMBER_SHA256.into();
+        assert!(receipt.validate_root().is_err());
+        let fresh = paths.fresh_claude_client(&target);
+        assert_eq!(fresh.configuration_state, target.configuration_state);
+        assert_eq!(fresh.loaded_state, "unconfirmed");
+        assert_eq!(fresh.connection_state, "not_tested");
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn desktop_config_flow_info_growth_after_metadata_is_read_capped_before_parsing() {

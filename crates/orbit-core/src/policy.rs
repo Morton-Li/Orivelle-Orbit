@@ -132,7 +132,7 @@ impl Snapshot {
             .collect();
         let local_write = if state == State::Yes {
             State::Yes
-        } else if target.client == ClientKind::Codex
+        } else if (target.client == ClientKind::Codex || claude_pinned_target(target))
             && local_complete
             && target.installed
             && target.version.is_some()
@@ -150,7 +150,11 @@ impl Snapshot {
         };
         let local_revision = sha256(
             &serde_json::to_vec(&(
-                "codex-user-config-v1",
+                if target.client == ClientKind::Claude {
+                    "claude-user-config-v1"
+                } else {
+                    "codex-user-config-v1"
+                },
                 &identity,
                 &local,
                 local_complete,
@@ -203,9 +207,7 @@ impl Snapshot {
         target.managed = self.state.as_str().into();
         let note = match self.state {
             State::Yes => "已发现设备管理策略；Orbit 不覆盖组织管理的客户端配置。",
-            State::Unknown
-                if target.client == ClientKind::Codex && self.local_write == State::No =>
-            {
+            State::Unknown if self.local_write == State::No => {
                 "本地用户配置策略已核对；远端组织策略未知，客户端启动后仍可能限制或拒绝配置生效。"
             }
             State::Unknown => "设备策略或远端组织策略的覆盖范围尚未确认；自动接入保持禁用。",
@@ -297,7 +299,10 @@ pub(crate) fn observe(paths: &SystemPaths, target: &ClientView) -> Snapshot {
     // Neither CFPreferences, filesystem absence nor the Windows registry reports
     // which cloud/Agent Security/admin-console layer the running desktop loaded.
     sources.push(Source::status("remote_organization", Status::Unavailable));
-    let local_complete = codex_local_coverage(target, &sources);
+    let local_complete = match target.client {
+        ClientKind::Codex => codex_local_coverage(target, &sources),
+        ClientKind::Claude => claude_local_coverage(target, &sources),
+    };
     Snapshot::resolve_with_local(target, &sources, false, local_complete)
 }
 fn codex_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
@@ -314,9 +319,104 @@ fn codex_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
             .iter()
             .all(|id| sources.iter().filter(|source| source.id == *id).count() == 1)
 }
+fn claude_pinned_target(target: &ClientView) -> bool {
+    target.client == ClientKind::Claude
+        && target.version.as_deref() == Some(crate::claude_config::SUPPORTED_APP_VERSION)
+        && target.bundle_id.as_deref() == Some("com.anthropic.claudefordesktop")
+}
+fn claude_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
+    cfg!(target_os = "macos")
+        && claude_pinned_target(target)
+        && [
+            "claude_machine_mdm",
+            "claude_user_mdm",
+            "claude_macos_forced_keys",
+            "claude_schema_pin",
+            "claude_default_locations",
+            "client_identity",
+        ]
+        .iter()
+        .all(|id| sources.iter().filter(|source| source.id == *id).count() == 1)
+}
+fn claude_key_effect<'a>(keys: impl Iterator<Item = &'a str>) -> Effect {
+    let mut effect = Effect::None;
+    for key in keys {
+        if BEHAVIOR.contains(&key) {
+            if effect == Effect::None {
+                effect = Effect::Behavior;
+            }
+        } else if crate::claude_config::SCHEMA_FLAT_KEYS.contains(&key) {
+            return Effect::Managed;
+        } else {
+            effect = Effect::Unverified;
+        }
+    }
+    effect
+}
+#[cfg(any(target_os = "macos", test))]
+fn claude_forced_observation(before: &[(&str, bool)], after: &[(&str, bool)]) -> Source {
+    let id = "claude_macos_forced_keys";
+    let complete = |values: &[(&str, bool)]| {
+        values.len() == crate::claude_config::SCHEMA_FLAT_KEYS.len()
+            && values
+                .iter()
+                .zip(crate::claude_config::SCHEMA_FLAT_KEYS)
+                .all(|((name, _), expected)| name == expected)
+    };
+    if !complete(before) || !complete(after) {
+        return Source::status(id, Status::Unavailable);
+    }
+    if before != after {
+        return Source::status(id, Status::Changed);
+    }
+    let forced = before
+        .iter()
+        .filter_map(|(key, forced)| forced.then_some(*key))
+        .collect::<Vec<_>>();
+    Source {
+        id,
+        status: if forced.is_empty() {
+            Status::Absent
+        } else {
+            Status::Present
+        },
+        effect: claude_key_effect(forced.iter().copied()),
+        digest: sha256(
+            &serde_json::to_vec(&(
+                crate::claude_config::SOURCE_MEMBER_SHA256,
+                crate::claude_config::SCHEMA_KEYS_SHA256,
+                before,
+            ))
+            .unwrap_or_default(),
+        ),
+    }
+}
+#[cfg(any(target_os = "macos", test))]
+fn claude_default_locations(user_data_override: bool, managed_override: bool) -> Source {
+    Source {
+        id: "claude_default_locations",
+        status: if user_data_override || managed_override {
+            Status::Present
+        } else {
+            Status::Absent
+        },
+        effect: if user_data_override || managed_override {
+            Effect::Unverified
+        } else {
+            Effect::None
+        },
+        // Presence is enough to reject unsupported overrides. Their values are
+        // neither read as paths nor included in a policy token.
+        digest: sha256(
+            &serde_json::to_vec(&(user_data_override, managed_override)).unwrap_or_default(),
+        ),
+    }
+}
+#[derive(Clone, Copy)]
 enum Format {
     Toml,
     Plist,
+    ClaudePlist,
     Identity,
 }
 #[cfg(any(target_os = "macos", test))]
@@ -559,7 +659,7 @@ fn file_probe(id: &'static str, path: &Path, format: Format, before_open: impl F
                 Effect::Managed
             }
         }
-        Format::Plist | Format::Identity => {
+        Format::Plist | Format::ClaudePlist | Format::Identity => {
             let Ok(value) = plist::Value::from_reader(std::io::Cursor::new(bytes.as_slice()))
             else {
                 return Source::status(id, Status::Malformed);
@@ -572,6 +672,8 @@ fn file_probe(id: &'static str, path: &Path, format: Format, before_open: impl F
             }
             if matches!(format, Format::Identity) {
                 Effect::None
+            } else if matches!(format, Format::ClaudePlist) {
+                claude_key_effect(dict.keys().map(String::as_str))
             } else {
                 relevant_effect(dict.keys().cloned())
             }
@@ -606,10 +708,15 @@ fn native_sources(paths: &SystemPaths, target: &ClientView) -> Vec<Source> {
                 sources
             }
             ClientKind::Claude => {
+                let format = if claude_pinned_target(target) {
+                    Format::ClaudePlist
+                } else {
+                    Format::Plist
+                };
                 let mut sources = vec![file_source(
                     "claude_machine_mdm",
                     Path::new("/Library/Managed Preferences/com.anthropic.claudefordesktop.plist"),
-                    Format::Plist,
+                    format,
                 )];
                 match macos::username() {
                     Some(user) => sources.push(file_source(
@@ -617,11 +724,32 @@ fn native_sources(paths: &SystemPaths, target: &ClientView) -> Vec<Source> {
                         &Path::new("/Library/Managed Preferences")
                             .join(user)
                             .join("com.anthropic.claudefordesktop.plist"),
-                        Format::Plist,
+                        format,
                     )),
                     None => sources.push(Source::status("claude_user_mdm", Status::Unavailable)),
                 }
                 sources.push(macos::claude_forced_keys());
+                sources.push(if claude_pinned_target(target) {
+                    Source {
+                        id: "claude_schema_pin",
+                        status: Status::Present,
+                        effect: Effect::None,
+                        digest: sha256(
+                            &serde_json::to_vec(&(
+                                crate::claude_config::SUPPORTED_APP_VERSION,
+                                crate::claude_config::SOURCE_MEMBER_SHA256,
+                                crate::claude_config::SCHEMA_KEYS_SHA256,
+                            ))
+                            .unwrap_or_default(),
+                        ),
+                    }
+                } else {
+                    Source::status("claude_schema_pin", Status::Unavailable)
+                });
+                sources.push(claude_default_locations(
+                    std::env::var_os("CLAUDE_USER_DATA_DIR").is_some(),
+                    std::env::var_os("CLAUDE_E2E_MANAGED_PLIST").is_some(),
+                ));
                 sources
             }
         }
@@ -765,35 +893,31 @@ mod macos {
         let Some(domain) = string(c"com.anthropic.claudefordesktop") else {
             return Source::status(id, Status::Unavailable);
         };
-        let mut keys = Vec::new();
-        for literal in [
-            c"inferenceProvider",
-            c"bootstrapUrl",
-            c"forceLoginOrgUUID",
-            c"disableDeploymentModeChooser",
-        ] {
-            let Some(key) = string(literal) else {
+        let mut keys = Vec::with_capacity(crate::claude_config::SCHEMA_FLAT_KEYS.len());
+        for literal in crate::claude_config::SCHEMA_FLAT_KEYS {
+            let Ok(literal) = std::ffi::CString::new(*literal) else {
                 return Source::status(id, Status::Unavailable);
             };
-            if unsafe { CFPreferencesAppValueIsForced(key.0, domain.0) } != 0 {
-                keys.push(literal.to_bytes());
-            }
+            let Some(key) = string(&literal) else {
+                return Source::status(id, Status::Unavailable);
+            };
+            keys.push(key);
         }
-        // This allowlisted forced-key query is partial, never absence proof.
-        Source {
-            id,
-            status: if keys.is_empty() {
-                Status::Absent
-            } else {
-                Status::Present
-            },
-            effect: if keys.is_empty() {
-                Effect::Unverified
-            } else {
-                Effect::Managed
-            },
-            digest: sha256(&serde_json::to_vec(&keys).unwrap_or_default()),
-        }
+        let query = || {
+            crate::claude_config::SCHEMA_FLAT_KEYS
+                .iter()
+                .zip(&keys)
+                .map(|(name, key)| {
+                    (
+                        *name,
+                        unsafe { CFPreferencesAppValueIsForced(key.0, domain.0) } != 0,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        // No CFPreferencesCopyAppValue: credential values are never requested.
+        // Complete fixed-key status passes must agree before absence is usable.
+        claude_forced_observation(&query(), &query())
     }
 }
 
@@ -1016,6 +1140,165 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn claude_target() -> ClientView {
+        let mut target = target();
+        target.client = ClientKind::Claude;
+        target.version = Some(crate::claude_config::SUPPORTED_APP_VERSION.into());
+        target.bundle_id = Some("com.anthropic.claudefordesktop".into());
+        target
+    }
+    fn claude_forced(keys: &[&str]) -> Source {
+        let values = crate::claude_config::SCHEMA_FLAT_KEYS
+            .iter()
+            .map(|name| (*name, keys.contains(name)))
+            .collect::<Vec<_>>();
+        claude_forced_observation(&values, &values)
+    }
+    fn claude_sources() -> Vec<Source> {
+        vec![
+            Source::status("claude_machine_mdm", Status::Absent),
+            Source::status("claude_user_mdm", Status::Absent),
+            claude_forced(&[]),
+            Source {
+                id: "claude_schema_pin",
+                status: Status::Present,
+                effect: Effect::None,
+                digest: crate::claude_config::SCHEMA_KEYS_SHA256.into(),
+            },
+            claude_default_locations(false, false),
+            Source {
+                id: "client_identity",
+                status: Status::Present,
+                effect: Effect::None,
+                digest: "synthetic-identity".into(),
+            },
+            Source::status("remote_organization", Status::Unavailable),
+        ]
+    }
+    #[test]
+    fn claude_b1_forced_status_requires_all_pinned_keys_and_stable_passes() {
+        let empty = claude_forced(&[]);
+        assert!(empty.status == Status::Absent && empty.effect == Effect::None);
+        let outside_old_four = claude_forced(&["inferenceCredentialHelperArgs"]);
+        assert!(
+            outside_old_four.status == Status::Present
+                && outside_old_four.effect == Effect::Managed
+        );
+        let behavior = claude_forced(&["disableAutoUpdates", "configRecheckIntervalMinutes"]);
+        assert!(behavior.effect == Effect::Behavior);
+        let values = crate::claude_config::SCHEMA_FLAT_KEYS
+            .iter()
+            .map(|name| (*name, false))
+            .collect::<Vec<_>>();
+        assert!(
+            claude_forced_observation(&values[..4], &values[..4]).status == Status::Unavailable
+        );
+        let mut changed = values.clone();
+        changed[0].1 = true;
+        assert!(claude_forced_observation(&values, &changed).status == Status::Changed);
+        changed = values.clone();
+        changed[0].0 = changed[1].0;
+        assert!(claude_forced_observation(&changed, &changed).status == Status::Unavailable);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_b1_complete_local_policy_keeps_remote_unknown_and_refuses_missing_probes() {
+        let target = claude_target();
+        let sources = claude_sources();
+        let resolve = |target: &ClientView, sources: &[Source]| {
+            Snapshot::resolve_with_local(
+                target,
+                sources,
+                false,
+                claude_local_coverage(target, sources),
+            )
+        };
+        let clear = resolve(&target, &sources);
+        assert!(clear.state == State::Unknown && clear.user_config_state() == State::No);
+        assert!(clear.require_clear().is_err() && clear.require_user_config_clear().is_ok());
+        let mut projected = target.clone();
+        clear.project(&mut projected);
+        assert_eq!(projected.managed, "unknown");
+        let mut behavior = sources.clone();
+        behavior[2] = claude_forced(&["disableAutoUpdates"]);
+        let next = resolve(&target, &behavior);
+        assert!(next.require_user_config_clear().is_ok());
+        assert!(clear.matches_user_config(&next).is_err());
+        for index in 0..sources.len() - 1 {
+            let mut missing = sources.clone();
+            missing.remove(index);
+            assert!(
+                resolve(&target, &missing)
+                    .require_user_config_clear()
+                    .is_err()
+            );
+        }
+        for status in [
+            Status::Denied,
+            Status::Malformed,
+            Status::Unavailable,
+            Status::Changed,
+            Status::Limit,
+        ] {
+            let mut unreadable = sources.clone();
+            unreadable[0] = Source::status("claude_machine_mdm", status);
+            assert!(
+                resolve(&target, &unreadable)
+                    .require_user_config_clear()
+                    .is_err()
+            );
+        }
+        for override_state in [(true, false), (false, true)] {
+            let mut overridden = sources.clone();
+            overridden[4] = claude_default_locations(override_state.0, override_state.1);
+            assert!(
+                resolve(&target, &overridden)
+                    .require_user_config_clear()
+                    .is_err()
+            );
+        }
+        for index in [2, sources.len() - 1] {
+            let mut managed = sources.clone();
+            managed[index].status = Status::Present;
+            managed[index].effect = Effect::Managed;
+            let snapshot = resolve(&target, &managed);
+            assert!(snapshot.state == State::Yes && snapshot.require_user_config_clear().is_err());
+        }
+        let mut unsupported = target;
+        unsupported.version = Some("2.19675.1".into());
+        assert!(
+            resolve(&unsupported, &sources)
+                .require_user_config_clear()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn claude_b1_mdm_full_key_probe_preserves_unknown_and_managed_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("synthetic-managed.plist");
+        let probe = |key: &str| {
+            let mut dictionary = plist::Dictionary::new();
+            dictionary.insert(key.into(), "synthetic-value-never-exposed".into());
+            plist::Value::Dictionary(dictionary)
+                .to_file_xml(&path)
+                .unwrap();
+            file_source("claude_machine_mdm", &path, Format::ClaudePlist)
+        };
+        assert!(probe("inferenceVertexOAuthClientSecret").effect == Effect::Managed);
+        assert!(probe("disableAutoUpdates").effect == Effect::Behavior);
+        assert!(probe("unknownNewManagedKey").effect == Effect::Unverified);
+        fs::write(&path, b"not-a-plist").unwrap();
+        assert!(
+            file_source("claude_machine_mdm", &path, Format::ClaudePlist).status
+                == Status::Malformed
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(
+            file_source("claude_machine_mdm", &path, Format::ClaudePlist).status == Status::Absent
+        );
+    }
     #[test]
     fn desktop_config_flow_local_qualification_never_claims_global_policy_clear() {
         let target = target();

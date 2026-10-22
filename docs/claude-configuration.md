@@ -26,11 +26,15 @@ metadata 中出现任何 hybridPointer 时均阻止自动切换，包括空值�
 
 设备策略的完整覆盖、安装材料、默认根目录及本地选择必须分别核对。既有四个 forced-key 的局部检查不足以证明没有管理配置。无法读取、未知管理键、来源变化或覆盖不完整均阻止写入。全局 managed 与本地写入资格分开：远端组织状态仍可为 unknown；它不提供加载或连接证据。
 
+该版本的本地管理观测覆盖 machine 和当前用户两处官方 MDM plist，并逐项检查固定公开 schema 的 182 个规范键和旧名的 forced 状态；不请求这些偏好值或凭据。静态键清单本身不提供写入权限，仍需已安装目标收据和操作上下文。完整目标每次重新验签；只有大材料的哈希可按完整文件身份复用，材料变化后重新流式计算，不能据此跳过当前签名检查。根目录作用域绑定稳定的用户祖先目录，排除本次生成文件及目录修改时间，避免自身发布导致资格失效。
+
 保留官方模式选择、原登录资料和其他应用设置。将 deploymentMode 改为 3p 是明确展示的切换效果，作用于整个 Claude Desktop，包括 Chat、Code 与 Cowork；不能承诺仅修改 Code 的路由。
 
 ## 凭据、确认与恢复
 
 新 profile 使用 [官方 credential helper](https://claude.com/docs/third-party/claude-desktop/credential-helper)，不写明文 key。helper 参数仅包含客户端与本安装绑定标识，不能携带秘密。配置中明确使用 Panel 授予的节点和模型；保存不自动发起推理请求。
+
+Claude 使用 Panel 提供的 claude_base_url；Codex 使用 connection_url。前者是 Claude 自动追加 `/v1/messages` 的节点根地址，不能混用后者的 `/v1` 地址。这里配置的是现有获准节点，不为 Orbit 另建推理网关。
 
 预览只读取并生成脱敏差异，不创建客户端目录，不启用 helper。用户确认后，受认证的操作上下文绑定账户、Panel origin、安装、连接和授权版本、凭据引用、节点、模型、目标、策略及精确文件组。每次实际写入及启用授权前复查；三份文件全部读回成功后才启用新 helper。
 
