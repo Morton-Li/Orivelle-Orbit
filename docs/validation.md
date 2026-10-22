@@ -2,6 +2,14 @@
 
 此文件只记录已取得的证据，最终检查必须绑定提交后的完整 SHA。目标仍在实施中；任何未完成项都不构成平台支持或真实接入验收。
 
+## 2026-10-22 Claude 配置基础阶段
+
+从本地 develop `425af149` 建 `feature/orbit-claude-config-library`，分节提交固定合同、纯三文件合并、界面确认和安装目标/本地策略资格。Claude 生产保存与恢复入口仍关闭；后续另建分支接入 typed journal、Service 和启动恢复。Panel 继续是账户、凭据、节点和模型的权威；本阶段没有新增 Sub2api 网关或 Edge 服务。
+
+固定公开安装材料静态复核与签名检查通过，没有启动 Claude 或读取其用户配置。纯合并 5/5、目标/策略合成 6/6 通过；独立审查发现的签名缓存 P2 已修为每次完整收据重新验签，仅复用 ASAR 哈希，首轮日志保留。界面单元 51/51、类型、受影响格式与 lint 通过；五项 Claude 浏览器流程最终通过。首次受限环境浏览器启动出现 SIGABRT，清理时报 kill EPERM，未执行页面断言；获准复验四项通过、一项重复状态标签定位失败，仅限定该断言区域后单项通过，所有失败记录保留。
+
+冻结原生/界面源码 `53d0be0e8a67c8faf7c0948b4f55c47cbd95e494` 后，完整 core 155/helper 1 通过，core 2、独立 Vault 1、signer 1 保持 ignored；fmt、helper build、前端生产构建与产物检查、default/system typed check 全部 exit 0，无编译 warning。130 个源码/测试文件前后摘要不变。已通过且无新变更的界面 51 项及五个浏览器流程、Panel 授权、协议网关与签名探针不重复执行。确切命令、日志及分段清单位于 `.cache/evidence/claude-config-library-20261022/`；此阶段不重建候选，不代表真实 Claude 载入、Code 请求、系统策略/Vault/配置或 Windows 验收。
+
 ## 当前环境与授权
 
 - 办公 Mac：macOS 26.7.1 arm64、Xcode 27.0、Node 24.18.0、npm 11.16.0、Rust 1.97.1。Docker 已启动。

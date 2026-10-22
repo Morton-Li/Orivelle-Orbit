@@ -20,6 +20,7 @@ import type { ClientView, ConfigPreview } from "../../src/shared/contracts";
 import { useOrbitStore } from "../../src/stores/orbit";
 import {
   bootstrap,
+  syntheticClaudeConfigurationTarget,
   syntheticCodexCatalog,
   syntheticCodexConfigurationTarget,
   syntheticCodexModel,
@@ -49,7 +50,13 @@ function preview(client: "codex" | "claude" = "codex"): ConfigPreview {
     paths:
       client === "codex"
         ? ["/fixture/config", "/fixture/codex-model-catalog.json"]
-        : ["/fixture/config"],
+        : [
+            "/fixture/synthetic-claude-profile.json",
+            "/fixture/synthetic-claude-metadata.json",
+            "/fixture/synthetic-claude-desktop.json",
+          ],
+    claude_configuration_target:
+      client === "claude" ? syntheticClaudeConfigurationTarget() : null,
     codex_catalog: client === "codex" ? syntheticCodexCatalog() : null,
     codex_configuration_target:
       client === "codex" ? syntheticCodexConfigurationTarget() : null,
@@ -72,9 +79,9 @@ function preview(client: "codex" | "claude" = "codex"): ConfigPreview {
     impact: [],
     redacted_diff: "synthetic config",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
-    can_apply: client === "codex",
-    can_export_import: client === "claude",
-    blocking_reason: client === "claude" ? "schema_unverified" : null,
+    can_apply: true,
+    can_export_import: false,
+    blocking_reason: null,
   };
 }
 function show(value: ConfigPreview) {
@@ -86,14 +93,29 @@ function show(value: ConfigPreview) {
 }
 
 describe("configuration confirmation follows current policy", () => {
-  it.each(["managed", "blocked", "unverified", "changed target"] as const)(
-    "retires an existing confirmation after local qualification becomes %s, including after it clears again",
-    async (qualification) => {
-      const view = show(preview());
+  it.each(
+    (["codex", "claude"] as const).flatMap((kind) =>
+      (["managed", "blocked", "unverified", "changed target"] as const).map(
+        (qualification) => ({ kind, qualification }),
+      ),
+    ),
+  )(
+    "retires a $kind confirmation after local qualification becomes $qualification, including after it clears again",
+    async ({ kind, qualification }) => {
+      useOrbitStore().state.clients.find(
+        (client) => client.client === kind,
+      )!.managed = "unknown";
+      const view = show(preview(kind));
       const apply = view.get<HTMLButtonElement>(".button.primary");
       expect(apply.element.disabled).toBe(false);
+      if (kind === "claude") {
+        expect(view.findAll(".path-list li")).toHaveLength(3);
+        expect(view.text()).toContain("Chat、Code 与 Cowork");
+        expect(view.text()).toContain("远端组织策略尚未确认");
+        expect(view.text()).not.toContain("客户端载入已确认");
+      }
       const changed = bootstrap("synthetic-account-a", 2);
-      const client = changed.clients[0]!;
+      const client = changed.clients.find((item) => item.client === kind)!;
       if (qualification === "managed") client.managed = "yes";
       else if (qualification === "changed target")
         client.configuration_access_revision = "synthetic-new-qualification";
@@ -110,7 +132,7 @@ describe("configuration confirmation follows current policy", () => {
       expect(bridge.call).not.toHaveBeenCalled();
 
       const fresh = {
-        ...preview(),
+        ...preview(kind),
         id: "22222222-2222-4222-8222-222222222222",
       };
       await view.setProps({ preview: fresh });
@@ -119,7 +141,7 @@ describe("configuration confirmation follows current policy", () => {
         command === "bootstrap"
           ? bootstrap("synthetic-account-a", 4)
           : {
-              client: "codex",
+              client: kind,
               state: "saved",
               loaded_state: "restart_required",
               backup_group_id: "synthetic-backup",
@@ -137,7 +159,7 @@ describe("configuration confirmation follows current policy", () => {
         ),
       ).toHaveLength(1);
 
-      await view.setProps({ preview: preview() });
+      await view.setProps({ preview: preview(kind) });
       expect(apply.element.disabled).toBe(true);
       await apply.trigger("click");
       expect(
@@ -149,11 +171,24 @@ describe("configuration confirmation follows current policy", () => {
   );
 
   it("also blocks the existing Claude diagnostic export when policy is unconfirmed", async () => {
-    const view = show(preview("claude"));
+    const value = preview("claude");
+    value.claude_configuration_target = null;
+    value.can_apply = false;
+    value.can_export_import = true;
+    value.blocking_reason = "schema_unverified";
+    const client = useOrbitStore().state.clients[1]!;
+    client.configuration_access = "unverified";
+    client.configuration_access_revision = null;
+    const view = show(value);
     const exportButton = view
       .findAll<HTMLButtonElement>("button")
       .find((button) => button.text().includes("导出 Claude"))!;
     expect(exportButton.element.disabled).toBe(false);
+    expect(
+      view.get<HTMLButtonElement>(".button.primary").element.disabled,
+    ).toBe(true);
+    expect(view.text()).toContain("不代表可直接导入");
+    expect(view.text()).not.toContain("官方导入文件");
     const changed = bootstrap("synthetic-account-a", 2);
     changed.clients[1]!.managed = "unknown";
     useOrbitStore().acceptState(changed);
@@ -182,6 +217,64 @@ describe("configuration confirmation follows current policy", () => {
     );
     await apply.trigger("click");
     expect(bridge.call).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Claude configuration target confirmation", () => {
+  it.each([
+    "missing access",
+    "missing access revision",
+    "missing target",
+    "empty target revision",
+    "different target revision",
+    "different target app",
+  ] as const)(
+    "rejects %s without accepting old payloads as a write qualification",
+    async (missing) => {
+      const value = preview("claude");
+      const client = useOrbitStore().state.clients[1]!;
+      client.managed = "unknown";
+      if (missing === "missing access")
+        delete (client as Partial<ClientView>).configuration_access;
+      else if (missing === "missing access revision")
+        delete (client as Partial<ClientView>).configuration_access_revision;
+      else if (missing === "missing target")
+        delete (value as Partial<ConfigPreview>).claude_configuration_target;
+      else if (missing === "empty target revision")
+        value.claude_configuration_target!.revision = "";
+      else if (missing === "different target revision")
+        value.claude_configuration_target!.revision = "synthetic-other-target";
+      else
+        value.claude_configuration_target!.app_version =
+          "synthetic-other-version";
+      const view = show(value);
+      const button = view.get<HTMLButtonElement>(".button.primary");
+      expect(button.element.disabled).toBe(true);
+      await button.trigger("click");
+      expect(bridge.call).not.toHaveBeenCalled();
+      await view.setProps({
+        preview: {
+          ...value,
+          claude_configuration_target: syntheticClaudeConfigurationTarget(),
+        },
+      });
+      expect(button.element.disabled).toBe(true);
+    },
+  );
+
+  it("permanently retires a confirmation when the installed Claude version changes, even if it returns", async () => {
+    const view = show(preview("claude"));
+    const button = view.get<HTMLButtonElement>(".button.primary");
+    expect(button.element.disabled).toBe(false);
+    const client = useOrbitStore().state.clients[1]!;
+    client.version = "synthetic-other-version";
+    await nextTick();
+    expect(button.element.disabled).toBe(true);
+    client.version = "synthetic-version";
+    await nextTick();
+    expect(button.element.disabled).toBe(true);
+    await button.trigger("click");
+    expect(bridge.call).not.toHaveBeenCalled();
   });
 });
 
@@ -248,103 +341,116 @@ describe("Codex catalog confirmation", () => {
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
-  it("enables the Codex preview entry only for current local write eligibility, including with unknown remote policy", async () => {
-    const store = useOrbitStore();
-    const client = store.state.clients[0]!;
-    client.managed = "unknown";
-    wrapper = mount(AccessPage, {
-      global: {
-        stubs: { ConfigReviewDialog: true, OrbitDialog: true, ClientRow: true },
-      },
-    });
-    await wrapper.get("#model-codex").setValue(model.id);
-    const button = wrapper
-      .findAll(".access-client")[0]!
-      .get<HTMLButtonElement>(".button.primary");
-    expect(button.element.disabled).toBe(false);
-    for (const access of ["blocked", "unverified"] as const) {
-      client.configuration_access = access;
+  it.each(["codex", "claude"] as const)(
+    "enables the %s preview entry for current local write eligibility with unknown remote policy",
+    async (kind) => {
+      const store = useOrbitStore();
+      const client = store.state.clients.find((item) => item.client === kind)!;
+      client.managed = "unknown";
+      wrapper = mount(AccessPage, {
+        global: {
+          stubs: {
+            ConfigReviewDialog: true,
+            OrbitDialog: true,
+            ClientRow: true,
+          },
+        },
+      });
+      await wrapper.get(`#model-${kind}`).setValue(model.id);
+      const button = wrapper
+        .findAll(".access-client")
+        [kind === "codex" ? 0 : 1]!.get<HTMLButtonElement>(".button.primary");
+      expect(button.element.disabled).toBe(false);
+      for (const access of ["blocked", "unverified"] as const) {
+        client.configuration_access = access;
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        await button.trigger("click");
+      }
+      client.configuration_access = "allowed";
+      client.managed = "yes";
       await nextTick();
       expect(button.element.disabled).toBe(true);
       await button.trigger("click");
-    }
-    client.configuration_access = "allowed";
-    client.managed = "yes";
-    await nextTick();
-    expect(button.element.disabled).toBe(true);
-    await button.trigger("click");
-    client.managed = "unknown";
-    delete (client as Partial<ClientView>).configuration_access;
-    await nextTick();
-    expect(button.element.disabled).toBe(true);
-    await button.trigger("click");
-    expect(bridge.call).not.toHaveBeenCalled();
-    client.configuration_access = "allowed";
-    await nextTick();
-    expect(button.element.disabled).toBe(false);
-    bridge.call.mockResolvedValueOnce(preview());
-    await button.trigger("click");
-    await flushPromises();
-    expect(bridge.call).toHaveBeenCalledWith("preview_client_config", {
-      connection_id: store.activeConnection!.id,
-      expected_revision: store.activeConnection!.revision,
-      client: "codex",
-      model_id: model.id,
-    });
-  });
+      client.managed = "unknown";
+      delete (client as Partial<ClientView>).configuration_access;
+      await nextTick();
+      expect(button.element.disabled).toBe(true);
+      await button.trigger("click");
+      expect(bridge.call).not.toHaveBeenCalled();
+      client.configuration_access = "allowed";
+      await nextTick();
+      expect(button.element.disabled).toBe(false);
+      bridge.call.mockResolvedValueOnce(preview(kind));
+      await button.trigger("click");
+      await flushPromises();
+      expect(bridge.call).toHaveBeenCalledWith("preview_client_config", {
+        connection_id: store.activeConnection!.id,
+        expected_revision: store.activeConnection!.revision,
+        client: kind,
+        model_id: model.id,
+      });
+    },
+  );
 
-  it("confirms an eligible Codex restore without runtime proof, a new catalog or an inference credential", async () => {
-    const store = useOrbitStore();
-    const original = preview();
-    const owner = {
-      account_id: "synthetic-account-a",
-      account_label: "Synthetic original account",
-      panel_origin: "https://panel.invalid",
-      installation_id: "synthetic-installation",
-    };
-    store.state.clients[0]!.managed = "unknown";
-    store.state.session.inference_credential_status = "permission_denied";
-    store.state.backups.push({
-      ...owner,
-      id: "synthetic-backup",
-      client: "codex",
-      created_at: "2026-10-22T00:00:00Z",
-      expires_at: "2099-01-01T00:00:00Z",
-      file_count: 2,
-      state: "available",
-    });
-    const value: ConfigPreview = {
-      ...original,
-      operation: "restore",
-      model_id: null,
-      context: null,
-      restore_owner: owner,
-      codex_catalog: null,
-      codex_runtime: null,
-    };
-    const view = show(value);
-    const button = view.get<HTMLButtonElement>(".button.primary");
-    expect(store.ready).toBe(false);
-    expect(button.element.disabled).toBe(false);
-    expect(view.text()).toContain("远端组织策略尚未确认");
-    expect(view.text()).not.toContain("本次预览的执行来源已核验");
-    bridge.call.mockImplementation(async (command) =>
-      command === "bootstrap"
-        ? bootstrap("synthetic-account-a", 2)
-        : {
-            client: "codex",
-            state: "restored",
-            loaded_state: "unconfirmed",
-            backup_group_id: null,
-          },
-    );
-    await button.trigger("click");
-    await flushPromises();
-    expect(bridge.call).toHaveBeenCalledWith("restore_client_config", {
-      preview_id: value.id,
-      confirmed: true,
-    });
-  });
+  it.each(["codex", "claude"] as const)(
+    "confirms an eligible %s restore while logged out using its original backup owner",
+    async (kind) => {
+      const store = useOrbitStore();
+      const original = preview(kind);
+      const owner = {
+        account_id: "synthetic-account-a",
+        account_label: "Synthetic original account",
+        panel_origin: "https://panel.invalid",
+        installation_id: "synthetic-installation",
+      };
+      store.state.clients.find((item) => item.client === kind)!.managed =
+        "unknown";
+      store.state.session.status = "logged_out";
+      store.state.session.account = null;
+      store.state.session.inference_credential_status = "unavailable";
+      store.state.backups.push({
+        ...owner,
+        id: "synthetic-backup",
+        client: kind,
+        created_at: "2026-10-22T00:00:00Z",
+        expires_at: "2099-01-01T00:00:00Z",
+        file_count: kind === "claude" ? 3 : 2,
+        state: "available",
+      });
+      const value: ConfigPreview = {
+        ...original,
+        operation: "restore",
+        model_id: null,
+        context: null,
+        restore_owner: owner,
+        codex_catalog: null,
+        codex_runtime: null,
+      };
+      const view = show(value);
+      const button = view.get<HTMLButtonElement>(".button.primary");
+      expect(store.ready).toBe(false);
+      expect(button.element.disabled).toBe(false);
+      expect(view.text()).toContain("远端组织策略尚未确认");
+      expect(view.text()).not.toContain("本次预览的执行来源已核验");
+      bridge.call.mockImplementation(async (command) =>
+        command === "bootstrap"
+          ? bootstrap("synthetic-account-a", 2)
+          : {
+              client: kind,
+              state: "restored",
+              loaded_state: "unconfirmed",
+              backup_group_id: null,
+            },
+      );
+      await button.trigger("click");
+      await flushPromises();
+      expect(bridge.call).toHaveBeenCalledWith("restore_client_config", {
+        preview_id: value.id,
+        confirmed: true,
+      });
+    },
+  );
 
   it("shows the compiled menu and explicit defaults separately from client loading and connection", () => {
     const value = preview();
@@ -492,6 +598,26 @@ describe("Codex catalog confirmation", () => {
   });
 
   it.each([
+    [
+      "claude_configuration_target_unverified",
+      "尚未确认当前 Claude Desktop 版本的配置合同",
+    ],
+    [
+      "claude_configuration_target_changed",
+      "Claude Desktop 配置目标或本地写入资格已变化",
+    ],
+    [
+      "claude_configuration_context_unverified",
+      "Claude 备份缺少可核验的恢复上下文",
+    ],
+    [
+      "claude_configuration_context_changed",
+      "Claude 配置的账户、节点、授权或文件状态已变化",
+    ],
+    [
+      "claude_configuration_source_unsupported",
+      "现有 Claude 配置来源无法安全迁移",
+    ],
     ["codex_binding_unavailable", "当前模型缺少可用的 Codex 模板声明"],
     [
       "codex_configuration_target_unverified",
@@ -506,7 +632,7 @@ describe("Codex catalog confirmation", () => {
     ["codex_catalog_context_unverified", "缺少可核验的恢复上下文"],
     ["codex_config_override_unverified", "现有显式设置可能覆盖本次配置"],
   ])("explains blocked previews for %s", (code, explanation) => {
-    const value = preview();
+    const value = preview(code!.startsWith("claude_") ? "claude" : "codex");
     value.can_apply = false;
     value.blocking_reason = code!;
     value.codex_catalog = null;

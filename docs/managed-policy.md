@@ -2,6 +2,8 @@
 
 2026-10-22 正在修正 Codex 的用户文件保存边界，见[桌面用户配置合同](desktop-configuration.md)。全局 `managed` 继续反映组织策略观测，远端未取得时仍为 `unknown`；Codex 另从完整本地来源推导用户配置写入资格。任何已知管理限制、不可读或未知本地来源均阻断。远端未知不被改成 `no`，也不生成载入或连接证据。以下首期观测记录描述此前要求全局 `no` 才保存的阶段；Claude 暂保留既有门禁。
 
+2026-10-22 Claude 配置基础阶段已实现固定 `2.19675.0` 的独立安装目标收据、完整本地策略观测及界面资格校验，见 [Claude 合同](claude-configuration.md)。两个 MDM plist 全键探测加 182 个固定 schema/旧名的 forced 状态双次观测替代旧四键局部查询，不请求 CFPreferences 值；未知、缺覆盖、读取失败、非默认来源或版本不符仍阻断。完整收据每次重新验签，仅大 ASAR 哈希按文件身份复用；未实际运行本机策略观测。全局远端 `unknown` 保留，Claude 的 Service/事务保存入口本阶段仍关闭，诊断导出沿用旧门禁。下文较早阶段的局部采集描述是历史快照。
+
 2026-10-15 的观测阶段在项目内实现策略来源观测、预览冻结和提交前复查，并用合成来源验证。当时没有运行真实客户端或系统策略查询；本地文件缺失不证明没有组织策略。后续真实系统集成结果分别记录在验证清单。
 
 ## 状态含义
@@ -10,7 +12,7 @@
 
 Codex 支持设备文件、macOS 管理偏好，以及云端和 Agent Security 交付的要求。本地来源没有内容不能排除后两者。本阶段不读取客户端登录资料，不启动另一个 CLI 来推断目标 Desktop 的策略；未取得远端覆盖证明时仍为 `unknown`。[OpenAI 管理配置](https://learn.chatgpt.com/docs/enterprise/managed-configuration)
 
-Claude 也可能从 Enterprise Admin Console 或 bootstrap 接收配置。设备来源检查完成不等于运行实例没有远端配置，因此不能据此开放自动切换。[Claude 配置交付](https://claude.com/docs/third-party/claude-desktop/installation)
+Claude 也可能从 Enterprise Admin Console 或 bootstrap 接收配置。设备来源检查完成不等于运行实例没有远端配置；本地保存资格还需固定安装目标、受支持的本地选择和操作上下文，不能生成载入或连接证明。[Claude 配置交付](https://claude.com/docs/third-party/claude-desktop/installation)
 
 ## 设备来源
 

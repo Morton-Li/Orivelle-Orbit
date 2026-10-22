@@ -56,7 +56,7 @@ const zh = {
   "home.codex": "Codex 桌面",
   "home.claude": "Claude Desktop",
   "home.codexHint": "Responses 接入 · 用户配置可能与 CLI / IDE 共享",
-  "home.claudeHint": "以 Code 为验证重点 · 第三方推理配置影响整个桌面应用",
+  "home.claudeHint": "第三方推理配置影响整个桌面应用：Chat、Code 与 Cowork",
   "home.images": "也可以从图片开始",
   "home.imagesHint": "生成、编辑和管理本地结果，所有任务使用获准的连接。",
   "client.pending": "待检测",
@@ -103,11 +103,11 @@ const zh = {
   "access.selectBackupAccount": "选择明确的原账户与 Panel 地址",
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
-  "access.exportImport": "确认并导出 Claude 导入文件",
+  "access.exportImport": "确认导出 Claude 诊断候选",
   "access.importHint":
-    "将保存 Claude 官方导入文件，请在目标应用中手动导入并完整重启。此操作不会写入客户端配置，载入和连接仍待确认。",
+    "仅保存供核查的 Claude 配置诊断候选，不会写入客户端配置，也不代表可直接导入。客户端的保存、载入和连接状态均不会因此改变。",
   "access.importExported":
-    "Claude 导入文件已保存。请手动导入并完整重启，配置载入和连接仍待确认。",
+    "Claude 配置诊断候选已导出；客户端配置、载入和连接状态未改变。",
   "access.previewExpired":
     "预览已失效，或账户、节点、凭据、模型、组织策略及客户端版本已变化，请重新预览。",
   "access.policyUnverified":
@@ -115,6 +115,19 @@ const zh = {
   "access.policyChanged":
     "目标应用的本地配置写入资格或组织管理策略已变化，本次确认已失效。请重新检测并预览配置。",
   "access.saveLocalConfiguration": "确认保存本地配置",
+  "access.claudeConfigurationTarget": "已安装 Claude Desktop 的配置目标",
+  "access.claudeDesktopScope":
+    "第三方推理配置影响 Claude 整个桌面应用，包括 Chat、Code 与 Cowork。仅变更下列目标文件，保存后需完整重启；保存不证明客户端已载入或连接。",
+  "access.claudeConfigurationUnavailable":
+    "尚未确认当前 Claude Desktop 版本的配置合同，暂时无法保存或恢复。诊断候选导出不代表配置已生效。",
+  "access.claudeConfigurationChanged":
+    "Claude Desktop 配置目标或本地写入资格已变化，本次确认已失效。请重新预览。",
+  "access.claudeRestoreContextUnavailable":
+    "此 Claude 备份缺少可核验的恢复上下文，暂时无法自动恢复。请核对原配置。",
+  "access.claudeContextChanged":
+    "Claude 配置的账户、节点、授权或文件状态已变化，本次确认已失效。请重新预览。",
+  "access.claudeSourceUnsupported":
+    "现有 Claude 配置来源无法安全迁移。自动配置操作已停止，请核对当前配置来源并处理恢复提示。",
   "access.codexConfigurationTarget": "已安装 Codex 的配置目标",
   "access.codexConfigurationCli": "已安装目标的配置 CLI 版本",
   "access.codexDefaultScope":
@@ -362,7 +375,7 @@ const en: Record<keyof typeof zh, string> = {
   "home.codexHint":
     "Responses connection · user configuration may be shared with CLI / IDE",
   "home.claudeHint":
-    "Code is the validation focus · third-party inference affects all of Desktop",
+    "Third-party inference affects the whole app: Chat, Code and Cowork",
   "home.images": "Start with an image, too",
   "home.imagesHint":
     "Generate, edit and keep local results using an authorized connection.",
@@ -413,11 +426,11 @@ const en: Record<keyof typeof zh, string> = {
     "Select the original account and Panel explicitly",
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
-  "access.exportImport": "Confirm and export Claude import file",
+  "access.exportImport": "Confirm and export Claude diagnostic candidate",
   "access.importHint":
-    "Saves an official Claude import file. Import it in the client and fully restart. This operation does not write the client configuration; loading and connection remain unconfirmed.",
+    "Saves a Claude configuration candidate for inspection. It does not write the client configuration or establish import compatibility. Client configuration, loading and connection status remain unchanged.",
   "access.importExported":
-    "Claude import file saved. Import it manually and fully restart; loading and connection remain unconfirmed.",
+    "Claude diagnostic candidate exported. Client configuration, loading and connection status remain unchanged.",
   "access.previewExpired":
     "This preview is no longer valid, or the account, node, credential, model, organization policy or client version changed. Create a new preview.",
   "access.policyUnverified":
@@ -425,6 +438,20 @@ const en: Record<keyof typeof zh, string> = {
   "access.policyChanged":
     "Local configuration write eligibility or organization policy changed. This confirmation is no longer valid. Check again and create a new preview.",
   "access.saveLocalConfiguration": "Confirm and save local configuration",
+  "access.claudeConfigurationTarget":
+    "Installed Claude Desktop configuration target",
+  "access.claudeDesktopScope":
+    "Third-party inference affects the whole Claude desktop app, including Chat, Code and Cowork. Only the listed target files will change. Restart completely after saving; saving does not confirm loading or connection.",
+  "access.claudeConfigurationUnavailable":
+    "The configuration contract for this Claude Desktop version is unconfirmed. Saving or restoring is unavailable. Exporting a diagnostic candidate does not confirm configuration activation.",
+  "access.claudeConfigurationChanged":
+    "The Claude Desktop configuration target or local write eligibility changed. This confirmation is no longer valid. Create a new preview.",
+  "access.claudeRestoreContextUnavailable":
+    "This Claude backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration.",
+  "access.claudeContextChanged":
+    "The Claude configuration account, node, authorization or file state changed. This confirmation is no longer valid. Create a new preview.",
+  "access.claudeSourceUnsupported":
+    "The current Claude configuration source cannot be migrated safely. Automatic configuration has stopped. Check the current configuration source and follow any recovery prompts.",
   "access.codexConfigurationTarget": "Installed Codex configuration target",
   "access.codexConfigurationCli": "Installed configuration target CLI version",
   "access.codexDefaultScope":
