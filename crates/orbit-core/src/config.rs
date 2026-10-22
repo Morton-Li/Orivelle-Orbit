@@ -183,6 +183,12 @@ struct Operation {
     source_journal_id: Option<String>,
     #[zeroize(skip)]
     #[serde(default)]
+    source_journal_sha256: Option<String>,
+    #[zeroize(skip)]
+    #[serde(default)]
+    source_journal_phase: Option<String>,
+    #[zeroize(skip)]
+    #[serde(default)]
     codex_context: Option<CodexContext>,
     #[zeroize(skip)]
     #[serde(default)]
@@ -592,14 +598,7 @@ impl ConfigEngine<'_> {
                 return Err(fail("configuration_conflict"));
             }
             binding.enabled = true;
-            crate::identity::bound_helper_token(
-                &binding,
-                ClientKind::Claude,
-                &binding.id,
-                self.store,
-                self.vault,
-                chrono::Utc::now().timestamp(),
-            )?;
+            let secret_expiry = self.claude_grant_usable(&binding)?;
             self.check_policy()?;
             guard(context, false)?;
             let latest = self
@@ -609,7 +608,13 @@ impl ConfigEngine<'_> {
             if !Self::claude_binding_matches(context, &latest) {
                 return Err(fail("configuration_conflict"));
             }
+            if !self.claude_grant_scope_current(&latest)?
+                || secret_expiry.is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            {
+                return Err(fail("binding_disabled"));
+            }
         }
+        self.check_policy()?;
         target.validate_root()?;
         self.check_claude_source(context)?;
         Ok(())
@@ -655,6 +660,66 @@ impl ConfigEngine<'_> {
             && left.credential_revision == right.credential_revision
             && left.secret_reference == right.secret_reference
             && left.authorization_epoch == right.authorization_epoch
+    }
+
+    fn claude_grant_scope_current(&self, binding: &HelperBinding) -> Result<bool> {
+        crate::update_recovery::ensure_ready(&self.store.root)?;
+        Ok(!binding
+            .expires_at
+            .is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            && self
+                .store
+                .meta(&format!(
+                    "installation_forgetting/{}",
+                    binding.installation_id
+                ))?
+                .as_deref()
+                != Some("1")
+            && self
+                .store
+                .meta(&crate::identity::authorization_epoch_reference(
+                    &binding.origin,
+                    &binding.installation_id,
+                    &binding.account_id,
+                ))?
+                .and_then(|value| value.parse::<u64>().ok())
+                == Some(binding.authorization_epoch))
+    }
+
+    /// Claude checks time after the Vault returns, since a system prompt may
+    /// outlive a short grant. This returns no credential and changes no grant.
+    fn claude_grant_usable(&self, binding: &HelperBinding) -> Result<Option<i64>> {
+        crate::identity::validate_uuid(&binding.id)?;
+        if !binding.enabled
+            || binding.client != ClientKind::Claude
+            || crate::identity::canonical_origin(&binding.origin)? != binding.origin
+            || binding.account_id.is_empty()
+            || binding.provider_id.is_empty()
+            || binding.credential_revision.is_empty()
+            || !self.claude_grant_scope_current(binding)?
+        {
+            return Err(fail("binding_disabled"));
+        }
+        let bytes = self.vault.get(&binding.secret_reference)?;
+        let secret: crate::identity::InferenceSecret =
+            serde_json::from_slice(&bytes).map_err(|_| fail("credential_missing"))?;
+        if secret.origin != binding.origin
+            || secret.account_id != binding.account_id
+            || secret.installation_id != binding.installation_id
+            || secret.provider_id != binding.provider_id
+            || secret.credential_revision != binding.credential_revision
+            || secret.authorization_epoch != binding.authorization_epoch
+            || secret
+                .expires_at
+                .is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            || !secret.token.starts_with("orv_sk_")
+            || secret.token.len() > 4096
+            || secret.token.chars().any(char::is_whitespace)
+            || !self.claude_grant_scope_current(binding)?
+        {
+            return Err(fail("binding_disabled"));
+        }
+        Ok(secret.expires_at)
     }
     fn check_policy(&self) -> Result<()> {
         if let Some(guard) = self.policy_guard {
@@ -915,6 +980,8 @@ impl ConfigEngine<'_> {
             grants_after: Vec::new(),
             restore,
             source_journal_id: None,
+            source_journal_sha256: None,
+            source_journal_phase: None,
             codex_context,
             claude_context,
         };
@@ -1040,8 +1107,18 @@ impl ConfigEngine<'_> {
     }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
         if journal.client == ClientKind::Claude {
-            return Err(fail("claude_configuration_transaction_unavailable"));
+            let result = self.publish_claude(journal, operation);
+            if result
+                .as_ref()
+                .is_err_and(|error| error.code == "configuration_conflict")
+            {
+                journal.phase = "conflict".into();
+                self.store
+                    .put("journal", &journal.id, &journal.account_id, journal)?;
+            }
+            return result;
         }
+
         self.check_policy()?;
         self.check_context(journal, operation)?;
         if let Some(id) = &operation.source_journal_id {
@@ -1188,6 +1265,239 @@ impl ConfigEngine<'_> {
         Ok(())
     }
 
+    fn claude_group(&self, operation: &Operation, all_after: bool) -> Result<()> {
+        let context = operation
+            .claude_context
+            .as_ref()
+            .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+        self.check_claude_source(context)?;
+        for file in &operation.files {
+            self.validate_claude_path(Path::new(&file.path), context)?;
+            let current = read_file(Path::new(&file.path))?;
+            if current != file.after && (all_after || current != file.before) {
+                return Err(fail("configuration_conflict"));
+            }
+        }
+        Ok(())
+    }
+
+    fn claude_boundary(
+        &self,
+        journal: &Journal,
+        operation: &Operation,
+        all_after: bool,
+    ) -> Result<()> {
+        self.check_policy()?;
+        self.check_context(journal, operation)?;
+        self.claude_restore_source(journal, operation)?;
+        self.claude_group(operation, all_after)
+    }
+
+    fn source_journal_sha256(source: &Journal) -> Result<String> {
+        let mut immutable = source.clone();
+        // Completion atomically marks the source restored. All other source
+        // metadata and the authenticated ciphertext stay frozen throughout.
+        immutable.phase.clear();
+        Ok(sha256(
+            &serde_json::to_vec(&immutable).map_err(|_| fail("backup_invalid"))?,
+        ))
+    }
+
+    fn claude_restore_source(&self, journal: &Journal, operation: &Operation) -> Result<()> {
+        if !operation.restore {
+            return if operation.source_journal_id.is_none()
+                && operation.source_journal_sha256.is_none()
+                && operation.source_journal_phase.is_none()
+            {
+                Ok(())
+            } else {
+                Err(fail("backup_invalid"))
+            };
+        }
+        let source = operation
+            .source_journal_id
+            .as_ref()
+            .map(|id| self.store.get::<Journal>("journal", id))
+            .transpose()?
+            .flatten()
+            .ok_or_else(|| fail("configuration_conflict"))?;
+        if source.client != journal.client
+            || source.account_id != journal.account_id
+            || source.installation.id != journal.installation.id
+            || source.installation.origin != journal.installation.origin
+            || !(["publishing", "conflict", "committed"].contains(&source.phase.as_str())
+                && operation.source_journal_phase.as_deref() == Some(source.phase.as_str())
+                || journal.phase == "committed" && source.phase == "restored")
+            || operation.source_journal_sha256.as_deref()
+                != Some(Self::source_journal_sha256(&source)?.as_str())
+        {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(())
+    }
+
+    fn publish_claude(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        self.claude_boundary(journal, operation, false)?;
+        if let Some(id) = &operation.source_journal_id {
+            let source = self
+                .store
+                .get::<Journal>("journal", id)?
+                .ok_or_else(|| fail("backup_invalid"))?;
+            if !operation.restore
+                || source.client != journal.client
+                || source.account_id != journal.account_id
+                || source.installation.id != journal.installation.id
+                || source.installation.origin != journal.installation.origin
+                || !["publishing", "conflict", "committed"].contains(&source.phase.as_str())
+            {
+                return Err(fail("backup_invalid"));
+            }
+            let original = self.decrypt(&source)?;
+            if original.restore
+                || original.claude_context != operation.claude_context
+                || serde_json::to_vec(&original.grants_before).ok()
+                    != serde_json::to_vec(&operation.grants_after).ok()
+            {
+                return Err(fail("backup_invalid"));
+            }
+        } else if operation.restore {
+            return Err(fail("backup_invalid"));
+        }
+        journal.phase = "publishing".into();
+        self.claude_boundary(journal, operation, false)?;
+        self.store
+            .put("journal", &journal.id, &journal.account_id, journal)?;
+        if operation.files.iter().any(|file| file.after.is_some()) {
+            let target = &operation
+                .claude_context
+                .as_ref()
+                .ok_or_else(|| fail("claude_configuration_context_unverified"))?
+                .configuration_target;
+            target.ensure_root(&|| self.claude_boundary(journal, operation, false))?;
+        }
+        for file in &operation.files {
+            // A third state in any member, including an already-written one,
+            // stops the group before this next write or deletion.
+            self.claude_boundary(journal, operation, false)?;
+            if equal_current(file, &file.after)? {
+                continue;
+            }
+            self.claude_boundary(journal, operation, false)?;
+            match &file.after {
+                Some(bytes) => atomic_write(Path::new(&file.path), bytes)?,
+                None => {
+                    if Path::new(&file.path)
+                        .try_exists()
+                        .map_err(|_| fail("configuration_conflict"))?
+                    {
+                        fs::remove_file(&file.path).map_err(|_| fail("local_save_failed"))?;
+                        #[cfg(unix)]
+                        File::open(
+                            Path::new(&file.path)
+                                .parent()
+                                .ok_or_else(|| fail("invalid_path"))?,
+                        )
+                        .and_then(|parent| parent.sync_all())
+                        .map_err(|_| fail("local_save_failed"))?;
+                    }
+                }
+            }
+            if !equal_current(file, &file.after)? {
+                return Err(fail("configuration_readback_failed"));
+            }
+        }
+        self.claude_boundary(journal, operation, true)?;
+        for desired in &operation.grants_after {
+            // Do not cache grant authority across file writes or Vault calls.
+            self.claude_boundary(journal, operation, true)?;
+            let Some(current) = self.store.get::<HelperBinding>("binding", &desired.id)? else {
+                if operation.restore {
+                    continue;
+                }
+                return Err(fail("binding_disabled"));
+            };
+            if !Self::same_grant_identity(&current, desired) {
+                if operation.restore {
+                    // A replacement grant is external authority, not a backup.
+                    continue;
+                }
+                return Err(fail("configuration_conflict"));
+            }
+            let mut next = current.clone();
+            next.enabled = desired.enabled;
+            next.expires_at = match (current.expires_at, desired.expires_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+            let mut secret_expiry = None;
+            if next.enabled {
+                match self.claude_grant_usable(&next) {
+                    Ok(expiry) => secret_expiry = expiry,
+                    Err(_) if operation.restore => next.enabled = false,
+                    Err(error) => return Err(error),
+                }
+            }
+            // Vault is an external boundary. Check the full source/authority and
+            // all final bytes again, then read the row to avoid a stale snapshot.
+            self.claude_boundary(journal, operation, true)?;
+            let latest = self.store.get::<HelperBinding>("binding", &desired.id)?;
+            if latest.as_ref().is_none_or(|latest| {
+                !Self::same_grant_identity(latest, &current)
+                    || latest.enabled != current.enabled
+                    || latest.expires_at != current.expires_at
+            }) {
+                if operation.restore {
+                    continue;
+                }
+                return Err(fail("configuration_conflict"));
+            }
+            // The epoch/forget fence is checked a final time even for restore;
+            // invalid old authority restores bytes while remaining disabled.
+            if next.enabled {
+                match self.claude_grant_usable(&next) {
+                    Ok(expiry) => {
+                        secret_expiry = match (secret_expiry, expiry) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (Some(a), None) | (None, Some(a)) => Some(a),
+                            (None, None) => None,
+                        }
+                    }
+                    Err(_) if operation.restore => next.enabled = false,
+                    Err(error) => return Err(error),
+                }
+            }
+            self.claude_boundary(journal, operation, true)?;
+            let final_current = self.store.get::<HelperBinding>("binding", &desired.id)?;
+            if final_current.as_ref().is_none_or(|latest| {
+                !Self::same_grant_identity(latest, &current)
+                    || latest.enabled != current.enabled
+                    || latest.expires_at != current.expires_at
+            }) {
+                if operation.restore {
+                    continue;
+                }
+                return Err(fail("configuration_conflict"));
+            }
+            if next.enabled
+                && (!self.claude_grant_scope_current(&next)?
+                    || secret_expiry.is_some_and(|at| at <= chrono::Utc::now().timestamp()))
+            {
+                if operation.restore {
+                    next.enabled = false;
+                } else {
+                    return Err(fail("binding_disabled"));
+                }
+            }
+            self.store
+                .put("binding", &next.id, &next.account_id, &next)?;
+        }
+        self.claude_boundary(journal, operation, true)?;
+        journal.phase = "committed".into();
+        self.store
+            .commit_configuration(journal, operation.source_journal_id.as_deref())?;
+        self.prune_backups_locked(ClientKind::Claude)
+    }
     pub fn apply(&self, id: &str) -> Result<Journal> {
         self.check_policy()?;
         let mut journal = self
@@ -1221,13 +1531,17 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         if journal.phase == "committed" {
-            for file in &operation.files {
-                if !equal_current(file, &file.after)? {
-                    return Err(fail("configuration_conflict"));
+            if journal.client == ClientKind::Claude {
+                self.claude_boundary(&journal, &operation, true)?;
+            } else {
+                for file in &operation.files {
+                    if !equal_current(file, &file.after)? {
+                        return Err(fail("configuration_conflict"));
+                    }
                 }
+                self.check_policy()?;
+                self.check_context(&journal, &operation)?;
             }
-            self.check_policy()?;
-            self.check_context(&journal, &operation)?;
             self.store
                 .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
             return Ok(journal);
@@ -1267,6 +1581,12 @@ impl ConfigEngine<'_> {
                 after: file.before.clone(),
             });
         }
+        if journal.client == ClientKind::Claude {
+            if original.restore {
+                return Err(fail("backup_invalid"));
+            }
+            files.reverse();
+        }
         let mut restored = self.prepare_operation(
             journal.client,
             &journal.account_id,
@@ -1281,20 +1601,43 @@ impl ConfigEngine<'_> {
         let mut operation = self.decrypt(&restored)?;
         operation.restore = true;
         operation.source_journal_id = Some(journal.id.clone());
+        if journal.client == ClientKind::Claude {
+            let source = self
+                .store
+                .get::<Journal>("journal", &journal.id)?
+                .ok_or_else(|| fail("backup_invalid"))?;
+            operation.source_journal_sha256 = Some(Self::source_journal_sha256(&source)?);
+            operation.source_journal_phase = Some(source.phase);
+        }
         operation.grants_after = original.grants_before.clone();
         operation.codex_context = original.codex_context.clone();
-        operation.grants_before = operation
-            .grants_after
-            .iter()
-            .map(|b| {
-                self.store
-                    .get::<HelperBinding>("binding", &b.id)?
-                    .ok_or_else(|| fail("binding_disabled"))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        operation.grants_before = if journal.client == ClientKind::Claude {
+            operation
+                .grants_after
+                .iter()
+                .map(|binding| self.store.get::<HelperBinding>("binding", &binding.id))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect()
+        } else {
+            operation
+                .grants_after
+                .iter()
+                .map(|binding| {
+                    self.store
+                        .get::<HelperBinding>("binding", &binding.id)?
+                        .ok_or_else(|| fail("binding_disabled"))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
         restored.account_label = journal.account_label;
         restored.target_version = journal.target_version;
         restored.target_bundle_id = journal.target_bundle_id;
+        if journal.client == ClientKind::Claude {
+            restored.target_policy_revision = journal.target_policy_revision;
+            self.check_context(&restored, &operation)?;
+        }
         self.persist_operation(&mut restored, &operation)?;
         Ok(restored)
     }
