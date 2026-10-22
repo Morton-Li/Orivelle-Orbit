@@ -2,6 +2,14 @@
 
 此文件只记录已取得的证据，最终检查必须绑定提交后的完整 SHA。目标仍在实施中；任何未完成项都不构成平台支持或真实接入验收。
 
+## 2026-10-22 Claude 配置事务引擎
+
+从本地 develop `becfaae8` 建 `feature/orbit-claude-config-transaction`，分别提交认证上下文 `5f8d62d`、整组保存与逆序恢复 `85e3646`。本节只完成原生事务引擎；Service 的预览、确认、启动恢复和客户端状态接线仍待下一分支完成。Orbit 直接对接 Panel，继续使用其授予的现有节点和模型，本节没有新增网关或后端服务。
+
+事务专项最终 25/25 通过，包含每次写入与授权前整组状态检查、全部最终文件读回、旧新绑定缺失时恢复原字节，以及安全存储返回后的到期与撤销复核。独立审查发现的源 journal 晚变和已提交操作重新进入时的晚变读回两个边界已修复，并新增反例通过；早期版本 1/2 的检查证据保留。
+
+最终回归绑定源码 `85e364623c8da3a19b4b520c0b6fd983b819cc71`：core 168/helper 1 通过，core 内 2、独立 Vault 1、signer 1 保持 ignored，完整 Rust 格式检查通过。131 个源码和测试文件前后摘要不变。生产库编译保留一组 `prepare_claude`、`claude_context` 尚待 Service 使用的 dead_code warning，未压制该提示。证据位于 `.cache/evidence/claude-config-transaction-20261022/`；没有重跑无变更的前端、Panel 授权或协议网关，没有重建候选，也没有操作真实客户端配置、安全存储或界面。
+
 ## 2026-10-22 Claude 配置基础阶段
 
 从本地 develop `425af149` 建 `feature/orbit-claude-config-library`，分节提交固定合同、纯三文件合并、界面确认和安装目标/本地策略资格。Claude 生产保存与恢复入口仍关闭；后续另建分支接入 typed journal、Service 和启动恢复。Panel 继续是账户、凭据、节点和模型的权威；本阶段没有新增 Sub2api 网关或 Edge 服务。
