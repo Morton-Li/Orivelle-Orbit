@@ -3,7 +3,7 @@ use crate::{
     error::{Result, fail},
     identity::{HelperBinding, Installation, sha256, uuid},
     store::{Store, private_file},
-    system::CodexConfigurationTarget,
+    system::{ClaudeConfigurationTarget, CodexConfigurationTarget},
     vault::Vault,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -64,6 +64,99 @@ pub(crate) struct CodexContext {
     #[serde(default)]
     pub(crate) configuration_target: Option<CodexConfigurationTarget>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeModelInput {
+    pub id: String,
+    pub provider_id: String,
+    pub revision: String,
+    pub category: String,
+    pub capabilities: Vec<String>,
+    pub support_status: String,
+    pub reasoning: Option<ReasoningPolicyView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeFileDigest {
+    pub path: String,
+    pub before_sha256: Option<String>,
+    pub before_size: Option<u64>,
+    pub after_sha256: String,
+    pub after_size: u64,
+}
+impl ClaudeFileDigest {
+    pub fn from_change(file: &FileChange) -> Result<Self> {
+        let after = file
+            .after
+            .as_ref()
+            .ok_or_else(|| fail("invalid_configuration"))?;
+        Ok(Self {
+            path: file.path.clone(),
+            before_sha256: file.before.as_ref().map(|bytes| sha256(bytes)),
+            before_size: file.before.as_ref().map(|bytes| bytes.len() as u64),
+            after_sha256: sha256(after),
+            after_size: after.len() as u64,
+        })
+    }
+    fn matches_before(&self, bytes: Option<&[u8]>) -> bool {
+        self.before_size == bytes.map(|bytes| bytes.len() as u64)
+            && self.before_sha256 == bytes.map(sha256)
+    }
+    fn matches_after(&self, bytes: Option<&[u8]>) -> bool {
+        bytes.is_some_and(|bytes| {
+            bytes.len() as u64 == self.after_size && sha256(bytes) == self.after_sha256
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeActiveSource {
+    pub profile_id: String,
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+/// Frozen Service assertions authenticated inside the existing v3 operation.
+/// This is not IPC proof: a current full installed-target/authority guard is
+/// required at every use, including recovery. Original bytes live only in the
+/// encrypted FileChanges rather than being copied into this context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeContext {
+    pub contract_version: u32,
+    pub panel_origin: String,
+    pub account_id: String,
+    pub installation_id: String,
+    pub connection_id: String,
+    pub connection_revision: u64,
+    pub authorization_epoch: u64,
+    pub credential_revision: String,
+    pub credential_reference: String,
+    pub credential_expires_at: Option<i64>,
+    pub api_key_id: Option<String>,
+    pub node_id: String,
+    pub node_revision: String,
+    pub claude_base_url: String,
+    pub provider_id: String,
+    pub catalog_revision: String,
+    pub models: Vec<ClaudeModelInput>,
+    pub selected_model_id: String,
+    pub selected_model_revision: String,
+    pub scope_revision: String,
+    pub configuration_target: ClaudeConfigurationTarget,
+    pub policy_revision: String,
+    pub local_policy_revision: String,
+    pub profile_id: String,
+    pub binding_id: String,
+    pub helper_path: String,
+    /// Original apply order: new profile, metadata, then main deployment mode.
+    pub files: Vec<ClaudeFileDigest>,
+    pub active_source: Option<ClaudeActiveSource>,
+}
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct FileChange {
     pub path: String,
@@ -90,7 +183,16 @@ struct Operation {
     source_journal_id: Option<String>,
     #[zeroize(skip)]
     #[serde(default)]
+    source_journal_sha256: Option<String>,
+    #[zeroize(skip)]
+    #[serde(default)]
+    source_journal_phase: Option<String>,
+    #[zeroize(skip)]
+    #[serde(default)]
     codex_context: Option<CodexContext>,
+    #[zeroize(skip)]
+    #[serde(default)]
+    claude_context: Option<ClaudeContext>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Journal {
@@ -128,6 +230,7 @@ pub struct ConfigEngine<'a> {
     pub allowed_roots: Vec<PathBuf>,
     pub(crate) policy_guard: Option<&'a dyn Fn() -> Result<()>>,
     pub(crate) context_guard: Option<&'a dyn Fn(Option<&CodexContext>, bool) -> Result<()>>,
+    pub(crate) claude_context_guard: Option<&'a dyn Fn(&ClaudeContext, bool) -> Result<()>>,
 }
 pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {
     let metadata = match fs::symlink_metadata(path) {
@@ -182,8 +285,11 @@ impl ConfigEngine<'_> {
         operation: &Operation,
         restoring: bool,
     ) -> Result<()> {
-        if journal.client != ClientKind::Codex {
-            return Ok(());
+        if journal.client == ClientKind::Claude {
+            return self.check_claude_context(journal, operation, restoring);
+        }
+        if operation.claude_context.is_some() {
+            return Err(fail("backup_invalid"));
         }
         if let Some(context) = &operation.codex_context {
             let target = context
@@ -255,6 +361,365 @@ impl ConfigEngine<'_> {
         return Ok(());
         #[cfg(not(test))]
         Err(fail("codex_catalog_context_unverified"))
+    }
+
+    fn check_claude_source(&self, context: &ClaudeContext) -> Result<Option<Vec<u8>>> {
+        let Some(source) = &context.active_source else {
+            return Ok(None);
+        };
+        if source.profile_id == context.profile_id
+            || Path::new(&source.path)
+                != context
+                    .configuration_target
+                    .config_root
+                    .join("configLibrary")
+                    .join(format!("{}.json", source.profile_id))
+            || !uuid::Uuid::parse_str(&source.profile_id)
+                .is_ok_and(|id| id.to_string() == source.profile_id)
+        {
+            return Err(fail("claude_configuration_context_unverified"));
+        }
+        self.validate_claude_path(Path::new(&source.path), context)?;
+        let bytes =
+            read_file(Path::new(&source.path))?.ok_or_else(|| fail("configuration_conflict"))?;
+        if bytes.len() as u64 != source.size || sha256(&bytes) != source.sha256 {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(Some(bytes))
+    }
+
+    fn claude_binding_matches(context: &ClaudeContext, binding: &HelperBinding) -> bool {
+        binding.id == context.binding_id
+            && binding.client == ClientKind::Claude
+            && binding.origin == context.panel_origin
+            && binding.account_id == context.account_id
+            && binding.installation_id == context.installation_id
+            && binding.provider_id == context.provider_id
+            && binding.credential_revision == context.credential_revision
+            && binding.secret_reference == context.credential_reference
+            && binding.expires_at == context.credential_expires_at
+            && binding.authorization_epoch == context.authorization_epoch
+    }
+
+    fn check_claude_context(
+        &self,
+        journal: &Journal,
+        operation: &Operation,
+        restoring: bool,
+    ) -> Result<()> {
+        let context = operation
+            .claude_context
+            .as_ref()
+            .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+        let target = &context.configuration_target;
+        let restoring = operation.restore || restoring;
+        let digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        };
+        if context.contract_version != 1
+            || operation.codex_context.is_some()
+            || context.panel_origin != journal.installation.origin
+            || context.installation_id != journal.installation.id
+            || context.account_id != journal.account_id
+            || crate::identity::canonical_origin(&context.panel_origin)? != context.panel_origin
+            || journal.target_version.as_deref() != Some(target.app_version.as_str())
+            || journal.target_bundle_id.as_deref() != Some(target.bundle_id.as_str())
+            || journal.target_policy_revision.as_deref() != Some(context.policy_revision.as_str())
+            || !digest(&context.policy_revision)
+            || !digest(&context.local_policy_revision)
+            || !digest(&context.scope_revision)
+            || [
+                context.account_id.as_str(),
+                context.connection_id.as_str(),
+                context.credential_revision.as_str(),
+                context.credential_reference.as_str(),
+                context.node_id.as_str(),
+                context.node_revision.as_str(),
+                context.provider_id.as_str(),
+                context.catalog_revision.as_str(),
+                context.selected_model_id.as_str(),
+                context.selected_model_revision.as_str(),
+            ]
+            .iter()
+            .any(|value| {
+                value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control)
+            })
+            || context.models.is_empty()
+            || context.models.len() > 4096
+            || context
+                .models
+                .iter()
+                .filter(|model| {
+                    model.id == context.selected_model_id
+                        && model.revision == context.selected_model_revision
+                        && model.provider_id == context.provider_id
+                })
+                .count()
+                != 1
+            || context.files.len() != 3
+            || operation.files.len() != 3
+            || context.files[0].before_sha256.is_some()
+            || context.files[0].before_size.is_some()
+            || context.files[0].path
+                != target
+                    .config_root
+                    .join("configLibrary")
+                    .join(format!("{}.json", context.profile_id))
+                    .to_string_lossy()
+            || context.files[1].path
+                != target
+                    .config_root
+                    .join("configLibrary/_meta.json")
+                    .to_string_lossy()
+            || context.files[2].path
+                != target
+                    .config_root
+                    .join("claude_desktop_config.json")
+                    .to_string_lossy()
+            || journal.paths
+                != operation
+                    .files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>()
+            || (!operation.restore
+                && operation.enable_binding.as_deref() != Some(context.binding_id.as_str()))
+            || (!operation.restore && operation.disable_bindings.contains(&context.binding_id))
+            || (operation.restore
+                && (operation.enable_binding.is_some()
+                    || operation.disable_bindings != [context.binding_id.clone()]))
+        {
+            return Err(fail("claude_configuration_context_unverified"));
+        }
+        target.validate_root()?;
+        if !operation.restore {
+            let ids = operation
+                .disable_bindings
+                .iter()
+                .chain(operation.enable_binding.iter())
+                .collect::<std::collections::BTreeSet<_>>();
+            if ids.len() != operation.disable_bindings.len() + 1
+                || ids.len() != operation.grants_before.len()
+                || ids.len() != operation.grants_after.len()
+            {
+                return Err(fail("backup_invalid"));
+            }
+            for (before, after) in operation.grants_before.iter().zip(&operation.grants_after) {
+                if !ids.contains(&before.id)
+                    || !Self::same_grant_identity(before, after)
+                    || before.expires_at != after.expires_at
+                    || before.client != ClientKind::Claude
+                    || before.origin != context.panel_origin
+                    || before.account_id != context.account_id
+                    || before.installation_id != context.installation_id
+                    || after.enabled != (after.id == context.binding_id)
+                    || before.id == context.binding_id
+                        && (before.enabled || !Self::claude_binding_matches(context, before))
+                {
+                    return Err(fail("backup_invalid"));
+                }
+            }
+        }
+        for (index, file) in operation.files.iter().enumerate() {
+            let expected = &context.files[if operation.restore { 2 - index } else { index }];
+            if file.path != expected.path
+                || !digest(&expected.after_sha256)
+                || expected.after_size > MAX_CONFIG_BYTES
+                || expected
+                    .before_sha256
+                    .as_deref()
+                    .is_some_and(|value| !digest(value))
+                || expected
+                    .before_size
+                    .is_some_and(|size| size > MAX_CONFIG_BYTES)
+                || expected.before_sha256.is_some() != expected.before_size.is_some()
+                || if operation.restore {
+                    !expected.matches_before(file.after.as_deref())
+                        || (!expected.matches_before(file.before.as_deref())
+                            && !expected.matches_after(file.before.as_deref()))
+                } else {
+                    !expected.matches_before(file.before.as_deref())
+                        || !expected.matches_after(file.after.as_deref())
+                }
+            {
+                return Err(fail("backup_invalid"));
+            }
+            self.validate_claude_path(Path::new(&file.path), context)?;
+        }
+        let guard = self
+            .claude_context_guard
+            .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+        guard(context, restoring)?;
+        let source = self.check_claude_source(context)?;
+        let original_before = |index: usize| -> Option<&[u8]> {
+            if operation.restore {
+                operation.files[2 - index].after.as_deref()
+            } else {
+                operation.files[index].before.as_deref()
+            }
+        };
+        let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
+            app_version: &target.app_version,
+            source_member_sha256: &target.source_member_sha256,
+            user_root: &target.config_root,
+            profile_id: &context.profile_id,
+            gateway_base_url: &context.claude_base_url,
+            helper: Path::new(&context.helper_path),
+            binding_id: &context.binding_id,
+            model_id: &context.selected_model_id,
+            profile_before: original_before(0),
+            metadata_before: original_before(1),
+            main_before: original_before(2),
+            active_profile: context.active_source.as_ref().zip(source.as_deref()).map(
+                |(active, bytes)| crate::claude_config::ActiveProfile {
+                    id: &active.profile_id,
+                    bytes,
+                },
+            ),
+        })?;
+        if compiled
+            .files()
+            .iter()
+            .map(ClaudeFileDigest::from_change)
+            .collect::<Result<Vec<_>>>()?
+            != context.files
+        {
+            return Err(fail("backup_invalid"));
+        }
+        if !restoring {
+            let mut binding = self
+                .store
+                .get::<HelperBinding>("binding", &context.binding_id)?
+                .ok_or_else(|| fail("binding_disabled"))?;
+            if !Self::claude_binding_matches(context, &binding) {
+                return Err(fail("configuration_conflict"));
+            }
+            binding.enabled = true;
+            let secret_expiry = self.claude_grant_usable(&binding)?;
+            self.check_policy()?;
+            guard(context, false)?;
+            let latest = self
+                .store
+                .get::<HelperBinding>("binding", &context.binding_id)?
+                .ok_or_else(|| fail("binding_disabled"))?;
+            if !Self::claude_binding_matches(context, &latest) {
+                return Err(fail("configuration_conflict"));
+            }
+            if !self.claude_grant_scope_current(&latest)?
+                || secret_expiry.is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            {
+                return Err(fail("binding_disabled"));
+            }
+        }
+        self.check_policy()?;
+        target.validate_root()?;
+        self.check_claude_source(context)?;
+        Ok(())
+    }
+
+    fn validate_claude_path(&self, path: &Path, context: &ClaudeContext) -> Result<()> {
+        let target = &context.configuration_target;
+        target.validate_root()?;
+        if !path.is_absolute()
+            || !path.components().all(|component| {
+                matches!(
+                    component,
+                    std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                        | std::path::Component::Normal(_)
+                )
+            })
+            || path.parent().is_none_or(|parent| {
+                parent != target.config_root && parent != target.config_root.join("configLibrary")
+            })
+            || !self.allowed_roots.iter().any(|root| {
+                *root == target.config_root
+                    || root
+                        .canonicalize()
+                        .is_ok_and(|root| target.config_root.starts_with(root))
+            })
+        {
+            return Err(fail("path_outside_scope"));
+        }
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(())
+    }
+
+    fn same_grant_identity(left: &HelperBinding, right: &HelperBinding) -> bool {
+        left.id == right.id
+            && left.client == right.client
+            && left.origin == right.origin
+            && left.account_id == right.account_id
+            && left.installation_id == right.installation_id
+            && left.provider_id == right.provider_id
+            && left.credential_revision == right.credential_revision
+            && left.secret_reference == right.secret_reference
+            && left.authorization_epoch == right.authorization_epoch
+    }
+
+    fn claude_grant_scope_current(&self, binding: &HelperBinding) -> Result<bool> {
+        crate::update_recovery::ensure_ready(&self.store.root)?;
+        Ok(!binding
+            .expires_at
+            .is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            && self
+                .store
+                .meta(&format!(
+                    "installation_forgetting/{}",
+                    binding.installation_id
+                ))?
+                .as_deref()
+                != Some("1")
+            && self
+                .store
+                .meta(&crate::identity::authorization_epoch_reference(
+                    &binding.origin,
+                    &binding.installation_id,
+                    &binding.account_id,
+                ))?
+                .and_then(|value| value.parse::<u64>().ok())
+                == Some(binding.authorization_epoch))
+    }
+
+    /// Claude checks time after the Vault returns, since a system prompt may
+    /// outlive a short grant. This returns no credential and changes no grant.
+    fn claude_grant_usable(&self, binding: &HelperBinding) -> Result<Option<i64>> {
+        crate::identity::validate_uuid(&binding.id)?;
+        if !binding.enabled
+            || binding.client != ClientKind::Claude
+            || crate::identity::canonical_origin(&binding.origin)? != binding.origin
+            || binding.account_id.is_empty()
+            || binding.provider_id.is_empty()
+            || binding.credential_revision.is_empty()
+            || !self.claude_grant_scope_current(binding)?
+        {
+            return Err(fail("binding_disabled"));
+        }
+        let bytes = self.vault.get(&binding.secret_reference)?;
+        let secret: crate::identity::InferenceSecret =
+            serde_json::from_slice(&bytes).map_err(|_| fail("credential_missing"))?;
+        if secret.origin != binding.origin
+            || secret.account_id != binding.account_id
+            || secret.installation_id != binding.installation_id
+            || secret.provider_id != binding.provider_id
+            || secret.credential_revision != binding.credential_revision
+            || secret.authorization_epoch != binding.authorization_epoch
+            || secret
+                .expires_at
+                .is_some_and(|at| at <= chrono::Utc::now().timestamp())
+            || !secret.token.starts_with("orv_sk_")
+            || secret.token.len() > 4096
+            || secret.token.chars().any(char::is_whitespace)
+            || !self.claude_grant_scope_current(binding)?
+        {
+            return Err(fail("binding_disabled"));
+        }
+        Ok(secret.expires_at)
     }
     fn check_policy(&self) -> Result<()> {
         if let Some(guard) = self.policy_guard {
@@ -394,6 +859,7 @@ impl ConfigEngine<'_> {
             enable_binding,
             disable_bindings,
             None,
+            None,
             false,
         )
     }
@@ -414,6 +880,27 @@ impl ConfigEngine<'_> {
             enable_binding,
             disable_bindings,
             Some(context),
+            None,
+            false,
+        )
+    }
+    pub(crate) fn prepare_claude(
+        &self,
+        account: &str,
+        installation: &Installation,
+        files: Vec<FileChange>,
+        disable_bindings: Vec<String>,
+        context: ClaudeContext,
+    ) -> Result<Journal> {
+        self.prepare_operation(
+            ClientKind::Claude,
+            account,
+            installation,
+            files,
+            Some(context.binding_id.clone()),
+            disable_bindings,
+            None,
+            Some(context),
             false,
         )
     }
@@ -426,11 +913,18 @@ impl ConfigEngine<'_> {
         enable_binding: Option<String>,
         disable_bindings: Vec<String>,
         codex_context: Option<CodexContext>,
+        claude_context: Option<ClaudeContext>,
         restore: bool,
     ) -> Result<Journal> {
         self.check_policy()?;
         if files.is_empty() || files.len() > 8 {
             return Err(fail("invalid_configuration"));
+        }
+        if client == ClientKind::Claude && claude_context.is_none()
+            || client == ClientKind::Codex && claude_context.is_some()
+            || client == ClientKind::Claude && codex_context.is_some()
+        {
+            return Err(fail("claude_configuration_context_unverified"));
         }
         for file in &files {
             if file
@@ -444,7 +938,11 @@ impl ConfigEngine<'_> {
             {
                 return Err(fail("invalid_configuration"));
             }
-            self.validate_path(Path::new(&file.path), codex_context.as_ref())?;
+            if let Some(context) = &claude_context {
+                self.validate_claude_path(Path::new(&file.path), context)?;
+            } else {
+                self.validate_path(Path::new(&file.path), codex_context.as_ref())?;
+            }
             if !equal_current(file, &file.before)? {
                 return Err(fail("configuration_conflict"));
             }
@@ -462,9 +960,15 @@ impl ConfigEngine<'_> {
             expires_at: (now + chrono::Duration::days(retention as i64)).to_rfc3339(),
             phase: "prepared".into(),
             paths: files.iter().map(|f| f.path.clone()).collect(),
-            target_version: None,
-            target_bundle_id: None,
-            target_policy_revision: None,
+            target_version: claude_context
+                .as_ref()
+                .map(|context| context.configuration_target.app_version.clone()),
+            target_bundle_id: claude_context
+                .as_ref()
+                .map(|context| context.configuration_target.bundle_id.clone()),
+            target_policy_revision: claude_context
+                .as_ref()
+                .map(|context| context.policy_revision.clone()),
             nonce: URL_SAFE_NO_PAD.encode(nonce),
             ciphertext: String::new(),
         };
@@ -476,7 +980,10 @@ impl ConfigEngine<'_> {
             grants_after: Vec::new(),
             restore,
             source_journal_id: None,
+            source_journal_sha256: None,
+            source_journal_phase: None,
             codex_context,
+            claude_context,
         };
         let mut operation = operation;
         for id in operation
@@ -484,10 +991,20 @@ impl ConfigEngine<'_> {
             .iter()
             .chain(operation.enable_binding.iter())
         {
-            let before = self
-                .store
-                .get::<HelperBinding>("binding", id)?
-                .ok_or_else(|| fail("binding_disabled"))?;
+            let Some(before) = self.store.get::<HelperBinding>("binding", id)? else {
+                if client == ClientKind::Claude && restore {
+                    continue;
+                }
+                return Err(fail("binding_disabled"));
+            };
+            if client == ClientKind::Claude
+                && (before.client != client
+                    || before.account_id != account
+                    || before.origin != installation.origin
+                    || before.installation_id != installation.id)
+            {
+                return Err(fail("account_scope_mismatch"));
+            }
             let mut after = before.clone();
             after.enabled = operation.enable_binding.as_ref() == Some(id);
             operation.grants_before.push(before);
@@ -546,6 +1063,14 @@ impl ConfigEngine<'_> {
     pub(crate) fn codex_context(&self, journal: &Journal) -> Result<Option<CodexContext>> {
         Ok(self.decrypt(journal)?.codex_context.clone())
     }
+    pub(crate) fn claude_context(&self, journal: &Journal) -> Result<ClaudeContext> {
+        let operation = self.decrypt(journal)?;
+        self.check_context_for(journal, &operation, true)?;
+        operation
+            .claude_context
+            .clone()
+            .ok_or_else(|| fail("claude_configuration_context_unverified"))
+    }
     #[cfg(test)]
     pub(crate) fn freeze_codex_context(
         &self,
@@ -581,6 +1106,19 @@ impl ConfigEngine<'_> {
         self.persist_operation(journal, &operation)
     }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        if journal.client == ClientKind::Claude {
+            let result = self.publish_claude(journal, operation);
+            if result
+                .as_ref()
+                .is_err_and(|error| error.code == "configuration_conflict")
+            {
+                journal.phase = "conflict".into();
+                self.store
+                    .put("journal", &journal.id, &journal.account_id, journal)?;
+            }
+            return result;
+        }
+
         self.check_policy()?;
         self.check_context(journal, operation)?;
         if let Some(id) = &operation.source_journal_id {
@@ -726,6 +1264,240 @@ impl ConfigEngine<'_> {
         self.prune_backups_locked(journal.client)?;
         Ok(())
     }
+
+    fn claude_group(&self, operation: &Operation, all_after: bool) -> Result<()> {
+        let context = operation
+            .claude_context
+            .as_ref()
+            .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+        self.check_claude_source(context)?;
+        for file in &operation.files {
+            self.validate_claude_path(Path::new(&file.path), context)?;
+            let current = read_file(Path::new(&file.path))?;
+            if current != file.after && (all_after || current != file.before) {
+                return Err(fail("configuration_conflict"));
+            }
+        }
+        Ok(())
+    }
+
+    fn claude_boundary(
+        &self,
+        journal: &Journal,
+        operation: &Operation,
+        all_after: bool,
+    ) -> Result<()> {
+        self.check_policy()?;
+        self.check_context(journal, operation)?;
+        self.claude_restore_source(journal, operation)?;
+        self.claude_group(operation, all_after)
+    }
+
+    fn source_journal_sha256(source: &Journal) -> Result<String> {
+        let mut immutable = source.clone();
+        // Completion atomically marks the source restored. All other source
+        // metadata and the authenticated ciphertext stay frozen throughout.
+        immutable.phase.clear();
+        Ok(sha256(
+            &serde_json::to_vec(&immutable).map_err(|_| fail("backup_invalid"))?,
+        ))
+    }
+
+    fn claude_restore_source(&self, journal: &Journal, operation: &Operation) -> Result<()> {
+        if !operation.restore {
+            return if operation.source_journal_id.is_none()
+                && operation.source_journal_sha256.is_none()
+                && operation.source_journal_phase.is_none()
+            {
+                Ok(())
+            } else {
+                Err(fail("backup_invalid"))
+            };
+        }
+        let source = operation
+            .source_journal_id
+            .as_ref()
+            .map(|id| self.store.get::<Journal>("journal", id))
+            .transpose()?
+            .flatten()
+            .ok_or_else(|| fail("configuration_conflict"))?;
+        if source.client != journal.client
+            || source.account_id != journal.account_id
+            || source.installation.id != journal.installation.id
+            || source.installation.origin != journal.installation.origin
+            || !(["publishing", "conflict", "committed"].contains(&source.phase.as_str())
+                && operation.source_journal_phase.as_deref() == Some(source.phase.as_str())
+                || journal.phase == "committed" && source.phase == "restored")
+            || operation.source_journal_sha256.as_deref()
+                != Some(Self::source_journal_sha256(&source)?.as_str())
+        {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(())
+    }
+
+    fn publish_claude(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        self.claude_boundary(journal, operation, false)?;
+        if let Some(id) = &operation.source_journal_id {
+            let source = self
+                .store
+                .get::<Journal>("journal", id)?
+                .ok_or_else(|| fail("backup_invalid"))?;
+            if !operation.restore
+                || source.client != journal.client
+                || source.account_id != journal.account_id
+                || source.installation.id != journal.installation.id
+                || source.installation.origin != journal.installation.origin
+                || !["publishing", "conflict", "committed"].contains(&source.phase.as_str())
+            {
+                return Err(fail("backup_invalid"));
+            }
+            let original = self.decrypt(&source)?;
+            if original.restore
+                || original.claude_context != operation.claude_context
+                || serde_json::to_vec(&original.grants_before).ok()
+                    != serde_json::to_vec(&operation.grants_after).ok()
+            {
+                return Err(fail("backup_invalid"));
+            }
+        } else if operation.restore {
+            return Err(fail("backup_invalid"));
+        }
+        journal.phase = "publishing".into();
+        self.claude_boundary(journal, operation, false)?;
+        self.store
+            .put("journal", &journal.id, &journal.account_id, journal)?;
+        if operation.files.iter().any(|file| file.after.is_some()) {
+            let target = &operation
+                .claude_context
+                .as_ref()
+                .ok_or_else(|| fail("claude_configuration_context_unverified"))?
+                .configuration_target;
+            target.ensure_root(&|| self.claude_boundary(journal, operation, false))?;
+        }
+        for file in &operation.files {
+            // A third state in any member, including an already-written one,
+            // stops the group before this next write or deletion.
+            self.claude_boundary(journal, operation, false)?;
+            if equal_current(file, &file.after)? {
+                continue;
+            }
+            self.claude_boundary(journal, operation, false)?;
+            match &file.after {
+                Some(bytes) => atomic_write(Path::new(&file.path), bytes)?,
+                None => {
+                    if Path::new(&file.path)
+                        .try_exists()
+                        .map_err(|_| fail("configuration_conflict"))?
+                    {
+                        fs::remove_file(&file.path).map_err(|_| fail("local_save_failed"))?;
+                        #[cfg(unix)]
+                        File::open(
+                            Path::new(&file.path)
+                                .parent()
+                                .ok_or_else(|| fail("invalid_path"))?,
+                        )
+                        .and_then(|parent| parent.sync_all())
+                        .map_err(|_| fail("local_save_failed"))?;
+                    }
+                }
+            }
+            if !equal_current(file, &file.after)? {
+                return Err(fail("configuration_readback_failed"));
+            }
+        }
+        self.claude_boundary(journal, operation, true)?;
+        for desired in &operation.grants_after {
+            // Do not cache grant authority across file writes or Vault calls.
+            self.claude_boundary(journal, operation, true)?;
+            let Some(current) = self.store.get::<HelperBinding>("binding", &desired.id)? else {
+                if operation.restore {
+                    continue;
+                }
+                return Err(fail("binding_disabled"));
+            };
+            if !Self::same_grant_identity(&current, desired) {
+                if operation.restore {
+                    // A replacement grant is external authority, not a backup.
+                    continue;
+                }
+                return Err(fail("configuration_conflict"));
+            }
+            let mut next = current.clone();
+            next.enabled = desired.enabled;
+            next.expires_at = match (current.expires_at, desired.expires_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+            let mut secret_expiry = None;
+            if next.enabled {
+                match self.claude_grant_usable(&next) {
+                    Ok(expiry) => secret_expiry = expiry,
+                    Err(_) if operation.restore => next.enabled = false,
+                    Err(error) => return Err(error),
+                }
+            }
+            // Vault is an external boundary. Check the full source/authority and
+            // all final bytes again, then read the row to avoid a stale snapshot.
+            self.claude_boundary(journal, operation, true)?;
+            let latest = self.store.get::<HelperBinding>("binding", &desired.id)?;
+            if latest.as_ref().is_none_or(|latest| {
+                !Self::same_grant_identity(latest, &current)
+                    || latest.enabled != current.enabled
+                    || latest.expires_at != current.expires_at
+            }) {
+                if operation.restore {
+                    continue;
+                }
+                return Err(fail("configuration_conflict"));
+            }
+            // The epoch/forget fence is checked a final time even for restore;
+            // invalid old authority restores bytes while remaining disabled.
+            if next.enabled {
+                match self.claude_grant_usable(&next) {
+                    Ok(expiry) => {
+                        secret_expiry = match (secret_expiry, expiry) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (Some(a), None) | (None, Some(a)) => Some(a),
+                            (None, None) => None,
+                        }
+                    }
+                    Err(_) if operation.restore => next.enabled = false,
+                    Err(error) => return Err(error),
+                }
+            }
+            self.claude_boundary(journal, operation, true)?;
+            let final_current = self.store.get::<HelperBinding>("binding", &desired.id)?;
+            if final_current.as_ref().is_none_or(|latest| {
+                !Self::same_grant_identity(latest, &current)
+                    || latest.enabled != current.enabled
+                    || latest.expires_at != current.expires_at
+            }) {
+                if operation.restore {
+                    continue;
+                }
+                return Err(fail("configuration_conflict"));
+            }
+            if next.enabled
+                && (!self.claude_grant_scope_current(&next)?
+                    || secret_expiry.is_some_and(|at| at <= chrono::Utc::now().timestamp()))
+            {
+                if operation.restore {
+                    next.enabled = false;
+                } else {
+                    return Err(fail("binding_disabled"));
+                }
+            }
+            self.store
+                .put("binding", &next.id, &next.account_id, &next)?;
+        }
+        self.claude_boundary(journal, operation, true)?;
+        journal.phase = "committed".into();
+        self.store
+            .commit_configuration(journal, operation.source_journal_id.as_deref())?;
+        self.prune_backups_locked(ClientKind::Claude)
+    }
     pub fn apply(&self, id: &str) -> Result<Journal> {
         self.check_policy()?;
         let mut journal = self
@@ -759,13 +1531,17 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         if journal.phase == "committed" {
-            for file in &operation.files {
-                if !equal_current(file, &file.after)? {
-                    return Err(fail("configuration_conflict"));
+            if journal.client == ClientKind::Claude {
+                self.claude_boundary(&journal, &operation, true)?;
+            } else {
+                for file in &operation.files {
+                    if !equal_current(file, &file.after)? {
+                        return Err(fail("configuration_conflict"));
+                    }
                 }
+                self.check_policy()?;
+                self.check_context(&journal, &operation)?;
             }
-            self.check_policy()?;
-            self.check_context(&journal, &operation)?;
             self.store
                 .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
             return Ok(journal);
@@ -805,6 +1581,12 @@ impl ConfigEngine<'_> {
                 after: file.before.clone(),
             });
         }
+        if journal.client == ClientKind::Claude {
+            if original.restore {
+                return Err(fail("backup_invalid"));
+            }
+            files.reverse();
+        }
         let mut restored = self.prepare_operation(
             journal.client,
             &journal.account_id,
@@ -813,25 +1595,49 @@ impl ConfigEngine<'_> {
             None,
             original.enable_binding.clone().into_iter().collect(),
             original.codex_context.clone(),
+            original.claude_context.clone(),
             true,
         )?;
         let mut operation = self.decrypt(&restored)?;
         operation.restore = true;
         operation.source_journal_id = Some(journal.id.clone());
+        if journal.client == ClientKind::Claude {
+            let source = self
+                .store
+                .get::<Journal>("journal", &journal.id)?
+                .ok_or_else(|| fail("backup_invalid"))?;
+            operation.source_journal_sha256 = Some(Self::source_journal_sha256(&source)?);
+            operation.source_journal_phase = Some(source.phase);
+        }
         operation.grants_after = original.grants_before.clone();
         operation.codex_context = original.codex_context.clone();
-        operation.grants_before = operation
-            .grants_after
-            .iter()
-            .map(|b| {
-                self.store
-                    .get::<HelperBinding>("binding", &b.id)?
-                    .ok_or_else(|| fail("binding_disabled"))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        operation.grants_before = if journal.client == ClientKind::Claude {
+            operation
+                .grants_after
+                .iter()
+                .map(|binding| self.store.get::<HelperBinding>("binding", &binding.id))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect()
+        } else {
+            operation
+                .grants_after
+                .iter()
+                .map(|binding| {
+                    self.store
+                        .get::<HelperBinding>("binding", &binding.id)?
+                        .ok_or_else(|| fail("binding_disabled"))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
         restored.account_label = journal.account_label;
         restored.target_version = journal.target_version;
         restored.target_bundle_id = journal.target_bundle_id;
+        if journal.client == ClientKind::Claude {
+            restored.target_policy_revision = journal.target_policy_revision;
+            self.check_context(&restored, &operation)?;
+        }
         self.persist_operation(&mut restored, &operation)?;
         Ok(restored)
     }
@@ -1139,6 +1945,10 @@ pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String
     Ok(out)
 }
 #[cfg(test)]
+#[cfg(target_os = "macos")]
+#[path = "config_claude_tests.rs"]
+mod claude_transaction_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::vault::FakeVault;
@@ -1156,6 +1966,7 @@ mod tests {
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
             context_guard: None,
+            claude_context_guard: None,
         };
         let journal = legacy
             .prepare(
@@ -1180,6 +1991,7 @@ mod tests {
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: Some(&clear),
             context_guard: None,
+            claude_context_guard: None,
         };
         let mut restore = current.prepare_restore(&journal.id).unwrap();
         current
@@ -1207,6 +2019,7 @@ mod tests {
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: Some(&guard),
             context_guard: None,
+            claude_context_guard: None,
         };
         let mut journal = engine
             .prepare(
@@ -1263,6 +2076,7 @@ mod tests {
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
             context_guard: None,
+            claude_context_guard: None,
         };
         let j = engine
             .prepare(
@@ -1338,6 +2152,7 @@ mod tests {
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
             context_guard: None,
+            claude_context_guard: None,
         };
         let j = engine
             .prepare(
@@ -1425,6 +2240,7 @@ mod tests {
                 allowed_roots: vec![dir.path().to_path_buf()],
                 policy_guard: None,
                 context_guard: None,
+                claude_context_guard: None,
             };
             let applied = engine
                 .prepare(
@@ -1485,6 +2301,7 @@ mod tests {
             allowed_roots: vec![dir.path().to_path_buf()],
             policy_guard: None,
             context_guard: None,
+            claude_context_guard: None,
         };
         let preview = engine
             .prepare(

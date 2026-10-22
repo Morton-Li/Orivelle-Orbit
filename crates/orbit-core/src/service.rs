@@ -2168,6 +2168,7 @@ impl Service {
             allowed_roots: self.paths.configuration_roots.clone(),
             policy_guard: None,
             context_guard: None,
+            claude_context_guard: None,
         }
     }
     fn codex_engine<'a>(
@@ -2181,6 +2182,7 @@ impl Service {
             allowed_roots: self.paths.configuration_roots.clone(),
             policy_guard: Some(guard),
             context_guard: Some(context_guard),
+            claude_context_guard: None,
         }
     }
     fn observe_configuration(&self, client: ClientKind) -> Result<ConfigObservation> {

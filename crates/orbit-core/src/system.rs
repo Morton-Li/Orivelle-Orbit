@@ -129,6 +129,67 @@ impl ClaudeConfigurationTarget {
         }
         Ok(())
     }
+
+    /// Only the confirmed, locked journal may create the two missing leaves.
+    /// The caller rechecks its entire operation before each mkdir boundary.
+    pub(crate) fn ensure_root(&self, before_creation: &dyn Fn() -> Result<()>) -> Result<()> {
+        self.validate_root()?;
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            for (parent, name, path) in [
+                (
+                    self.config_root
+                        .parent()
+                        .ok_or_else(|| fail("invalid_path"))?
+                        .to_path_buf(),
+                    c"Claude-3p",
+                    self.config_root.clone(),
+                ),
+                (
+                    self.config_root.clone(),
+                    c"configLibrary",
+                    self.config_root.join("configLibrary"),
+                ),
+            ] {
+                before_creation()?;
+                self.validate_root()?;
+                if !path
+                    .try_exists()
+                    .map_err(|_| fail("configuration_conflict"))?
+                {
+                    let parent = configuration_directory(&parent).map_err(claude_target_error)?;
+                    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+                        return Err(fail("configuration_conflict"));
+                    }
+                    parent.sync_all().map_err(|_| fail("local_save_failed"))?;
+                }
+                self.validate_root()?;
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = before_creation;
+            Err(fail("claude_configuration_target_unverified"))
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic(config_root: PathBuf) -> Result<Self> {
+        let root_anchors = claude_configuration_root(&config_root)?;
+        Ok(Self {
+            contract_version: 1,
+            app_path: "synthetic-installed-Claude.app".into(),
+            bundle_id: CLAUDE_BUNDLE_ID.into(),
+            app_version: crate::claude_config::SUPPORTED_APP_VERSION.into(),
+            source_member_sha256: crate::claude_config::SOURCE_MEMBER_SHA256.into(),
+            config_root,
+            root_anchors,
+            materials: vec!["synthetic-public-material".into()],
+            revision: crate::identity::sha256(b"synthetic-installed-Claude-target"),
+        })
+    }
 }
 
 #[cfg(target_os = "macos")]
