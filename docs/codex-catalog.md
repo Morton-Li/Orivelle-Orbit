@@ -48,20 +48,20 @@ Panel 的可选 `provider_models.codex_catalog_binding` 只保存 `profile_id` �
 
 Service 从当前账户、节点和 provider 的完整模型范围规划目录，预览仅向 UI 展示来源、摘要、路径、默认别名、reasoning 默认值和别名列表；完整模板及 journal 内容不经 IPC 返回。UI 只能提交单次 `preview_id` 和确认，不能提供模板、运行来源或授权材料。Panel 的 `verified: false` 声明与独立的 runtime 状态分别展示。
 
-预览与应用入口先检查项目授权、实际 CLI 来源及组织策略，再刷新 bootstrap 和完整模型出口；bootstrap 刷新后重新检查节点、权限、密钥与连接版本。提交在账户锁内重编译整个目录，比较完整范围及输出，不能只复核所选模型。运行来源、策略或范围变化会永久退役旧预览，恢复原状态也不能复活它。
+预览与应用入口先检查项目授权、已安装配置目标及本地用户配置写入资格，再刷新 bootstrap 和完整模型出口；bootstrap 刷新后重新检查节点、权限、密钥与连接版本。提交在账户锁内重编译整个目录，比较完整范围及输出，不能只复核所选模型。配置目标、写入资格、策略或范围变化会永久退役旧预览，恢复原状态也不能复活它。运行来源保持独立；保存不要求客户端已经运行。
 
 目录固定为配置同目录下的 `orivelle-orbit.models.json`。一次 journal 先发布目录，再发布 `config.toml`，将 `model`、`model_provider`、`model_catalog_json` 和 `model_reasoning_effort` 设置为本次明确结果，并沿用现有 helper 的认证合同。两个文件的存在状态和摘要共同构成配置版本；任一外部修改均使旧证据失效。指定 `profile` 或 profile 内覆盖上述字段时拒绝自动修改并要求人工核查。保留的 plan mode、其他配置文件、CLI/daemon 选择及其他 runtime 路径尚未全部验证，不能据此声称所有 reasoning 请求均受本配置覆盖。
 
-加密 journal 冻结完整 actor、安装、连接、授权 epoch、凭据、节点、provider、模型声明与策略、来源与输出摘要、明确默认值、固定双路径及私有 runtime 身份。Vault 读取返回后复核来源与策略；解密后、每个文件写入前、授权启用前及提交恢复状态前复核完整上下文；先检查全部文件，发现第三种外部状态则不覆盖任何文件。旧 journal 缺少完整 Codex 上下文时不自动恢复。人工恢复只还原原始双文件字节，仍要求原 owner、固定路径、当前来源和策略；退出或推理密钥丢失后可恢复原文件，但不会复活旧 helper 授权。Claude 诊断导出也排除两个 Codex 目标，不能绕过 journal 覆盖目录。
+新版加密 journal 冻结完整 actor、安装、连接、授权 epoch、凭据、节点、provider、模型声明与策略、来源与输出摘要、明确默认值、固定双路径、已安装配置目标及本地写入资格。Vault 读取返回后复查配置目标和写入资格；解密后、每个文件写入前、授权启用前及提交恢复状态前复核完整上下文。先检查全部文件，发现第三种外部状态则不覆盖任何文件。旧 runtime 上下文不能自动取得新版保存权限。人工恢复只还原原始双文件字节，仍要求原 owner、固定路径、当前配置目标和策略；退出或推理密钥丢失后可恢复原文件，但不会复活旧 helper 授权。Claude 诊断导出也排除两个 Codex 目标，不能绕过 journal 覆盖目录。
 
-生产 `CodexRuntimeSnapshot` 当前始终为 `unverified`，正向来源只存在于编译隔离的合成测试中。安装包版本、Panel 声明或 UI 状态不能构造私有的已验证身份。因此当前真实自动应用与恢复仍关闭；该接线只在明确的合成来源和假 Vault 下取得正向证据。
+生产 `CodexRuntimeSnapshot` 当前始终为 `unverified`，正向运行来源只存在于编译隔离的合成测试中。2026-10-22 用户配置保存改用独立的已安装目标合同，不再以活跃运行来源为前置。安装包版本、Panel 声明或 UI 状态仍不能构造已验证的运行身份；实际保存与恢复另行取得文件和 Vault 证据。
 
-2026-10-21 新增的[本机来源纯判定层](codex-runtime.md)仅在 macOS 测试编译中使用，8 项专项通过；六条双语文案明确本机 backend 的范围。生产采集器与接线尚未开始，现有门禁未开启；用户要求本阶段收尾后暂停。
+2026-10-21 新增的[本机来源纯判定层](codex-runtime.md)仅在 macOS 测试编译中使用，8 项专项通过；六条双语文案明确本机 backend 的范围。该历史阶段收尾后按用户要求暂停。恢复后的采集研究分支独立保留，未合入当前保存主线。
 
-## 当前验收边界
+## 目录接线阶段证据（2026-10-21）
 
 项目内测试使用合成映射，验证模板保留、权限子集、引用、reasoning 与资源上限；作用域规划专项 10/10、双文件接线专项 10/10，以及导出目标保护的受影响 1/1 通过。最终完整 core128/helper1、rustfmt、helper 编译和 default/system typed check 通过；普通回归中的独立 signer 入口仍为 1 ignored，本阶段没有重复执行。前端完整质量链的 44/44 单测和 4/4 受影响浏览器用例通过，其他 11 项无变更流程未重跑。首轮浏览器在沙箱内启动阶段报告 SIGABRT，清理时报告 kill EPERM，四项页面断言未执行，原日志保留；成功运行使用项目内 profile 和 mock keychain。
 
-最终源码、实际 argv、源码前后摘要、日志、历史失败及本地提交/合并记录见项目忽略目录 `.cache/evidence/codex-config-catalog-20261021/`。没有启动 Desktop、helper 或 Orbit GUI，没有读取用户认证资料、修改真实配置、调用系统安全存储或发送推理请求。
+该历史阶段的最终源码、实际 argv、源码前后摘要、日志、历史失败及本地提交/合并记录见项目忽略目录 `.cache/evidence/codex-config-catalog-20261021/`。该阶段没有启动 Desktop、helper 或 Orbit GUI，没有读取用户认证资料、修改真实配置、调用系统安全存储或发送推理请求。后续保存合同的检查及原生证据分别见[验证记录](validation.md)。
 
-Panel 声明与目录编译不证明运行实例的 CLI 选择；组织远端策略仍为未知。自动配置仍需要独立的来源与策略门禁，不会据此生成 `loaded_evidence` 或 `connection_evidence`，也不代表实际模型菜单、流式或工具调用已经验收。历史 `42900ddd` Mac 候选不包含本模块；新候选必须以 `runtime/logs/candidate-manifest.json` 和来源材料阶段交付清单的完整源码、实际包/ZIP 摘要及三文件回读结果为准，构建不能替代运行验收。
+Panel 声明与目录编译不证明运行实例的 CLI 选择；组织远端策略仍为未知。用户配置保存使用独立的已安装配置目标与本地写入门禁，见[桌面用户配置合同](desktop-configuration.md)，不会生成 `loaded_evidence` 或 `connection_evidence`，也不代表模型菜单、流式或工具调用已经验收。历史 `42900ddd` Mac 候选不包含本模块；新候选必须以 `runtime/logs/candidate-manifest.json` 和来源材料阶段交付清单的完整源码、实际包/ZIP 摘要及三文件回读结果为准，构建不能替代运行验收。

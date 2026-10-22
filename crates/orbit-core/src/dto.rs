@@ -109,6 +109,10 @@ pub struct ClientView {
     pub config_paths: Vec<String>,
     pub platform_supported: bool,
     pub managed: String,
+    #[serde(default)]
+    pub configuration_access: ConfigurationAccess,
+    #[serde(default)]
+    pub configuration_access_revision: Option<String>,
     pub configuration_state: String,
     pub loaded_state: String,
     pub connection_state: String,
@@ -116,6 +120,14 @@ pub struct ClientView {
     pub loaded_evidence: Option<ClientEvidence>,
     pub connection_evidence: Option<ClientEvidence>,
     pub manual_steps: Vec<String>,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigurationAccess {
+    Allowed,
+    Blocked,
+    #[default]
+    Unverified,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceRate {
@@ -344,6 +356,13 @@ pub struct ConfigPreview {
     pub codex_catalog: Option<CodexCatalogPreview>,
     #[serde(default)]
     pub codex_runtime: Option<CodexRuntimeView>,
+    #[serde(default)]
+    pub codex_configuration_target: Option<CodexConfigurationTargetView>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexConfigurationTargetView {
+    pub cli_version: String,
+    pub revision: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexCatalogPreview {

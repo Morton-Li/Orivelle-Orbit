@@ -70,11 +70,15 @@ test("real capability names populate client models and image edit options", asyn
   await page.getByRole("button", { name: "预览配置" }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("/fixture/config")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "确认应用" })).toBeEnabled();
+  await expect(
+    dialog.getByRole("button", { name: "确认保存本地配置" }),
+  ).toBeEnabled();
   const changed = bootstrap("synthetic-account-a", 2);
   changed.connections[0]!.revision = 2;
   await pushState(page, changed);
-  await expect(dialog.getByRole("button", { name: "确认应用" })).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: "确认保存本地配置" }),
+  ).toBeDisabled();
   expect(await calls(page, "apply_client_config")).toBe(0);
 });
 

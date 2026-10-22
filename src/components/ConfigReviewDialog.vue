@@ -11,6 +11,9 @@ const emit = defineEmits<{ close: []; applied: [] }>();
 const store = useOrbitStore();
 const now = ref(Date.now());
 const rejectedPreviewIds = ref(new Set<string>());
+const targetClient = computed(() =>
+  store.state.clients.find((item) => item.client === props.preview?.client),
+);
 const timer = window.setInterval(() => {
   now.value = Date.now();
 }, 1000);
@@ -18,17 +21,32 @@ onUnmounted(() => window.clearInterval(timer));
 const current = computed(() => {
   const preview = props.preview;
   if (!preview || rejectedPreviewIds.value.has(preview.id)) return false;
-  const client = store.state.clients.find(
-    (item) => item.client === preview.client,
-  );
+  const client = targetClient.value;
   if (
     !client?.installed ||
     !client.platform_supported ||
-    client.managed !== "no" ||
     client.version !== preview.target_version ||
     Date.parse(preview.expires_at) <= now.value
   )
     return false;
+  if (preview.client === "codex") {
+    const target = preview.codex_configuration_target;
+    if (
+      client.managed === "yes" ||
+      client.configuration_access !== "allowed" ||
+      !client.configuration_access_revision ||
+      !target?.revision ||
+      !target.cli_version ||
+      target.revision !== client.configuration_access_revision
+    )
+      return false;
+    if (
+      preview.operation === "apply" &&
+      (!preview.codex_catalog ||
+        target.cli_version !== preview.codex_catalog.cli_version)
+    )
+      return false;
+  } else if (client.managed !== "no") return false;
   if (preview.operation === "restore")
     return store.state.backups.some(
       (backup) =>
@@ -74,8 +92,9 @@ const codexReady = computed(() => {
   if (preview?.client !== "codex" || preview.operation !== "apply") return true;
   return (
     !!preview.codex_catalog &&
-    codexRuntimeVerified.value &&
-    preview.codex_runtime?.cli_version === preview.codex_catalog.cli_version
+    !!preview.codex_configuration_target?.cli_version &&
+    preview.codex_configuration_target.cli_version ===
+      preview.codex_catalog.cli_version
   );
 });
 const codexRuntimeVerified = computed(() => {
@@ -178,35 +197,57 @@ async function confirm() {
           </dd>
         </div>
       </dl>
-      <template
-        v-if="preview.client === 'codex' && preview.operation === 'apply'"
-      >
-        <h3>{{ t("access.codexCatalog") }}</h3>
-        <template v-if="preview.codex_catalog">
-          <dl class="preview-context">
-            <div>
-              <dt>{{ t("access.codexDefaultAlias") }}</dt>
-              <dd>
-                <code>{{ preview.codex_catalog.default_alias }}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>{{ t("access.codexDefaultEffort") }}</dt>
-              <dd>{{ preview.codex_catalog.default_reasoning_effort }}</dd>
-            </div>
-            <div>
-              <dt>{{ t("access.codexDeclaredCli") }}</dt>
-              <dd>{{ preview.codex_catalog.cli_version }}</dd>
-            </div>
-          </dl>
-          <h4>{{ t("access.codexMenuAliases") }}</h4>
-          <ul class="path-list" :aria-label="t('access.codexMenuAliases')">
-            <li v-for="alias in preview.codex_catalog.aliases" :key="alias">
-              <code>{{ alias }}</code>
-            </li>
-          </ul>
+      <template v-if="preview.client === 'codex'">
+        <h3>{{ t("access.codexConfigurationTarget") }}</h3>
+        <p class="info-box">{{ t("access.codexDefaultScope") }}</p>
+        <dl class="preview-context">
+          <div>
+            <dt>{{ t("access.codexConfigurationCli") }}</dt>
+            <dd>
+              {{
+                preview.codex_configuration_target?.cli_version ??
+                t("common.unknown")
+              }}
+            </dd>
+          </div>
+        </dl>
+        <p
+          v-if="targetClient?.managed === 'unknown'"
+          class="info-box"
+          role="status"
+        >
+          {{ t("access.remotePolicyWarning") }}
+        </p>
+        <template v-if="preview.operation === 'apply'">
+          <h3>{{ t("access.codexCatalog") }}</h3>
+          <template v-if="preview.codex_catalog">
+            <dl class="preview-context">
+              <div>
+                <dt>{{ t("access.codexDefaultAlias") }}</dt>
+                <dd>
+                  <code>{{ preview.codex_catalog.default_alias }}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>{{ t("access.codexDefaultEffort") }}</dt>
+                <dd>{{ preview.codex_catalog.default_reasoning_effort }}</dd>
+              </div>
+              <div>
+                <dt>{{ t("access.codexDeclaredCli") }}</dt>
+                <dd>{{ preview.codex_catalog.cli_version }}</dd>
+              </div>
+            </dl>
+            <h4>{{ t("access.codexMenuAliases") }}</h4>
+            <ul class="path-list" :aria-label="t('access.codexMenuAliases')">
+              <li v-for="alias in preview.codex_catalog.aliases" :key="alias">
+                <code>{{ alias }}</code>
+              </li>
+            </ul>
+          </template>
+          <p v-else class="info-box">
+            {{ t("access.codexCatalogUnavailable") }}
+          </p>
         </template>
-        <p v-else class="info-box">{{ t("access.codexCatalogUnavailable") }}</p>
         <dl class="preview-context">
           <div>
             <dt>{{ t("access.codexRuntime") }}</dt>
@@ -225,9 +266,12 @@ async function confirm() {
             </dd>
           </div>
         </dl>
+        <p v-if="!codexRuntimeVerified" class="info-box">
+          {{ t("access.codexRuntimeBlocked") }}
+        </p>
         <p class="info-box">{{ t("access.codexEvidenceBoundary") }}</p>
         <p v-if="!codexReady" class="error-text" role="alert">
-          {{ t("access.codexRuntimeBlocked") }}
+          {{ t("access.codexConfigurationUnavailable") }}
         </p>
       </template>
       <h3>{{ t("access.paths") }}</h3>
@@ -270,7 +314,13 @@ async function confirm() {
           {{ t("access.exportImport") }}
         </button>
         <button class="button primary" :disabled="!allowed" @click="confirm">
-          <OrbitIcon name="check" />{{ t("action.apply") }}
+          <OrbitIcon name="check" />{{
+            t(
+              preview.client === "codex" && preview.operation === "apply"
+                ? "access.saveLocalConfiguration"
+                : "action.apply",
+            )
+          }}
         </button>
       </div></template
     >

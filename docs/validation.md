@@ -6,7 +6,7 @@
 
 - 办公 Mac：macOS 26.7.1 arm64、Xcode 27.0、Node 24.18.0、npm 11.16.0、Rust 1.97.1。Docker 已启动。
 - 项目内开发、依赖锁定、合成数据、隔离测试和本地提交已获准。原工作区和其他 worktree 保留。
-- 2026-10-21 用户明确授权当前办公 Mac 作为真实集成环境，有限原生预检已验证 Orbit 自身和专用合成 Keychain 项；用户询问提前打开 Claude 的目的后，已停止第三方客户端界面操作。本来源阶段仅检查公开安装包、只读进程/FD 元数据及项目内合成测试。真实凭据/上游/收费调用、生产数据库、正式签名证书安装、发布部署仍需另行授权。
+- 2026-10-21 用户明确授权当前办公 Mac 作为真实集成环境，有限原生预检已验证 Orbit 自身和专用合成 Keychain 项；用户询问提前打开 Claude 的目的后，已停止第三方客户端界面操作。2026-10-22 主线转回用户配置预览、保存与恢复；运行来源诊断研究分支保留但未合入。真实凭据/上游/收费调用、生产数据库、正式签名证书安装、发布部署仍需另行授权。
 - `lab.lan` 仅个人 Mac 可用，当前不依赖它。Windows 11 25H2 x64 和 macOS 15 最低版本的实际环境尚无验收证据。
 - macOS Intel 已取消，无此目标的设计、构建或验收。
 
@@ -14,13 +14,14 @@
 
 | 层级 | 当前证据 | 未覆盖 |
 | --- | --- | --- |
-| 前端语义 | 此前完整 format、零 warning lint、typecheck、44/44 单元测试、生产 build 与排除测试 fixture 检查通过；本轮六条双语文案的单文件格式/lint和10项受影响测试通过，11项被筛选 | 新文案未在原生 GUI 载入；目标客户端实际接入；有限原生 IPC 见下行 |
+| 前端语义 | 2026-10-22 配置保存合同：format、零 warning lint、typecheck、56/56 单元测试、生产 build 与 fixture 排除检查通过；完整检查发现缺少新字段的默认视图，补为未核验后从失败处继续通过 | 新版本未在原生 GUI 载入；目标客户端实际接入；有限原生 IPC 见下行 |
 | Desktop 协议 fixture | 项目内 Responses/Messages 网关 61/61；主/辅助模型、单/并行工具续轮、JSON/SSE、故障与资源预算；连同既有打包专项共 71/71 Node 测试通过，无跳过 | 真实 Desktop 的内置工具适配、实际请求/重试行为、HTTPS、模型菜单、载入与连接证据 |
 | Codex 目录与接线 | 固定 CLI0.163.0-alpha.10.2 完整官方目录的12项编译用例、10项作用域用例和10项双文件接线用例通过；已消费 Panel 显式绑定及真实整数 reasoning revision，联合 journal 覆盖配置、目录和授权恢复 | 运行实例来源、真实 Desktop 载入/模型菜单与能力、全部 runtime reasoning 路径 |
-| Codex 本机来源纯层 | macOS 测试专用参数解析与私有来源模型8/8、两文件rustfmt通过；独立复核关闭环境区截断问题；只读元数据探针明确未证明选中来源 | 生产采集器/FFI/Service未开始，release仍unverified；真实资源加载代次、候选分类、角色/根及连接核验 |
-| 浏览器界面 | 最新 Chrome 隔离 profile 的4/4受影响模型预览、冲突恢复和Claude导出用例通过，其余11项无变更流程未重跑；此前完整15/15及深浅色、390/1280/1600宽度和视觉记录保留 | 原生窗口、安全存储、桌面应用接入 |
-| Rust/native 合成回归 | 已有 CLT clang21 + SDK15.4：既有 core128/helper1 fake 回归、rustfmt、helper 编译、默认和嵌入 helper 的 system-integration typed cargo check通过；当时普通 signer 入口1 ignored；包含双文件恢复及既有故障、授权、账务和锁回归。此前 NativeVault 的默认 ignored 专项另见下行，未重跑全套 | 合成回归不覆盖真实系统；不能将编译 feature 当成真实集成 |
+| Codex 保存与运行来源 | 新保存合同使用已安装配置目标、本地写入资格和确认后固定目录创建；全局策略、运行来源及载入/连接证据各自保留未知。早期纯来源层与未合入的采集研究均不提供实际载入证明 | 真实默认文件保存/恢复、客户端载入及连接待专项；未知运行来源不再作为保存前置条件 |
+| 浏览器界面 | 2026-10-22 Chrome 隔离 profile 的4/4受影响模型预览、失效确认、冲突恢复和Claude导出用例通过，其余11项无变更流程未重跑；此前完整15/15及深浅色、390/1280/1600宽度和视觉记录保留 | 原生窗口、安全存储、桌面应用接入 |
+| Rust/native 合成回归 | 2026-10-22 CLT clang21 + SDK15.4：core144/helper1、rustfmt、helper 编译、默认与 system-integration typed cargo check通过；NativeVault 和 signer 专项各1 ignored。随后仅给首次目录权限测试增加 macOS 注解，该单例及格式复验通过 | 此结果仅为 Mac 合成与编译证据；Windows 配置目标及相关 synthetic fixture 尚待适配，不能泛化为 Windows 通过 |
 | 本机 NativeVault | 新增默认 ignored 的 macOS 专项；单目标编译和格式通过。受限环境首轮 create 失败并清理通过；获准环境以同一已编译测试二进制实际运行 1/1 通过，新随机项的 10 步 journal 全 passed | GUI/helper 的身份与 Keychain 连续性、拒绝访问及平台全流程；首轮具体系统原因未确认 |
+| 本机配置往返入口 | 2026-10-22 新增默认 ignored 的 Service 专项，真实默认配置与四个专用 NativeVault 引用的执行代码已通过独立复核、单目标 `--no-run` 编译和格式检查；写前恢复记录、碰撞不读取秘密、冲突保留恢复能力及固定 panic 输出已复核 | 用户选择先做本地候选与 Docker 隔离验收，因此本次没有运行该入口，没有新增真实配置或 Keychain 往返结果 |
 | Orbit 原生界面 | 1426f16d 源码候选在 macOS 26.7.1 arm64 的 Tauri WKWebView 中实际运行：四页、快捷键、未登录限制、诊断 IPC、原生保存对话及关闭窗口后重新显示通过 | 登录、图片输入/生成/复制、helper 执行、第三方客户端接入、最低 macOS15 与 Windows；详见[本机预检](macos-native-preflight.md) |
 | Panel | 绑定阶段源afbfe38a：隔离MySQL13/13（660 assertions）；三个受影响CI分组、前端329/329、PHP及前端quality通过，历史单项失败和复验见下文；最终安全构建179文件独立核对 | 真实 native/客户端/生产；未执行远端 GitLab pipeline；后来推进的 develop 不属于此快照 |
 | Edge | 本任务没有修改；合同以现有源码/测试核查 | 真实客户端与 fake gateway 的当前联调 |
@@ -41,13 +42,17 @@
 
 ## 尚待完成的实现
 
-2026-10-21 本机来源阶段只完成[测试专用纯判定层与范围文案](codex-runtime.md)，分节提交后合入本地 `develop`；按用户最新要求在此停下并暂停目标，等明确“继续”才开始生产采集器。8项纯测试与10项受影响文案测试不能代表真实来源或新版 GUI 通过，旧 `1426f16d` 候选保持独立归档。
+2026-10-22 按用户主线纠正实施[用户配置保存合同](desktop-configuration.md)：保存依赖受支持的已安装目标和完整本地写入资格，不要求已启动的运行实例。远端组织策略未知仍保持未知；任何已知管理限制、无法读取的本地来源或失效目标均拒绝写入。UI、默认视图修复和后端合同已经分节提交；新原生往返入口已编译并复核，按本轮隔离范围未执行。Mac 候选按最终提交构建，实际源码、包与归档结果以 `runtime/logs/candidate-manifest.json` 和本阶段交付清单为准。
+
+用户确认没有外部 Panel 测试入口，要求先完成本地候选与隔离验收，并明确允许 Docker 临时环境。下一阶段采用真实 Panel、Edge、MySQL 和合成账户、假上游，验收授权、安装关联 key、节点/模型、受控请求、账目及撤销；先解决项目或单进程 CA 信任，保持完整证书链和主机名校验，不改系统信任或 hosts。Docker/API 结果与候选 GUI、真实 Desktop 载入/连接及各平台系统验收分别记录，不能相互替代。
+
+2026-10-21 [测试专用纯判定层与范围文案](codex-runtime.md)是已合入本地 `develop` 后暂停的历史阶段。恢复后运行来源采集研究已保留在独立分支，没有合入当前配置主线，也没有第三轮真实来源观察。旧 `1426f16d` 候选保持独立归档，不代表本次代码。
 
 2026-10-21 当前 Mac 授权后的有限原生预检已取得真实 NativeVault 单项及 Orbit 未登录界面证据，过程与边界见[本机预检](macos-native-preflight.md)。这不改变运行实例来源、远端组织策略、Claude library 写入、第三方 Desktop 载入/连接和其他平台的剩余门禁。此前各阶段的“未运行/未获准”陈述只描述当时快照。
 
-2026-10-21 来源材料候选阶段从本地develop `d8f5ac9f7450a2999839e5dbee86825496730ccd` 创建独立分支，只补固定Codex许可证/NOTICE/provenance的实际包保留及候选证据。打包前源码必须已提交且tracked干净；构建、三文件与ZIP回读、静态检查、完整源码SHA及本地合并结果见 `.cache/evidence/codex-candidate-resources-20261021/`。此前42900ddd ZIP/manifest保留；该源码尚不含完整目录及双文件接线，不能代表新代码。此阶段不重新运行无变更的Rust/前端、浏览器、协议网关或signer探针，也不启动真实程序。
+2026-10-21 来源材料候选阶段从本地develop `d8f5ac9f7450a2999839e5dbee86825496730ccd` 创建独立分支，只补固定Codex许可证/NOTICE/provenance的实际包保留及候选证据。打包前源码必须已提交且tracked干净；构建、三文件与ZIP回读、静态检查、完整源码SHA及本地合并结果见 `.cache/evidence/codex-candidate-resources-20261021/`。旧42900ddd ZIP/manifest保留；旧429源码尚不含完整目录及双文件接线，不能代表后来的代码。1426f16d 候选已包含目录接线，其后新增文案及本次保存合同仍须新候选验证。此阶段不重新运行无变更的Rust/前端、浏览器、协议网关或signer探针，也不启动真实程序。
 
-2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，自动配置继续受阻。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。2026-10-21 已实现固定版本完整目录、Panel显式绑定消费、Service/config和目录联合恢复，见[目录与接线](codex-catalog.md)；生产runtime仍为unverified，没有实际来源生产入口。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
+2026-10-15 策略来源采集、预览冻结及提交前重验已有项目内实现和合成测试；真实来源查询没有运行，Codex/Claude 的远端组织策略覆盖仍未取得证明，因此设备来源没有内容仍保持 `unknown`，该历史阶段的自动配置继续受阻；2026-10-22 的 Codex 用户文件写入资格见上文。来源范围和安全边界见[组织策略采集](managed-policy.md)。客户端载入/连接证据目前没有生产采集入口。已有项目内[协议隔离网关](desktop-fake-gateway.md)，覆盖 Responses/Messages 的合成主/辅助模型、流式、工具续轮和错误场景；尚未与真实 Desktop 联调，不产生加载或连接证明。2026-10-21 已实现固定版本完整目录、Panel显式绑定消费、Service/config和目录联合恢复，见[目录与接线](codex-catalog.md)；生产runtime仍为unverified，没有实际来源生产入口。Claude library 的稳定合同和获准合成导出仍未取得；2.19675.0 安装包静态 reader/writer 显示 profile 为扁平对象，激活还涉及第三文件与 hybrid 来源指针，不能直接写入 nested V2 bootstrap body。自动 library 写入继续关闭。Mac 更新 journal、启动前校验、应用/数据库回退和受控终态退役已有项目内实现及故障夹具，Windows 更新恢复仍未实现为可验收流程，自动安装明确拒绝。
 
 2026-10-21 从develop `e7c7072b50abd0b5dd39928bbadb0656968c64bb` 建立 `feature/orbit-codex-config-catalog`。作用域规划提交 `d8c783806ff71262d532d8089cf27b5aba8ad1a0`；界面与固定错误分节提交 `2def6e62dd2e8292cd80c0fb79a4e2f00339a4cd`、`972095eb3a7f2578f9c2f8a677104344f129851b`。独立审查关闭了bootstrap仅刷新模型导致节点/权限/密钥陈旧，以及Claude导出可能覆盖新增目录的两项P2；补齐受影响反例，原强断言保留。双文件上下文覆盖完整模型范围，失效预览永久退役，旧无上下文journal不猜测恢复，退出后原字节恢复不会复活旧授权。
 

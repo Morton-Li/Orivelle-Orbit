@@ -44,6 +44,8 @@ function undetectedClient(client: ClientKind): ClientView {
     config_paths: [],
     platform_supported: false,
     managed: "unknown",
+    configuration_access: "unverified",
+    configuration_access_revision: null,
     configuration_state: "not_configured",
     loaded_state: "unconfirmed",
     connection_state: "not_tested",

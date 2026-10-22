@@ -75,9 +75,19 @@ pub(crate) struct Snapshot {
     pub(crate) state: State,
     pub(crate) revision: String,
     identity: String,
+    local_write: State,
+    pub(crate) local_revision: String,
 }
 impl Snapshot {
     fn resolve(target: &ClientView, sources: &[Source], coverage_complete: bool) -> Self {
+        Self::resolve_with_local(target, sources, coverage_complete, coverage_complete)
+    }
+    fn resolve_with_local(
+        target: &ClientView,
+        sources: &[Source],
+        coverage_complete: bool,
+        local_complete: bool,
+    ) -> Self {
         let state = if sources
             .iter()
             .any(|s| s.status == Status::Present && s.effect == Effect::Managed)
@@ -116,11 +126,63 @@ impl Snapshot {
             sha256(&serde_json::to_vec(&(identity, identity_sources)).unwrap_or_default());
         let bytes = serde_json::to_vec(&(1u32, &identity, sources, coverage_complete, state))
             .unwrap_or_default();
+        let local: Vec<_> = sources
+            .iter()
+            .filter(|source| source.id != "remote_organization")
+            .collect();
+        let local_write = if state == State::Yes {
+            State::Yes
+        } else if target.client == ClientKind::Codex
+            && local_complete
+            && target.installed
+            && target.version.is_some()
+            && target.bundle_id.is_some()
+            && target.platform_supported
+            && local.iter().all(|s| {
+                s.status == Status::Absent
+                    || s.status == Status::Present
+                        && matches!(s.effect, Effect::None | Effect::Behavior)
+            })
+        {
+            State::No
+        } else {
+            State::Unknown
+        };
+        let local_revision = sha256(
+            &serde_json::to_vec(&(
+                "codex-user-config-v1",
+                &identity,
+                &local,
+                local_complete,
+                local_write,
+            ))
+            .unwrap_or_default(),
+        );
         Self {
             state,
             revision: sha256(&bytes),
             identity,
+            local_write,
+            local_revision,
         }
+    }
+    pub(crate) fn user_config_state(&self) -> State {
+        self.local_write
+    }
+    pub(crate) fn require_user_config_clear(&self) -> Result<()> {
+        if self.state == State::Yes || self.local_write != State::No {
+            return Err(fail("managed_policy_unverified"));
+        }
+        Ok(())
+    }
+    pub(crate) fn matches_user_config(&self, current: &Self) -> Result<()> {
+        if self.identity != current.identity {
+            return Err(fail("client_version_changed"));
+        }
+        if self.revision != current.revision || self.local_revision != current.local_revision {
+            return Err(fail("managed_policy_changed"));
+        }
+        current.require_user_config_clear()
     }
     pub(crate) fn require_clear(&self) -> Result<()> {
         if self.state != State::No {
@@ -141,6 +203,11 @@ impl Snapshot {
         target.managed = self.state.as_str().into();
         let note = match self.state {
             State::Yes => "已发现设备管理策略；Orbit 不覆盖组织管理的客户端配置。",
+            State::Unknown
+                if target.client == ClientKind::Codex && self.local_write == State::No =>
+            {
+                "本地用户配置策略已核对；远端组织策略未知，客户端启动后仍可能限制或拒绝配置生效。"
+            }
             State::Unknown => "设备策略或远端组织策略的覆盖范围尚未确认；自动接入保持禁用。",
             State::No => "已核验当前受控观测覆盖的客户端策略；写入前仍会重新检查。",
         };
@@ -149,6 +216,7 @@ impl Snapshot {
                 "已发现设备管理策略；Orbit 不覆盖组织管理的客户端配置。",
                 "设备策略或远端组织策略的覆盖范围尚未确认；自动接入保持禁用。",
                 "已核验当前受控观测覆盖的客户端策略；写入前仍会重新检查。",
+                "本地用户配置策略已核对；远端组织策略未知，客户端启动后仍可能限制或拒绝配置生效。",
             ]
             .contains(&v.as_str())
         });
@@ -169,6 +237,15 @@ impl Snapshot {
             digest: sha256(token.as_bytes()),
         };
         Self::resolve(target, &[source], state == State::No)
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_user_config(target: &ClientView, state: State, token: &str) -> Self {
+        let mut snapshot = Self::fixture(target, state, token);
+        if state == State::No && target.client == ClientKind::Codex {
+            snapshot.state = State::Unknown;
+            snapshot.revision = sha256(format!("local-clear-global-unknown:{token}").as_bytes());
+        }
+        snapshot
     }
 }
 pub(crate) fn observe(paths: &SystemPaths, target: &ClientView) -> Snapshot {
@@ -220,7 +297,22 @@ pub(crate) fn observe(paths: &SystemPaths, target: &ClientView) -> Snapshot {
     // Neither CFPreferences, filesystem absence nor the Windows registry reports
     // which cloud/Agent Security/admin-console layer the running desktop loaded.
     sources.push(Source::status("remote_organization", Status::Unavailable));
-    Snapshot::resolve(target, &sources, false)
+    let local_complete = codex_local_coverage(target, &sources);
+    Snapshot::resolve_with_local(target, &sources, false, local_complete)
+}
+fn codex_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
+    let required = [
+        "codex_system_requirements",
+        "codex_legacy_defaults",
+        "codex_macos_mdm_defaults",
+        "codex_macos_mdm_requirements",
+        "client_identity",
+    ];
+    cfg!(target_os = "macos")
+        && target.client == ClientKind::Codex
+        && required
+            .iter()
+            .all(|id| sources.iter().filter(|source| source.id == *id).count() == 1)
 }
 enum Format {
     Toml,
@@ -924,6 +1016,83 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_config_flow_local_qualification_never_claims_global_policy_clear() {
+        let target = target();
+        let local = [
+            "codex_system_requirements",
+            "codex_legacy_defaults",
+            "codex_macos_mdm_defaults",
+            "codex_macos_mdm_requirements",
+            "client_identity",
+        ];
+        let mut sources: Vec<_> = local
+            .into_iter()
+            .map(|id| Source::status(id, Status::Absent))
+            .collect();
+        sources.push(Source::status("remote_organization", Status::Unavailable));
+        let snapshot = Snapshot::resolve_with_local(
+            &target,
+            &sources,
+            false,
+            codex_local_coverage(&target, &sources),
+        );
+        assert!(snapshot.state == State::Unknown);
+        assert!(snapshot.require_clear().is_err() && snapshot.require_user_config_clear().is_ok());
+        let mut view = target.clone();
+        snapshot.project(&mut view);
+        assert_eq!(view.managed, "unknown");
+        for status in [
+            Status::Denied,
+            Status::Malformed,
+            Status::Unavailable,
+            Status::Changed,
+            Status::Limit,
+        ] {
+            let mut changed = sources.clone();
+            changed[0] = Source::status(local[0], status);
+            assert!(
+                Snapshot::resolve_with_local(
+                    &target,
+                    &changed,
+                    false,
+                    codex_local_coverage(&target, &changed)
+                )
+                .require_user_config_clear()
+                .is_err()
+            );
+        }
+        let mut missing = sources.clone();
+        missing.remove(0);
+        assert!(
+            Snapshot::resolve_with_local(
+                &target,
+                &missing,
+                false,
+                codex_local_coverage(&target, &missing)
+            )
+            .require_user_config_clear()
+            .is_err()
+        );
+        for index in [0, sources.len() - 1] {
+            let mut managed = sources.clone();
+            managed[index].status = Status::Present;
+            managed[index].effect = Effect::Managed;
+            assert!(
+                Snapshot::resolve_with_local(&target, &managed, false, true)
+                    .require_user_config_clear()
+                    .is_err()
+            );
+        }
+        let mut unknown = sources;
+        unknown[0].status = Status::Present;
+        unknown[0].effect = Effect::Unverified;
+        assert!(
+            Snapshot::resolve_with_local(&target, &unknown, false, true)
+                .require_user_config_clear()
+                .is_err()
+        );
+    }
     use std::collections::BTreeMap;
     fn target() -> ClientView {
         serde_json::from_value(serde_json::json!({"client":"codex","installed":true,"display_name":"Synthetic","version":"1.2.3","bundle_id":"synthetic.codex","app_path":null,"config_paths":[],"platform_supported":true,"managed":"unknown","configuration_state":"not_configured","loaded_state":"unconfirmed","connection_state":"not_tested","configuration_revision":null,"loaded_evidence":null,"connection_evidence":null,"manual_steps":[]})).unwrap()

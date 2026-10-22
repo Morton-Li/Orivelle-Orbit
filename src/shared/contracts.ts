@@ -128,6 +128,8 @@ export type ClientView = {
   config_paths: string[];
   platform_supported: boolean;
   managed: "yes" | "no" | "unknown";
+  configuration_access: "allowed" | "blocked" | "unverified";
+  configuration_access_revision: string | null;
   configuration_state: "not_configured" | "saved" | "conflict" | "unsupported";
   loaded_state: "unconfirmed" | "restart_required" | "confirmed";
   connection_state: "not_tested" | "passed" | "failed";
@@ -315,6 +317,11 @@ type ConfigPreviewBase = {
   can_apply: boolean;
   can_export_import: boolean;
   blocking_reason: string | null;
+  codex_configuration_target: {
+    cli_version: string;
+    // Local configuration qualification, independent of runtime/load evidence.
+    revision: string;
+  } | null;
   codex_catalog: {
     profile_id: string;
     cli_version: string;

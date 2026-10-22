@@ -14,6 +14,17 @@ const props = defineProps<{
 const status = computed(() =>
   clientStatus(props.client, props.connection, props.detected),
 );
+const configurationAccess = computed(() => {
+  if (
+    props.client.managed === "yes" ||
+    props.client.configuration_access === "blocked"
+  )
+    return "client.configurationBlocked";
+  return props.client.configuration_access === "allowed" &&
+    props.client.configuration_access_revision
+    ? "client.configurationAllowed"
+    : "client.configurationUnverified";
+});
 const loaded = computed(
   () =>
     props.client.loaded_state === "confirmed" &&
@@ -54,6 +65,15 @@ const verified = computed(
         {{
           t(client.client === "codex" ? "home.codexHint" : "home.claudeHint")
         }}
+      </p>
+      <p v-if="client.client === 'codex'" class="muted">
+        {{ t(configurationAccess) }}
+      </p>
+      <p
+        v-if="client.client === 'codex' && client.managed === 'unknown'"
+        class="muted"
+      >
+        {{ t("client.remotePolicyUnknown") }}
       </p>
       <div
         v-if="!compact && client.configuration_state === 'saved'"

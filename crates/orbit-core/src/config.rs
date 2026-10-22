@@ -3,7 +3,7 @@ use crate::{
     error::{Result, fail},
     identity::{HelperBinding, Installation, sha256, uuid},
     store::{Store, private_file},
-    system::CodexRuntimeIdentity,
+    system::CodexConfigurationTarget,
     vault::Vault,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -59,7 +59,10 @@ pub(crate) struct CodexContext {
     pub(crate) default_reasoning_effort: String,
     pub(crate) catalog_path: String,
     pub(crate) config_path: String,
-    pub(crate) runtime: CodexRuntimeIdentity,
+    // Legacy runtime-only contexts deserialize without a new receipt and fail
+    // closed. They are never promoted into an installed-target qualification.
+    #[serde(default)]
+    pub(crate) configuration_target: Option<CodexConfigurationTarget>,
 }
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct FileChange {
@@ -183,6 +186,11 @@ impl ConfigEngine<'_> {
             return Ok(());
         }
         if let Some(context) = &operation.codex_context {
+            let target = context
+                .configuration_target
+                .as_ref()
+                .ok_or_else(|| fail("codex_catalog_context_unverified"))?;
+            target.validate_root()?;
             if context.panel_origin != journal.installation.origin
                 || context.installation_id != journal.installation.id
                 || context.account_id != journal.account_id
@@ -196,6 +204,9 @@ impl ConfigEngine<'_> {
                 || operation.files[0].path != context.catalog_path
                 || operation.files[1].path != context.config_path
                 || context.catalog_path == context.config_path
+                || Path::new(&context.config_path) != target.config_root.join("config.toml")
+                || Path::new(&context.catalog_path)
+                    != target.config_root.join("orivelle-orbit.models.json")
                 || context.models.len() > crate::codex_catalog::MAX_AUTHORIZED_ALIASES
                 || context.aliases.is_empty()
                 || context.aliases.len() > crate::codex_catalog::MAX_MODELS
@@ -254,15 +265,35 @@ impl ConfigEngine<'_> {
         #[cfg(not(test))]
         Err(fail("managed_policy_unverified"))
     }
-    fn validate_path(&self, path: &Path) -> Result<()> {
+    fn validate_path(&self, path: &Path, context: Option<&CodexContext>) -> Result<()> {
         if !path.is_absolute() {
             return Err(fail("invalid_path"));
         }
-        let parent = path
-            .parent()
-            .ok_or_else(|| fail("invalid_path"))?
-            .canonicalize()
-            .map_err(|_| fail("invalid_path"))?;
+        let requested_parent = path.parent().ok_or_else(|| fail("invalid_path"))?;
+        let parent = match requested_parent.canonicalize() {
+            Ok(parent) => parent,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let target = context
+                    .and_then(|context| context.configuration_target.as_ref())
+                    .ok_or_else(|| fail("invalid_path"))?;
+                target.validate_root()?;
+                if requested_parent != target.config_root
+                    || !["config.toml", "orivelle-orbit.models.json"]
+                        .iter()
+                        .any(|name| path == target.config_root.join(name))
+                    || !self.allowed_roots.iter().any(|root| {
+                        *root == target.config_root
+                            || root
+                                .canonicalize()
+                                .is_ok_and(|allowed| target.config_root.starts_with(allowed))
+                    })
+                {
+                    return Err(fail("path_outside_scope"));
+                }
+                return Ok(());
+            }
+            Err(_) => return Err(fail("invalid_path")),
+        };
         if !self
             .allowed_roots
             .iter()
@@ -355,6 +386,48 @@ impl ConfigEngine<'_> {
         enable_binding: Option<String>,
         disable_bindings: Vec<String>,
     ) -> Result<Journal> {
+        self.prepare_operation(
+            client,
+            account,
+            installation,
+            files,
+            enable_binding,
+            disable_bindings,
+            None,
+            false,
+        )
+    }
+    pub(crate) fn prepare_codex(
+        &self,
+        account: &str,
+        installation: &Installation,
+        files: Vec<FileChange>,
+        enable_binding: Option<String>,
+        disable_bindings: Vec<String>,
+        context: CodexContext,
+    ) -> Result<Journal> {
+        self.prepare_operation(
+            ClientKind::Codex,
+            account,
+            installation,
+            files,
+            enable_binding,
+            disable_bindings,
+            Some(context),
+            false,
+        )
+    }
+    fn prepare_operation(
+        &self,
+        client: ClientKind,
+        account: &str,
+        installation: &Installation,
+        files: Vec<FileChange>,
+        enable_binding: Option<String>,
+        disable_bindings: Vec<String>,
+        codex_context: Option<CodexContext>,
+        restore: bool,
+    ) -> Result<Journal> {
         self.check_policy()?;
         if files.is_empty() || files.len() > 8 {
             return Err(fail("invalid_configuration"));
@@ -371,7 +444,7 @@ impl ConfigEngine<'_> {
             {
                 return Err(fail("invalid_configuration"));
             }
-            self.validate_path(Path::new(&file.path))?;
+            self.validate_path(Path::new(&file.path), codex_context.as_ref())?;
             if !equal_current(file, &file.before)? {
                 return Err(fail("configuration_conflict"));
             }
@@ -401,9 +474,9 @@ impl ConfigEngine<'_> {
             disable_bindings,
             grants_before: Vec::new(),
             grants_after: Vec::new(),
-            restore: false,
+            restore,
             source_journal_id: None,
-            codex_context: None,
+            codex_context,
         };
         let mut operation = operation;
         for id in operation
@@ -420,6 +493,7 @@ impl ConfigEngine<'_> {
             operation.grants_before.push(before);
             operation.grants_after.push(after);
         }
+        self.check_context(&journal, &operation)?;
         self.persist_operation(&mut journal, &operation)?;
         Ok(journal)
     }
@@ -469,6 +543,10 @@ impl ConfigEngine<'_> {
         journal.target_policy_revision = Some(revision.into());
         self.persist_operation(journal, &operation)
     }
+    pub(crate) fn codex_context(&self, journal: &Journal) -> Result<Option<CodexContext>> {
+        Ok(self.decrypt(journal)?.codex_context.clone())
+    }
+    #[cfg(test)]
     pub(crate) fn freeze_codex_context(
         &self,
         journal: &mut Journal,
@@ -479,9 +557,6 @@ impl ConfigEngine<'_> {
         self.check_context(journal, &operation)?;
         self.persist_operation(journal, &operation)
     }
-    pub(crate) fn codex_context(&self, journal: &Journal) -> Result<Option<CodexContext>> {
-        Ok(self.decrypt(journal)?.codex_context.clone())
-    }
     #[cfg(test)]
     pub(crate) fn synthetic_files(&self, journal: &Journal) -> Result<Vec<FileChange>> {
         Ok(self.decrypt(journal)?.files.clone())
@@ -490,6 +565,19 @@ impl ConfigEngine<'_> {
     pub(crate) fn synthetic_without_context(&self, journal: &mut Journal) -> Result<()> {
         let mut operation = self.decrypt(journal)?;
         operation.codex_context = None;
+        self.persist_operation(journal, &operation)
+    }
+    #[cfg(test)]
+    pub(crate) fn synthetic_without_configuration_target(
+        &self,
+        journal: &mut Journal,
+    ) -> Result<()> {
+        let mut operation = self.decrypt(journal)?;
+        operation
+            .codex_context
+            .as_mut()
+            .unwrap()
+            .configuration_target = None;
         self.persist_operation(journal, &operation)
     }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
@@ -554,7 +642,7 @@ impl ConfigEngine<'_> {
         }
         // Inspect every file before any repair write. External changes stop the whole recovery.
         for file in &operation.files {
-            self.validate_path(Path::new(&file.path))?;
+            self.validate_path(Path::new(&file.path), operation.codex_context.as_ref())?;
             if !equal_current(file, &file.before)? && !equal_current(file, &file.after)? {
                 journal.phase = "conflict".into();
                 self.store
@@ -566,6 +654,17 @@ impl ConfigEngine<'_> {
         self.check_policy()?;
         self.store
             .put("journal", &journal.id, &journal.account_id, journal)?;
+        if operation.files.iter().any(|file| file.after.is_some()) {
+            if let Some(target) = operation
+                .codex_context
+                .as_ref()
+                .and_then(|context| context.configuration_target.as_ref())
+            {
+                self.check_policy()?;
+                self.check_context(journal, operation)?;
+                target.ensure_root()?;
+            }
+        }
         for file in &operation.files {
             self.check_policy()?;
             self.check_context(journal, operation)?;
@@ -706,13 +805,15 @@ impl ConfigEngine<'_> {
                 after: file.before.clone(),
             });
         }
-        let mut restored = self.prepare(
+        let mut restored = self.prepare_operation(
             journal.client,
             &journal.account_id,
             &journal.installation,
             files,
             None,
             original.enable_binding.clone().into_iter().collect(),
+            original.codex_context.clone(),
+            true,
         )?;
         let mut operation = self.decrypt(&restored)?;
         operation.restore = true;
