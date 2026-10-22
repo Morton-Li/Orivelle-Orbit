@@ -1,6 +1,463 @@
 use super::*;
 use crate::config::ClaudeContext;
 
+fn automatic_preview(service: &Service, fixture: &tests::PolicyFixture) -> ConfigPreview {
+    service
+        .preview_client_config(
+            &fixture.record.view.id,
+            fixture.record.view.revision,
+            ClientKind::Claude,
+            &fixture.model,
+        )
+        .unwrap()
+}
+
+fn assert_unobserved(service: &Service, state: &str) {
+    let client = service
+        .bootstrap()
+        .unwrap()
+        .clients
+        .into_iter()
+        .find(|client| client.client == ClientKind::Claude)
+        .unwrap();
+    assert_eq!(client.configuration_state, state);
+    assert!(client.loaded_evidence.is_none() && client.connection_evidence.is_none());
+    assert_eq!(client.connection_state, "not_tested");
+    if state == "saved" {
+        assert_eq!(client.loaded_state, "restart_required");
+    }
+}
+
+#[test]
+fn claude_b3b_service_saves_reopens_and_restores_exact_three_files_without_preview_writes() {
+    for existing in [false, true] {
+        let fixture = tests::policy_fixture(ClientKind::Claude);
+        let root = fixture.service.paths.claude_library.parent().unwrap();
+        let old_id = uuid();
+        let old_profile = fixture
+            .service
+            .paths
+            .claude_library
+            .join(format!("{old_id}.json"));
+        let metadata = fixture.service.paths.claude_library.join("_meta.json");
+        let main = root.join("claude_desktop_config.json");
+        if existing {
+            std::fs::create_dir_all(&fixture.service.paths.claude_library).unwrap();
+            std::fs::write(&old_profile, br#"{"inferenceProvider":"gateway","inferenceGatewayApiKey":"SYNTHETIC-OLD-SECRET","keepAwakeEnabled":true}"#).unwrap();
+            std::fs::write(
+                &metadata,
+                serde_json::to_vec(&json!({"appliedId":old_id,
+                "entries":[{"id":old_id,"name":"Original","unknown":"META-SECRET"}],
+                "unknownMetadata":"UNKNOWN-META-SECRET"}))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                &main,
+                br#"{"deploymentMode":"1p","unowned":"UNKNOWN-MAIN-SECRET"}"#,
+            )
+            .unwrap();
+        }
+        let before_meta = read_file(&metadata).unwrap();
+        let before_main = read_file(&main).unwrap();
+        let before_profile = read_file(&old_profile).unwrap();
+        let preview = automatic_preview(&fixture.service, &fixture);
+        assert!(
+            preview.can_apply && !preview.can_export_import && preview.blocking_reason.is_none()
+        );
+        assert_eq!(preview.paths.len(), 3);
+        let new_profile = PathBuf::from(&preview.paths[0]);
+        assert_ne!(new_profile, old_profile);
+        assert_eq!(
+            new_profile.parent().unwrap(),
+            fixture.service.paths.claude_library
+        );
+        assert_eq!(Path::new(&preview.paths[1]), metadata);
+        assert_eq!(Path::new(&preview.paths[2]), main);
+        assert!(validate_uuid(new_profile.file_stem().unwrap().to_str().unwrap()).is_ok());
+        assert!(!new_profile.exists());
+        assert_eq!(read_file(&metadata).unwrap(), before_meta);
+        assert_eq!(read_file(&main).unwrap(), before_main);
+        assert_eq!(read_file(&old_profile).unwrap(), before_profile);
+        assert_eq!(root.exists(), existing);
+        for hidden in [
+            "SYNTHETIC-OLD-SECRET",
+            "META-SECRET",
+            "UNKNOWN-META-SECRET",
+            "UNKNOWN-MAIN-SECRET",
+            "orv_sk_",
+        ] {
+            assert!(!serde_json::to_string(&preview).unwrap().contains(hidden));
+        }
+        assert!(
+            fixture
+                .service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|binding| !binding.enabled)
+        );
+        assert_eq!(
+            fixture
+                .service
+                .apply_client_config(&preview.id, false, false)
+                .unwrap_err()
+                .code,
+            "confirmation_required"
+        );
+        assert!(!new_profile.exists());
+        let saved = fixture
+            .service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        assert_eq!(saved.state, "saved");
+        assert_eq!(saved.loaded_state, "restart_required");
+        let profile: Value = serde_json::from_slice(&std::fs::read(&new_profile).unwrap()).unwrap();
+        let summary: Value = serde_json::from_str(&preview.redacted_diff).unwrap();
+        for field in [
+            "inferenceGatewayBaseUrl",
+            "inferenceCredentialKind",
+            "inferenceGatewayAuthScheme",
+            "inferenceCredentialHelper",
+            "inferenceCredentialHelperArgs",
+            "inferenceModels",
+            "modelDiscoveryEnabled",
+        ] {
+            assert_eq!(summary["profile"][field], profile[field]);
+        }
+        let cache = fixture.service.account_cache(&fixture.record).unwrap();
+        assert_eq!(
+            profile["inferenceGatewayBaseUrl"],
+            cache.claude_endpoints[fixture.record.view.node_id.as_ref().unwrap()]
+        );
+        assert_ne!(
+            profile["inferenceGatewayBaseUrl"],
+            json!(fixture.record.view.edge_base_url)
+        );
+        let binding_id = profile["inferenceCredentialHelperArgs"][1]
+            .as_str()
+            .unwrap();
+        let binding: HelperBinding = fixture
+            .service
+            .store
+            .get("binding", binding_id)
+            .unwrap()
+            .unwrap();
+        assert!(binding.enabled);
+        assert!(
+            bound_helper_token(
+                &binding,
+                ClientKind::Claude,
+                binding_id,
+                &fixture.service.store,
+                fixture.service.vault.as_ref(),
+                chrono::Utc::now().timestamp()
+            )
+            .is_ok()
+        );
+        assert_unobserved(&fixture.service, "saved");
+        // Recreate the Service from the same durable Store and Vault. Preview
+        // entries disappear; the authenticated backup remains restorable.
+        let store_root = fixture.service.store.root.clone();
+        let vault = fixture.service.vault.clone();
+        let paths = fixture.service.paths.clone();
+        drop(fixture.service);
+        let reopened =
+            Service::new(Arc::new(Store::open(&store_root).unwrap()), vault, paths).unwrap();
+        assert_unobserved(&reopened, "saved");
+        assert_eq!(
+            reopened
+                .apply_client_config(&preview.id, true, false)
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+        let restore = reopened
+            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .unwrap();
+        assert!(restore.can_apply && restore.context.is_none());
+        assert_eq!(
+            restore.paths,
+            preview.paths.iter().rev().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            reopened
+                .apply_client_config(&restore.id, true, true)
+                .unwrap()
+                .state,
+            "restored"
+        );
+        assert_eq!(read_file(&metadata).unwrap(), before_meta);
+        assert_eq!(read_file(&main).unwrap(), before_main);
+        assert_eq!(read_file(&old_profile).unwrap(), before_profile);
+        assert!(!new_profile.exists());
+        assert!(
+            !reopened
+                .store
+                .get::<HelperBinding>("binding", binding_id)
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        assert_unobserved(&reopened, "not_configured");
+    }
+}
+
+#[test]
+fn claude_b3b_logout_restore_needs_no_live_actor_key_node_or_helper_and_never_revives_grants() {
+    let fixture = tests::policy_fixture(ClientKind::Claude);
+    let first = automatic_preview(&fixture.service, &fixture);
+    fixture
+        .service
+        .apply_client_config(&first.id, true, false)
+        .unwrap();
+    let before: Vec<_> = first
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect();
+    let second = automatic_preview(&fixture.service, &fixture);
+    let saved = fixture
+        .service
+        .apply_client_config(&second.id, true, false)
+        .unwrap();
+    fixture
+        .service
+        .commit_logout(&fixture.record.view.id)
+        .unwrap();
+    let mut paths = fixture.service.paths.clone();
+    std::fs::remove_file(&paths.helper).unwrap();
+    paths.helper_expected_sha256 = None;
+    fixture
+        .service
+        .store
+        .delete("account-cache", &fixture.record.view.id)
+        .unwrap();
+    fixture
+        .service
+        .store
+        .set_meta("active_connection", "")
+        .unwrap();
+    let store_root = fixture.service.store.root.clone();
+    let vault = fixture.service.vault.clone();
+    drop(fixture.service);
+    let reopened = Service::new(Arc::new(Store::open(&store_root).unwrap()), vault, paths).unwrap();
+    let restore = reopened
+        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    assert!(restore.can_apply);
+    reopened
+        .apply_client_config(&restore.id, true, true)
+        .unwrap();
+    for (path, original) in first.paths.iter().zip(before) {
+        assert_eq!(read_file(Path::new(path)).unwrap(), original);
+    }
+    assert!(!Path::new(&second.paths[0]).exists());
+    assert!(
+        reopened
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .iter()
+            .all(|grant| !grant.enabled)
+    );
+    assert_unobserved(&reopened, "not_configured");
+}
+
+#[test]
+fn claude_b3b_startup_coordinates_publishing_apply_and_restore_with_honest_operation_status() {
+    let fixture = tests::policy_fixture(ClientKind::Claude);
+    let preview = automatic_preview(&fixture.service, &fixture);
+    let saved = fixture
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let id = saved.backup_group_id.as_ref().unwrap();
+    let mut journal: Journal = fixture.service.store.get("journal", id).unwrap().unwrap();
+    // Synthetic crash at the all-written/grants-persisted publishing boundary.
+    journal.phase = "publishing".into();
+    fixture
+        .service
+        .store
+        .put("journal", id, &journal.account_id, &journal)
+        .unwrap();
+    fixture.service.store.delete("backup", id).unwrap();
+    let reopened = Service::new(
+        fixture.service.store.clone(),
+        fixture.service.vault.clone(),
+        fixture.service.paths.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened
+            .store
+            .get::<Journal>("journal", id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "committed"
+    );
+    assert!(
+        reopened
+            .store
+            .get::<Journal>("backup", id)
+            .unwrap()
+            .is_some()
+    );
+    assert_unobserved(&reopened, "saved");
+    let restore = reopened.preview_restore(id).unwrap();
+    let mut restoring: Journal = reopened
+        .store
+        .get(
+            "journal",
+            reopened
+                .previews
+                .lock()
+                .unwrap()
+                .get(&restore.id)
+                .unwrap()
+                .journal_id
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    restoring.phase = "publishing".into();
+    reopened
+        .store
+        .put("journal", &restoring.id, &restoring.account_id, &restoring)
+        .unwrap();
+    // Synthetic crash after main/meta/profile restoration, before grants/commit.
+    for path in &restore.paths {
+        std::fs::remove_file(path).unwrap();
+    }
+    let recovered = Service::new(
+        reopened.store.clone(),
+        reopened.vault.clone(),
+        reopened.paths.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        recovered
+            .store
+            .get::<Journal>("journal", &restoring.id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "committed"
+    );
+    assert_unobserved(&recovered, "not_configured");
+    assert!(
+        recovered
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .iter()
+            .all(|binding| !binding.enabled)
+    );
+    assert_eq!(
+        recovered
+            .store
+            .get::<Journal>("journal", id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "restored"
+    );
+}
+
+#[test]
+fn claude_b3b_startup_skips_stale_apply_snapshot_after_newer_restore_commits() {
+    let fixture = tests::policy_fixture(ClientKind::Claude);
+    let preview = automatic_preview(&fixture.service, &fixture);
+    let saved = fixture
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let source_id = saved.backup_group_id.as_ref().unwrap();
+    let mut source: Journal = fixture
+        .service
+        .store
+        .get("journal", source_id)
+        .unwrap()
+        .unwrap();
+    // The original confirmed apply was interrupted after all three writes.
+    source.phase = "publishing".into();
+    fixture
+        .service
+        .store
+        .put("journal", source_id, &source.account_id, &source)
+        .unwrap();
+    fixture.service.store.delete("backup", source_id).unwrap();
+    let restore = fixture.service.preview_restore(source_id).unwrap();
+    let restore_id = fixture
+        .service
+        .previews
+        .lock()
+        .unwrap()
+        .get(&restore.id)
+        .unwrap()
+        .journal_id
+        .clone()
+        .unwrap();
+    let mut restoring: Journal = fixture
+        .service
+        .store
+        .get("journal", &restore_id)
+        .unwrap()
+        .unwrap();
+    restoring.phase = "publishing".into();
+    fixture
+        .service
+        .store
+        .put("journal", &restore_id, &restoring.account_id, &restoring)
+        .unwrap();
+    // Newer confirmed restore also reached its all-after boundary. Startup
+    // visits it first; committing it changes the older source to restored.
+    for path in &restore.paths {
+        std::fs::remove_file(path).unwrap();
+    }
+    let store_root = fixture.service.store.root.clone();
+    let vault = fixture.service.vault.clone();
+    let paths = fixture.service.paths.clone();
+    drop(fixture.service);
+    let reopened = Service::new(Arc::new(Store::open(&store_root).unwrap()), vault, paths).unwrap();
+    assert_eq!(
+        reopened
+            .store
+            .get::<Journal>("journal", source_id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "restored"
+    );
+    assert_eq!(
+        reopened
+            .store
+            .get::<Journal>("journal", &restore_id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "committed"
+    );
+    assert!(
+        !reopened
+            .pending_configuration_recovery(ClientKind::Claude)
+            .unwrap()
+    );
+    assert_unobserved(&reopened, "not_configured");
+    assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
+    assert!(
+        reopened
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .iter()
+            .all(|binding| !binding.enabled)
+    );
+}
+
 fn frozen(fixture: &tests::PolicyFixture) -> ClaudeContext {
     let observation = fixture
         .service
@@ -73,7 +530,7 @@ fn claude_b3a_full_producer_qualifies_local_clear_remote_unknown_and_native_rece
             &fixture.model,
         )
         .unwrap();
-    assert!(!preview.can_apply && preview.can_export_import);
+    assert!(preview.can_apply && !preview.can_export_import);
     let json = serde_json::to_value(&preview).unwrap();
     let receipt = &json["claude_configuration_target"];
     assert_eq!(receipt.as_object().unwrap().len(), 2);
@@ -160,10 +617,9 @@ fn claude_b3a_display_hint_never_replaces_full_authority_and_export_consumes_lat
 
     let preview = fixture
         .service
-        .preview_client_config(
+        .preview_claude_diagnostic(
             &fixture.record.view.id,
             fixture.record.view.revision,
-            ClientKind::Claude,
             &fixture.model,
         )
         .unwrap();
@@ -452,10 +908,9 @@ fn claude_b3a_diagnostic_vault_return_rechecks_actor_endpoint_and_fresh_expiry()
         }
         let preview = fixture
             .service
-            .preview_client_config(
+            .preview_claude_diagnostic(
                 &fixture.record.view.id,
                 fixture.record.view.revision,
-                ClientKind::Claude,
                 &fixture.model,
             )
             .unwrap();
@@ -609,10 +1064,9 @@ fn claude_b3a_diagnostic_alias_traversal_and_late_parent_swap_never_write_client
         }
         let preview = fixture
             .service
-            .preview_client_config(
+            .preview_claude_diagnostic(
                 &fixture.record.view.id,
                 fixture.record.view.revision,
-                ClientKind::Claude,
                 &fixture.model,
             )
             .unwrap();

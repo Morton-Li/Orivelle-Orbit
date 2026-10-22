@@ -103,6 +103,7 @@ struct PreviewEntry {
     configuration_target: Option<CodexConfigurationTarget>,
     claude_configuration_target: Option<ClaudeConfigurationTarget>,
     claude_diagnostic_scope: Option<String>,
+    claude_context: Option<crate::config::ClaudeContext>,
     catalog_context: Option<CodexContext>,
 }
 struct ConfigObservation {
@@ -2483,6 +2484,22 @@ impl Service {
         Ok(())
     }
     fn project_configuration_revision(&self, target: &mut ClientView) {
+        if target.client == ClientKind::Claude {
+            let current = self.claude_revision();
+            if current.as_ref().is_err()
+                || target.configuration_revision != current.as_ref().ok().cloned().flatten()
+            {
+                target.loaded_evidence = None;
+                target.connection_evidence = None;
+                target.loaded_state = "unconfirmed".into();
+                target.connection_state = "not_tested".into();
+                if target.configuration_state == "saved" {
+                    target.configuration_state = "conflict".into();
+                }
+            }
+            target.configuration_revision = current.ok().flatten();
+            return;
+        }
         if target.client != ClientKind::Codex {
             return;
         }
@@ -2580,6 +2597,10 @@ impl Service {
     }
     fn coordinate_configuration_recovery(&self) -> Result<()> {
         for journal in self.store.list::<Journal>("journal", None)? {
+            if journal.client == ClientKind::Claude {
+                self.coordinate_claude_journal(&journal)?;
+                continue;
+            }
             if !["publishing", "conflict", "committed"].contains(&journal.phase.as_str())
                 || journal.phase == "committed"
                     && self.store.get::<Journal>("backup", &journal.id)?.is_some()
@@ -2673,6 +2694,27 @@ impl Service {
         self.preview_client_config(id, revision, client, model_id)
     }
     pub fn preview_client_config(
+        &self,
+        id: &str,
+        revision: u64,
+        client: ClientKind,
+        model_id: &str,
+    ) -> Result<ConfigPreview> {
+        if client == ClientKind::Claude {
+            return self.preview_claude_config(id, revision, model_id);
+        }
+        self.preview_client_config_legacy(id, revision, client, model_id)
+    }
+    #[cfg(test)]
+    fn preview_claude_diagnostic(
+        &self,
+        id: &str,
+        revision: u64,
+        model_id: &str,
+    ) -> Result<ConfigPreview> {
+        self.preview_client_config_legacy(id, revision, ClientKind::Claude, model_id)
+    }
+    fn preview_client_config_legacy(
         &self,
         id: &str,
         revision: u64,
@@ -2927,6 +2969,7 @@ impl Service {
                     configuration_target: observation.configuration_target,
                     claude_configuration_target: observation.claude_configuration_target,
                     claude_diagnostic_scope,
+                    claude_context: None,
                     catalog_context,
                 },
             );
@@ -3016,7 +3059,7 @@ impl Service {
             return Err(fail("confirmation_required"));
         }
         validate_uuid(id)?;
-        let (view, policy, configuration_target) = {
+        let (view, policy, configuration_target, claude_context) = {
             let previews = self
                 .previews
                 .lock()
@@ -3026,6 +3069,7 @@ impl Service {
                 entry.view.clone(),
                 entry.policy.clone(),
                 entry.configuration_target.clone(),
+                entry.claude_context.clone(),
             )
         };
         let result = async {
@@ -3038,19 +3082,34 @@ impl Service {
                 ));
             }
             // This gate precedes fresh_session(), including its Vault and cache writes.
-            self.validate_configuration(view.client, &policy, configuration_target.as_ref())?;
+            let authority = || {
+                if view.client == ClientKind::Claude {
+                    self.validate_claude_context(
+                        claude_context
+                            .as_ref()
+                            .ok_or_else(|| fail("claude_configuration_context_unverified"))?,
+                        false,
+                    )
+                } else {
+                    self.validate_configuration(view.client, &policy, configuration_target.as_ref())
+                }
+            };
+            authority()?;
             let context = view
                 .context
                 .as_ref()
                 .ok_or_else(|| fail("preview_expired"))?;
             self.refresh_account_cache(&context.connection_id, false)
                 .await?;
-            self.validate_configuration(view.client, &policy, configuration_target.as_ref())?;
+            authority()?;
             if view.client == ClientKind::Codex {
                 self.current_connection(&context.connection_id, context.connection_revision)
                     .map_err(|_| fail("codex_catalog_scope_changed"))?;
             }
             let _ = self.list_models(&context.connection_id).await?;
+            if view.client == ClientKind::Claude {
+                authority()?;
+            }
             self.apply_client_config(id, true, false)
         }
         .await;
@@ -3076,6 +3135,9 @@ impl Service {
             return Err(fail("integration_authorization_required"));
         }
         let entry = self.take_preview(id, if restore { "restore" } else { "apply" })?;
+        if entry.view.client == ClientKind::Claude {
+            return self.apply_claude_entry(entry, restore);
+        }
         let _gate = self
             .account_gate
             .lock()
@@ -3269,6 +3331,9 @@ impl Service {
                 .get::<Journal>("journal", backup_id)?
                 .filter(|j| ["publishing", "conflict", "committed"].contains(&j.phase.as_str())))
             .ok_or_else(|| fail("backup_invalid"))?;
+        if backup.client == ClientKind::Claude {
+            return self.preview_claude_restore(backup_id, backup);
+        }
         let observation = self.observe_configuration(backup.client)?;
         let mut blocked = self
             .require_configuration(&observation, None, None)
@@ -3361,6 +3426,7 @@ impl Service {
                     configuration_target: observation.configuration_target,
                     claude_configuration_target: observation.claude_configuration_target,
                     claude_diagnostic_scope: None,
+                    claude_context: None,
                     catalog_context,
                 },
             );
@@ -4861,6 +4927,15 @@ mod tests {
                 )
                 .unwrap()
         }
+        fn diagnostic_preview(&self) -> ConfigPreview {
+            self.service
+                .preview_claude_diagnostic(
+                    &self.record.view.id,
+                    self.record.view.revision,
+                    &self.model,
+                )
+                .unwrap()
+        }
         fn reset(&self) {
             self.vault.calls.store(0, Ordering::SeqCst);
             self.vault.mutations.store(0, Ordering::SeqCst);
@@ -5979,7 +6054,11 @@ mod tests {
     fn policy_change_while_vault_read_is_blocked_prevents_first_apply_or_export_write() {
         for client in [ClientKind::Codex, ClientKind::Claude] {
             let f = policy_fixture(client);
-            let preview = f.preview();
+            let preview = if client == ClientKind::Claude {
+                f.diagnostic_preview()
+            } else {
+                f.preview()
+            };
             assert!(if client == ClientKind::Codex {
                 preview.can_apply
             } else {
@@ -6049,7 +6128,7 @@ mod tests {
         assert_eq!(f.bindings(), bindings);
         assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
         let f = policy_fixture(ClientKind::Claude);
-        let preview = f.preview();
+        let preview = f.diagnostic_preview();
         assert!(preview.can_export_import);
         let target = f.service.store.root.join("synthetic-diagnostic.json");
         std::fs::write(&target, b"keep original").unwrap();
@@ -7687,12 +7766,7 @@ mod tests {
             .id
             .clone();
         let blocked = original
-            .preview_client_config(
-                &record.view.id,
-                record.view.revision,
-                ClientKind::Claude,
-                &model,
-            )
+            .preview_claude_diagnostic(&record.view.id, record.view.revision, &model)
             .unwrap();
         assert!(!blocked.can_apply && !blocked.can_export_import);
         let mut paths = original.paths.clone();
@@ -7732,12 +7806,7 @@ mod tests {
                 .unwrap();
         }
         let preview = service
-            .preview_client_config(
-                &record.view.id,
-                record.view.revision,
-                ClientKind::Claude,
-                &model,
-            )
+            .preview_claude_diagnostic(&record.view.id, record.view.revision, &model)
             .unwrap();
         assert!(!preview.can_apply && preview.can_export_import);
         assert_eq!(
@@ -7756,12 +7825,7 @@ mod tests {
                 .join("claude_desktop_config.json"),
         ] {
             let blocked = service
-                .preview_client_config(
-                    &record.view.id,
-                    record.view.revision,
-                    ClientKind::Claude,
-                    &model,
-                )
+                .preview_claude_diagnostic(&record.view.id, record.view.revision, &model)
                 .unwrap();
             assert!(blocked.can_export_import);
             let before = read_file(&protected).unwrap();
@@ -7827,12 +7891,7 @@ mod tests {
         assert_eq!(client.loaded_state, "unconfirmed");
         assert_eq!(client.connection_state, "not_tested");
         let next = service
-            .preview_client_config(
-                &record.view.id,
-                record.view.revision,
-                ClientKind::Claude,
-                &model,
-            )
+            .preview_claude_diagnostic(&record.view.id, record.view.revision, &model)
             .unwrap();
         cache.models[0].revision = "changed-synthetic-capability".into();
         service
