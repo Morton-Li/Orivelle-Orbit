@@ -3059,7 +3059,7 @@ impl Service {
             return Err(fail("confirmation_required"));
         }
         validate_uuid(id)?;
-        let (view, policy, configuration_target, claude_context) = {
+        let (view, policy, configuration_target, claude_context, journal_id) = {
             let previews = self
                 .previews
                 .lock()
@@ -3070,6 +3070,7 @@ impl Service {
                 entry.policy.clone(),
                 entry.configuration_target.clone(),
                 entry.claude_context.clone(),
+                entry.journal_id.clone(),
             )
         };
         let result = async {
@@ -3089,6 +3090,11 @@ impl Service {
                             .as_ref()
                             .ok_or_else(|| fail("claude_configuration_context_unverified"))?,
                         false,
+                    )?;
+                    self.ensure_no_other_claude_recovery(
+                        journal_id
+                            .as_deref()
+                            .ok_or_else(|| fail("preview_expired"))?,
                     )
                 } else {
                     self.validate_configuration(view.client, &policy, configuration_target.as_ref())
@@ -3101,7 +3107,20 @@ impl Service {
                 .ok_or_else(|| fail("preview_expired"))?;
             self.refresh_account_cache(&context.connection_id, false)
                 .await?;
-            authority()?;
+            if view.client == ClientKind::Claude {
+                self.validate_claude_refresh_context(
+                    claude_context
+                        .as_ref()
+                        .ok_or_else(|| fail("claude_configuration_context_unverified"))?,
+                )?;
+                self.ensure_no_other_claude_recovery(
+                    journal_id
+                        .as_deref()
+                        .ok_or_else(|| fail("preview_expired"))?,
+                )?;
+            } else {
+                authority()?;
+            }
             if view.client == ClientKind::Codex {
                 self.current_connection(&context.connection_id, context.connection_revision)
                     .map_err(|_| fail("codex_catalog_scope_changed"))?;

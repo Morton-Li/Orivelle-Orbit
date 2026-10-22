@@ -28,6 +28,667 @@ fn assert_unobserved(service: &Service, state: &str) {
     }
 }
 
+#[tokio::test]
+async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_revisions() {
+    let fixture = tests::policy_fixture(ClientKind::Claude);
+    let wire: Value =
+        serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
+    let bootstrap = wire["bootstrap_reply"].clone();
+    let models_revision = sha256(b"synthetic independent models endpoint revision");
+    assert_ne!(
+        bootstrap["data"]["meta"]["catalog_revision"],
+        models_revision
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let requests = calls.clone();
+    fixture.service.http.scripted(Arc::new(move |request| {
+        assert_eq!(request.method, Method::GET);
+        let response = if request.url.ends_with("/api/v1/orbit/bootstrap") {
+            requests.lock().unwrap().push("bootstrap");
+            bootstrap.clone()
+        } else {
+            assert!(request.url.contains("/api/v1/orbit/models?node_id="));
+            requests.lock().unwrap().push("models");
+            json!({"data": bootstrap["data"]["models"], "meta":{"revision":models_revision}})
+        };
+        Box::pin(async move {
+            Ok(crate::network::RemoteResponse {
+                status: 200,
+                request_id: None,
+                bytes: serde_json::to_vec(&response).unwrap(),
+            })
+        })
+    }));
+    // This is the Service entry used by the Tauri preview/apply commands.
+    let preview = fixture
+        .service
+        .preview_client_config_refreshed(
+            &fixture.record.view.id,
+            fixture.record.view.revision,
+            ClientKind::Claude,
+            &fixture.model,
+        )
+        .await
+        .unwrap();
+    assert!(preview.can_apply && preview.paths.len() == 3);
+    assert!(!fixture.service.paths.claude_library.exists());
+    let saved = fixture
+        .service
+        .apply_client_config_refreshed(&preview.id, true)
+        .await
+        .unwrap();
+    assert_eq!(saved.state, "saved");
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["bootstrap", "models", "bootstrap", "models"]
+    );
+    assert!(preview.paths.iter().all(|path| Path::new(path).is_file()));
+    assert_unobserved(&fixture.service, "saved");
+    let restore = fixture
+        .service
+        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    fixture
+        .service
+        .apply_client_config(&restore.id, true, true)
+        .unwrap();
+    assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
+}
+
+fn preview_journal(service: &Service, preview: &ConfigPreview) -> Journal {
+    let id = service
+        .previews
+        .lock()
+        .unwrap()
+        .get(&preview.id)
+        .unwrap()
+        .journal_id
+        .clone()
+        .unwrap();
+    service.store.get("journal", &id).unwrap().unwrap()
+}
+
+fn grants(service: &Service) -> Value {
+    serde_json::to_value(
+        service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn claude_b3c_automatic_command_consumes_late_authority_changes_before_vault_or_writes() {
+    for fault in [
+        "target",
+        "local-policy",
+        "helper",
+        "account",
+        "epoch",
+        "key",
+        "node",
+        "endpoint",
+        "model",
+        "catalog",
+    ] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let preview = automatic_preview(&f.service, &f);
+        let journal = preview_journal(&f.service, &preview);
+        let before_grants = grants(&f.service);
+        let original_record = f.record.clone();
+        let original_cache = f.service.account_cache(&f.record).unwrap();
+        let helper = std::fs::read(&f.service.paths.helper).unwrap();
+        let mut record = original_record.clone();
+        let mut cache = original_cache.clone();
+        let epoch = authorization_epoch_reference(
+            &record.view.panel_origin,
+            &record.installation_id,
+            &record.view.account_id,
+        );
+        match fault {
+            "target" => f.target.store(1, Ordering::SeqCst),
+            "local-policy" => f.epoch.store(1, Ordering::SeqCst),
+            "helper" => {
+                std::fs::write(&f.service.paths.helper, b"replaced synthetic helper").unwrap()
+            }
+            "account" => record.view.account_id = "synthetic-other-actor".into(),
+            "epoch" => f.service.store.set_meta(&epoch, "999").unwrap(),
+            "key" => cache.keys[0].state = "revoked".into(),
+            "node" => cache.nodes[0].available = false,
+            "endpoint" => {
+                cache.claude_endpoints.insert(
+                    record.view.node_id.clone().unwrap(),
+                    "https://late-claude.example.test".into(),
+                );
+            }
+            "model" => cache.models[0].revision = sha256(b"late model"),
+            "catalog" => cache.catalog_revision = sha256(b"late catalog"),
+            _ => unreachable!(),
+        }
+        f.service
+            .store
+            .put(
+                "connection",
+                &record.view.id,
+                &record.view.account_id,
+                &record,
+            )
+            .unwrap();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        f.service.http.scripted(Arc::new(|_| {
+            panic!("late preflight must precede Panel refresh")
+        }));
+        f.vault.calls.store(0, Ordering::SeqCst);
+        f.vault.mutations.store(0, Ordering::SeqCst);
+        let revision = f.service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            f.service
+                .apply_client_config_refreshed(&preview.id, true)
+                .await
+                .unwrap_err()
+                .code,
+            match fault {
+                "target" => "claude_configuration_target_changed",
+                "helper" => "helper_unavailable",
+                _ => "claude_configuration_context_changed",
+            },
+            "{fault}"
+        );
+        assert_eq!(
+            f.service.store.snapshot().unwrap().revision,
+            revision,
+            "{fault}"
+        );
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0, "{fault}");
+        assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+        assert_eq!(grants(&f.service), before_grants);
+        assert!(!f.service.paths.claude_library.parent().unwrap().exists());
+        assert!(
+            f.service
+                .store
+                .list::<Journal>("backup", None)
+                .unwrap()
+                .is_empty()
+        );
+        let current: Journal = f
+            .service
+            .store
+            .get("journal", &journal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.phase, "prepared");
+        assert_eq!(current.ciphertext, journal.ciphertext);
+        // Returning the environment to the original state cannot revive a consumed preview.
+        f.target.store(0, Ordering::SeqCst);
+        f.epoch.store(0, Ordering::SeqCst);
+        std::fs::write(&f.service.paths.helper, &helper).unwrap();
+        f.service
+            .store
+            .set_meta(&epoch, &original_record.authorization_epoch.to_string())
+            .unwrap();
+        f.service
+            .store
+            .put(
+                "connection",
+                &original_record.view.id,
+                &original_record.view.account_id,
+                &original_record,
+            )
+            .unwrap();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &original_record.view.id,
+                &original_record.view.account_id,
+                &original_cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service
+                .apply_client_config_refreshed(&preview.id, true)
+                .await
+                .unwrap_err()
+                .code,
+            "preview_expired",
+            "{fault}"
+        );
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn claude_b3c_refresh_rejects_late_endpoint_and_final_model_scope_without_first_write() {
+    for fault in ["endpoint", "model", "catalog"] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let wire: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
+        let bootstrap = wire["bootstrap_reply"].clone();
+        let models_revision = sha256(b"independent models revision");
+        let stage = Arc::new(AtomicU64::new(0));
+        let late = stage.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let requests = calls.clone();
+        f.service.http.scripted(Arc::new(move |request| {
+            let mut response = bootstrap.clone();
+            if request.url.ends_with("/api/v1/orbit/bootstrap") {
+                requests.lock().unwrap().push("bootstrap");
+                if late.load(Ordering::SeqCst) == 1 && fault == "endpoint" {
+                    response["data"]["nodes"][0]["claude_base_url"] = json!("https://late-claude.example.test");
+                }
+            } else {
+                assert!(request.url.contains("/api/v1/orbit/models?node_id="));
+                requests.lock().unwrap().push("models");
+                response = json!({"data": response["data"]["models"], "meta":{"revision":models_revision}});
+                if late.load(Ordering::SeqCst) == 1 {
+                    if fault == "model" { response["data"][0]["display_name"] = json!("Late changed model"); }
+                    if fault == "catalog" { response["meta"]["revision"] = json!(sha256(b"late catalog revision")); }
+                }
+            }
+            Box::pin(async move { Ok(crate::network::RemoteResponse {status:200, request_id:None, bytes:serde_json::to_vec(&response).unwrap()}) })
+        }));
+        let preview = f
+            .service
+            .preview_client_config_refreshed(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Claude,
+                &f.model,
+            )
+            .await
+            .unwrap();
+        let journal = preview_journal(&f.service, &preview);
+        let before_grants = grants(&f.service);
+        stage.store(1, Ordering::SeqCst);
+        assert_eq!(
+            f.service
+                .apply_client_config_refreshed(&preview.id, true)
+                .await
+                .unwrap_err()
+                .code,
+            "claude_configuration_context_changed",
+            "{fault}"
+        );
+        let expected: &[&str] = if fault == "endpoint" {
+            &["bootstrap", "models", "bootstrap"]
+        } else {
+            &["bootstrap", "models", "bootstrap", "models"]
+        };
+        assert_eq!(calls.lock().unwrap().as_slice(), expected, "{fault}");
+        assert_eq!(grants(&f.service), before_grants);
+        assert!(!f.service.paths.claude_library.parent().unwrap().exists());
+        let current: Journal = f
+            .service
+            .store
+            .get("journal", &journal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.phase, "prepared");
+        assert_eq!(current.ciphertext, journal.ciphertext);
+        stage.store(0, Ordering::SeqCst);
+        assert_eq!(
+            f.service
+                .apply_client_config_refreshed(&preview.id, true)
+                .await
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+        assert_eq!(calls.lock().unwrap().as_slice(), expected);
+    }
+}
+
+#[test]
+fn claude_b3c_automatic_apply_rechecks_vault_return_before_first_file_or_grant() {
+    for fault in ["target", "helper", "endpoint"] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let preview = automatic_preview(&f.service, &f);
+        let before_grants = grants(&f.service);
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (resume, released) = std::sync::mpsc::channel();
+        *f.vault.pause.lock().unwrap() = Some((entered, released));
+        let worker = f.service.clone();
+        let id = preview.id.clone();
+        let thread = std::thread::spawn(move || worker.apply_client_config(&id, true, false));
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        match fault {
+            "target" => f.target.store(1, Ordering::SeqCst),
+            "helper" => std::fs::write(
+                &f.service.paths.helper,
+                b"late synthetic helper replacement",
+            )
+            .unwrap(),
+            "endpoint" => {
+                let mut cache = f.service.account_cache(&f.record).unwrap();
+                cache.claude_endpoints.insert(
+                    f.record.view.node_id.clone().unwrap(),
+                    "https://late-claude.example.test".into(),
+                );
+                f.service
+                    .store
+                    .put(
+                        "account-cache",
+                        &f.record.view.id,
+                        &f.record.view.account_id,
+                        &cache,
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        resume.send(()).unwrap();
+        assert_eq!(
+            thread.join().unwrap().unwrap_err().code,
+            match fault {
+                "target" => "claude_configuration_target_changed",
+                "helper" => "helper_unavailable",
+                _ => "claude_configuration_context_changed",
+            }
+        );
+        assert_eq!(grants(&f.service), before_grants);
+        assert!(!f.service.paths.claude_library.parent().unwrap().exists());
+        assert_eq!(
+            f.service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+    }
+}
+
+#[test]
+fn claude_b3c_account_switch_and_same_account_node_switch_manage_only_their_own_grants() {
+    for old_authority in ["active", "logout", "deleted"] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let a_preview = automatic_preview(&f.service, &f);
+        f.service
+            .apply_client_config(&a_preview.id, true, false)
+            .unwrap();
+        let a_bytes: Vec<_> = a_preview
+            .paths
+            .iter()
+            .map(|p| read_file(Path::new(p)).unwrap())
+            .collect();
+        let a_binding: HelperBinding = f
+            .service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .into_iter()
+            .find(|g| g.enabled)
+            .unwrap();
+        let installation = f.service.installation(&f.record).unwrap();
+        let mut b = f.record.clone();
+        b.view.id = uuid();
+        b.view.account_id = "synthetic-account-B".into();
+        b.session_reference = format!("synthetic-session/{}", b.view.id);
+        b.credential_reference = None;
+        b.view.credential_revision = None;
+        b.api_key_id = None;
+        b.cleanup_references.clear();
+        let mut cache = f.service.account_cache(&f.record).unwrap();
+        cache.account.id = b.view.account_id.clone();
+        cache.account.label = "Synthetic B".into();
+        let wire: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
+        let mut token = wire["token_reply"]["data"].clone();
+        token["account_id"] = json!(b.view.account_id);
+        let (_, session) = serde_json::from_value::<TokenResponse>(token)
+            .unwrap()
+            .into_session(&installation)
+            .unwrap();
+        f.service.save_session(&b, session).unwrap();
+        f.service
+            .store
+            .set_meta(
+                &authorization_epoch_reference(
+                    &b.view.panel_origin,
+                    &b.installation_id,
+                    &b.view.account_id,
+                ),
+                &b.authorization_epoch.to_string(),
+            )
+            .unwrap();
+        f.service
+            .store
+            .put("connection", &b.view.id, &b.view.account_id, &b)
+            .unwrap();
+        let mut delivery = wire["credential_reply"]["data"].clone();
+        delivery["api_key_id"] = json!("synthetic-B-key");
+        f.service
+            .accept_credential(
+                &mut b,
+                &installation,
+                serde_json::from_value(delivery).unwrap(),
+            )
+            .unwrap();
+        cache.keys[0].api_key_id = b.api_key_id.clone();
+        f.service
+            .store
+            .put("account-cache", &b.view.id, &b.view.account_id, &cache)
+            .unwrap();
+        f.service.select_connection(&b.view.id).unwrap();
+        let first = f
+            .service
+            .preview_client_config(&b.view.id, b.view.revision, ClientKind::Claude, &f.model)
+            .unwrap();
+        let first_saved = f
+            .service
+            .apply_client_config(&first.id, true, false)
+            .unwrap();
+        let first_binding = f
+            .service
+            .store
+            .list::<HelperBinding>("binding", Some(&b.view.account_id))
+            .unwrap()
+            .into_iter()
+            .find(|g| g.enabled)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                f.service
+                    .store
+                    .get::<HelperBinding>("binding", &a_binding.id)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(&a_binding).unwrap()
+        );
+        if old_authority == "logout" {
+            f.service.commit_logout(&f.record.view.id).unwrap();
+        }
+        if old_authority == "deleted" {
+            f.service.store.delete("binding", &a_binding.id).unwrap();
+        }
+        let a_authority = serde_json::to_value(
+            f.service
+                .store
+                .get::<HelperBinding>("binding", &a_binding.id)
+                .unwrap(),
+        )
+        .unwrap();
+        // A same-account node switch manages B's previous grant and uses the
+        // new Claude root, while A's authority stays outside the transaction.
+        let mut next = cache.nodes[0].clone();
+        next.id = "synthetic-B-next-node".into();
+        next.base_url = "https://b-next.example.test/v1".into();
+        next.revision = sha256(b"B next node");
+        let next_id = next.id.clone();
+        cache.nodes.push(next);
+        cache
+            .claude_endpoints
+            .insert(next_id.clone(), "https://b-next.example.test".into());
+        f.service
+            .store
+            .put("account-cache", &b.view.id, &b.view.account_id, &cache)
+            .unwrap();
+        f.service
+            .select_node(&b.view.id, &next_id, b.view.revision)
+            .unwrap();
+        b = f.service.record(&b.view.id).unwrap();
+        let second = f
+            .service
+            .preview_client_config(&b.view.id, b.view.revision, ClientKind::Claude, &f.model)
+            .unwrap();
+        let second_saved = f
+            .service
+            .apply_client_config(&second.id, true, false)
+            .unwrap();
+        let profile: Value =
+            serde_json::from_slice(&std::fs::read(&second.paths[0]).unwrap()).unwrap();
+        assert_eq!(
+            profile["inferenceGatewayBaseUrl"],
+            "https://b-next.example.test"
+        );
+        assert!(
+            !f.service
+                .store
+                .get::<HelperBinding>("binding", &first_binding.id)
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        let restore = f
+            .service
+            .preview_restore(second_saved.backup_group_id.as_ref().unwrap())
+            .unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert!(
+            f.service
+                .store
+                .get::<HelperBinding>("binding", &first_binding.id)
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+        let restore = f
+            .service
+            .preview_restore(first_saved.backup_group_id.as_ref().unwrap())
+            .unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        for (path, bytes) in a_preview.paths.iter().zip(a_bytes) {
+            assert_eq!(read_file(Path::new(path)).unwrap(), bytes);
+        }
+        assert_eq!(
+            serde_json::to_value(
+                f.service
+                    .store
+                    .get::<HelperBinding>("binding", &a_binding.id)
+                    .unwrap()
+            )
+            .unwrap(),
+            a_authority,
+            "{old_authority}"
+        );
+        assert!(
+            f.service
+                .store
+                .list::<HelperBinding>("binding", Some(&b.view.account_id))
+                .unwrap()
+                .iter()
+                .all(|grant| !grant.enabled)
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_b3c_pending_or_conflict_blocks_new_and_already_prepared_applies_and_external_restore_stops()
+ {
+    for phase in ["publishing", "conflict"] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let earlier = automatic_preview(&f.service, &f);
+        let command = automatic_preview(&f.service, &f);
+        let pending = automatic_preview(&f.service, &f);
+        let mut journal = preview_journal(&f.service, &pending);
+        journal.phase = phase.into();
+        f.service
+            .store
+            .put("journal", &journal.id, &journal.account_id, &journal)
+            .unwrap();
+        let blocked = automatic_preview(&f.service, &f);
+        assert!(!blocked.can_apply);
+        assert_eq!(
+            blocked.blocking_reason.as_deref(),
+            Some("configuration_recovery_required")
+        );
+        let before_grants = grants(&f.service);
+        f.vault.calls.store(0, Ordering::SeqCst);
+        assert_eq!(
+            f.service
+                .apply_client_config(&earlier.id, true, false)
+                .unwrap_err()
+                .code,
+            "configuration_recovery_required",
+            "{phase}"
+        );
+        f.service.http.scripted(Arc::new(|_| {
+            panic!("pending recovery must precede Panel refresh")
+        }));
+        assert_eq!(
+            f.service
+                .apply_client_config_refreshed(&command.id, true)
+                .await
+                .unwrap_err()
+                .code,
+            "configuration_recovery_required",
+            "{phase}"
+        );
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(grants(&f.service), before_grants);
+        assert!(!f.service.paths.claude_library.parent().unwrap().exists());
+    }
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let preview = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let restore = f
+        .service
+        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    std::fs::write(&preview.paths[1], b"external metadata edit").unwrap();
+    let files: Vec<_> = preview
+        .paths
+        .iter()
+        .map(|p| read_file(Path::new(p)).unwrap())
+        .collect();
+    let before_grants = grants(&f.service);
+    assert_eq!(
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap_err()
+            .code,
+        "configuration_conflict"
+    );
+    for (path, bytes) in preview.paths.iter().zip(files) {
+        assert_eq!(read_file(Path::new(path)).unwrap(), bytes);
+    }
+    assert_eq!(grants(&f.service), before_grants);
+    assert_eq!(
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap_err()
+            .code,
+        "preview_expired"
+    );
+}
+
 #[test]
 fn claude_b3b_service_saves_reopens_and_restores_exact_three_files_without_preview_writes() {
     for existing in [false, true] {

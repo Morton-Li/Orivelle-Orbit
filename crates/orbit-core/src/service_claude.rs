@@ -34,6 +34,20 @@ fn scope_revision(context: &ClaudeContext) -> Result<String> {
 }
 
 impl Service {
+    pub(super) fn ensure_no_other_claude_recovery(&self, own_journal_id: &str) -> Result<()> {
+        for journal in self.store.list::<Journal>("journal", None)? {
+            if journal.client == ClientKind::Claude
+                && journal.id != own_journal_id
+                && (["publishing", "conflict"].contains(&journal.phase.as_str())
+                    || journal.phase == "committed"
+                        && self.store.get::<Journal>("backup", &journal.id)?.is_none())
+            {
+                return Err(fail("configuration_recovery_required"));
+            }
+        }
+        Ok(())
+    }
+
     fn claude_engine<'a>(
         &'a self,
         policy: &'a dyn Fn() -> Result<()>,
@@ -306,7 +320,16 @@ impl Service {
             self.validate_claude_configuration(
                 &entry.policy,
                 entry.claude_configuration_target.as_ref(),
-            )
+            )?;
+            if !restore {
+                self.ensure_no_other_claude_recovery(
+                    entry
+                        .journal_id
+                        .as_deref()
+                        .ok_or_else(|| fail("preview_expired"))?,
+                )?;
+            }
+            Ok(())
         };
         let context_guard = |current: &ClaudeContext, restoring: bool| {
             if current != frozen || restoring != restore {
@@ -853,6 +876,22 @@ impl Service {
         context: &ClaudeContext,
         restoring: bool,
     ) -> Result<()> {
+        self.validate_claude_authority(context, restoring, true)
+    }
+
+    pub(super) fn validate_claude_refresh_context(&self, context: &ClaudeContext) -> Result<()> {
+        // Bootstrap and models have independent catalog revisions. The live
+        // actor/key/node must already match; compare the complete model scope
+        // only after the models endpoint has refreshed it, before any apply.
+        self.validate_claude_authority(context, false, false)
+    }
+
+    fn validate_claude_authority(
+        &self,
+        context: &ClaudeContext,
+        restoring: bool,
+        compare_catalog: bool,
+    ) -> Result<()> {
         let observation = self.observe_configuration(ClientKind::Claude)?;
         self.require_claude_configuration(&observation, None, Some(&context.configuration_target))?;
         if context.contract_version != 1
@@ -918,12 +957,13 @@ impl Service {
             || record.view.provider_id != context.provider_id
             || node.is_none_or(|node| node.revision != context.node_revision)
             || cache.claude_endpoints.get(&context.node_id) != Some(&context.claude_base_url)
-            || cache.catalog_revision != context.catalog_revision
-            || self.claude_inputs(&record, &cache) != context.models
-            || !context.models.iter().any(|model| {
-                model.id == context.selected_model_id
-                    && model.revision == context.selected_model_revision
-            })
+            || compare_catalog
+                && (cache.catalog_revision != context.catalog_revision
+                    || self.claude_inputs(&record, &cache) != context.models
+                    || !context.models.iter().any(|model| {
+                        model.id == context.selected_model_id
+                            && model.revision == context.selected_model_revision
+                    }))
             || key.is_none_or(|key| {
                 key.state != "active"
                     || key.expires_at != context.credential_expires_at
