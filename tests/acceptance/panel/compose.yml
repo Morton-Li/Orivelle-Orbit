@@ -1,0 +1,132 @@
+name: ${ORBIT_ACCEPTANCE_PROJECT:?required}
+
+x-panel: &panel
+  image: ${ORBIT_ACCEPTANCE_PHP_IMAGE:?required}
+  build:
+    context: .
+    args:
+      PHP_BASE: ${ORBIT_ACCEPTANCE_PHP_BASE:?required}
+  working_dir: /app
+  init: true
+  user: "33:33"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  labels:
+    codex.task: orbit-desktop-01a132f1
+    codex.scope: panel-acceptance
+  env_file: ["${ORBIT_ACCEPTANCE_PANEL_ENV:?required}"]
+  tmpfs: ["/tmp", "/usr/local/var/run"]
+  volumes:
+    - "${ORBIT_ACCEPTANCE_SOURCE:?required}:/app:ro"
+    - storage:/app/storage
+    - bootstrap:/app/bootstrap/cache
+
+services:
+  mysql:
+    image: mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242
+    init: true
+    labels:
+      codex.task: orbit-desktop-01a132f1
+      codex.scope: panel-acceptance
+    env_file: ["${ORBIT_ACCEPTANCE_MYSQL_ENV:?required}"]
+    volumes: ["mysql:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+  prepare:
+    <<: *panel
+    profiles: [setup]
+    user: "0:0"
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    volumes:
+      - "${ORBIT_ACCEPTANCE_SOURCE:?required}:/app:ro"
+      - storage:/app/storage
+      - bootstrap:/app/bootstrap/cache
+      - "${ORBIT_ACCEPTANCE_CERTS:?required}:/fixture-certs:ro"
+      - certificates:/ingress-certs
+    command:
+      - php
+      - "-r"
+      - >-
+        foreach (['storage/framework/cache/data','storage/framework/sessions','storage/framework/views','storage/logs','bootstrap/cache'] as $$p) {
+        if (!is_dir($$p) && !mkdir($$p,0700,true)) exit(1); }
+        foreach (['storage','bootstrap/cache'] as $$root) {
+        $$it=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($$root,FilesystemIterator::SKIP_DOTS),RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($$it as $$f) { if ($$f->isLink()) exit(1); chown($$f->getPathname(),33); chgrp($$f->getPathname(),33); chmod($$f->getPathname(),$$f->isDir()?0700:0600); }
+        chown($$root,33); chgrp($$root,33); chmod($$root,0700); }
+        chmod('/ingress-certs',0700);
+        foreach (['server.pem','server.key','wrong-san.pem','wrong-san.key'] as $$name) {
+        $$from='/fixture-certs/'.$$name; $$to='/ingress-certs/'.$$name;
+        if (is_link($$from) || !is_file($$from) || !copy($$from,$$to)) exit(1);
+        if (!chmod($$to,0600) || !chown($$to,10001) || !chgrp($$to,10001)) exit(1); }
+        if (!chown('/ingress-certs',10001) || !chgrp('/ingress-certs',10001)) exit(1);
+  panel:
+    <<: *panel
+    depends_on:
+      mysql: { condition: service_healthy }
+  worker:
+    <<: *panel
+    command:
+      [php, artisan, "queue:work", "--sleep=1", "--tries=1", "--timeout=30"]
+    depends_on:
+      mysql: { condition: service_healthy }
+  scheduler:
+    <<: *panel
+    command: [php, artisan, "schedule:work", "--no-interaction"]
+    depends_on:
+      mysql: { condition: service_healthy }
+  ingress:
+    image: caddy@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    # The pinned official binary carries this file capability; its bounding set
+    # must permit exec even though our listeners use unprivileged ports.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    labels:
+      codex.task: orbit-desktop-01a132f1
+      codex.scope: panel-acceptance
+    ports:
+      - "127.0.0.1:${ORBIT_ACCEPTANCE_PORT:?required}:9443"
+      - "127.0.0.1:${ORBIT_ACCEPTANCE_WRONG_SAN_PORT:?required}:9444"
+    networks: [default, local_frontend]
+    volumes:
+      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "${ORBIT_ACCEPTANCE_SOURCE:?required}/public:/app/public:ro"
+      - "certificates:/certs:ro"
+    tmpfs:
+      - "/data:uid=10001,gid=10001,mode=0700"
+      - "/config:uid=10001,gid=10001,mode=0700"
+      - "/tmp:uid=10001,gid=10001,mode=0700"
+    depends_on: [panel]
+
+networks:
+  default:
+    internal: true
+    labels:
+      codex.task: orbit-desktop-01a132f1
+      codex.scope: panel-acceptance
+  # Only the TLS ingress joins this bridge for Docker Desktop loopback publishing.
+  local_frontend:
+    labels:
+      codex.task: orbit-desktop-01a132f1
+      codex.scope: panel-acceptance
+
+volumes:
+  mysql:
+    labels:
+      { codex.task: orbit-desktop-01a132f1, codex.scope: panel-acceptance }
+  storage:
+    labels:
+      { codex.task: orbit-desktop-01a132f1, codex.scope: panel-acceptance }
+  bootstrap:
+    labels:
+      { codex.task: orbit-desktop-01a132f1, codex.scope: panel-acceptance }
+  certificates:
+    labels:
+      { codex.task: orbit-desktop-01a132f1, codex.scope: panel-acceptance }
