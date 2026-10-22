@@ -15,6 +15,10 @@ pub struct Http {
     allow_loopback: bool,
     #[cfg(test)]
     fixture: std::sync::Arc<std::sync::Mutex<Option<FixtureHandler>>>,
+    #[cfg(test)]
+    local_acceptance_origin: Option<String>,
+    #[cfg(test)]
+    local_acceptance_callback: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 #[cfg(test)]
 pub struct FixtureRequest {
@@ -49,7 +53,99 @@ impl Http {
             allow_loopback,
             #[cfg(test)]
             fixture: Default::default(),
+            #[cfg(test)]
+            local_acceptance_origin: None,
+            #[cfg(test)]
+            local_acceptance_callback: Default::default(),
         })
+    }
+    /// One process-local CA and one reserved hostname for real local Panel
+    /// acceptance. This constructor is absent from production candidates.
+    #[cfg(test)]
+    pub(crate) fn for_local_tls_acceptance(ca_pem: &[u8], port: u16) -> Result<Self> {
+        if port == 0 || ca_pem.is_empty() || ca_pem.len() > 64 * 1024 {
+            return Err(fail("local_tls_input_invalid"));
+        }
+        let certs = reqwest::Certificate::from_pem_bundle(ca_pem)
+            .map_err(|_| fail("local_tls_ca_invalid"))?;
+        if certs.len() != 1 {
+            return Err(fail("local_tls_ca_invalid"));
+        }
+        let origin = canonical_origin(&format!("https://orbit-e2e.test:{port}"))?;
+        let client = Client::builder()
+            .tls_certs_only(certs)
+            .resolve(
+                "orbit-e2e.test",
+                std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            )
+            .https_only(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_secs(10))
+            .user_agent("Orivelle-Orbit/0.1.0")
+            .build()
+            .map_err(|_| fail("local_tls_client_unavailable"))?;
+        Ok(Self {
+            client,
+            allow_loopback: false,
+            fixture: Default::default(),
+            local_acceptance_origin: Some(origin),
+            local_acceptance_callback: Default::default(),
+        })
+    }
+    #[cfg(test)]
+    pub(crate) fn local_acceptance_callback_uri(&self) -> Result<String> {
+        if self.local_acceptance_origin.is_none() {
+            return Err(fail("local_callback_observer_outside_scope"));
+        }
+        self.local_acceptance_callback
+            .lock()
+            .map_err(|_| fail("local_callback_receipt_unavailable"))?
+            .clone()
+            .ok_or_else(|| fail("local_callback_receipt_missing"))
+    }
+    #[cfg(test)]
+    fn observe_local_callback(&self, method: &Method, url: &Url, body: &[u8]) -> Result<()> {
+        if self.local_acceptance_origin.is_none()
+            || *method != Method::POST
+            || url.path() != "/api/v1/orbit/authorization-requests"
+        {
+            return Ok(());
+        }
+        if url.query().is_some() || body.len() > 64 * 1024 {
+            return Err(fail("local_callback_request_invalid"));
+        }
+        // Deserialize only this field; state and all other unknown request
+        // fields are skipped, never copied into a trace or persisted/logged.
+        #[derive(Deserialize)]
+        struct Callback {
+            redirect_uri: String,
+        }
+        let receipt: Callback =
+            serde_json::from_slice(body).map_err(|_| fail("local_callback_request_invalid"))?;
+        let callback = Url::parse(&receipt.redirect_uri)
+            .map_err(|_| fail("local_callback_request_invalid"))?;
+        let port = callback
+            .port_or_known_default()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| fail("local_callback_request_invalid"))?;
+        if callback.scheme() != "http"
+            || callback.host_str() != Some("127.0.0.1")
+            || callback.path() != "/orivelle-orbit/callback"
+            || callback.query().is_some()
+            || callback.fragment().is_some()
+            || !callback.username().is_empty()
+            || callback.password().is_some()
+            || receipt.redirect_uri != format!("http://127.0.0.1:{port}/orivelle-orbit/callback")
+        {
+            return Err(fail("local_callback_request_invalid"));
+        }
+        *self
+            .local_acceptance_callback
+            .lock()
+            .map_err(|_| fail("local_callback_receipt_unavailable"))? = Some(receipt.redirect_uri);
+        Ok(())
     }
     #[cfg(test)]
     pub fn fixture() -> Self {
@@ -72,6 +168,14 @@ impl Http {
             || url.fragment().is_some()
         {
             return Err(fail("invalid_remote_url"));
+        }
+        #[cfg(test)]
+        if self
+            .local_acceptance_origin
+            .as_ref()
+            .is_some_and(|origin| url.origin().ascii_serialization() != *origin)
+        {
+            return Err(fail("local_tls_origin_outside_scope"));
         }
         Ok(url)
     }
@@ -101,6 +205,9 @@ impl Http {
         #[cfg(test)]
         {
             let fixture = self.fixture.lock().unwrap().clone();
+            if self.local_acceptance_origin.is_some() && fixture.is_some() {
+                return Err(fail("local_tls_scripted_transport_forbidden"));
+            }
             if let Some(handler) = fixture {
                 let response = handler(FixtureRequest {
                     method,
@@ -119,14 +226,37 @@ impl Http {
                 return Ok(response);
             }
         }
+        #[cfg(test)]
+        self.observe_local_callback(&method, &url, &body)?;
         let mut request = self.client.request(method, url).timeout(timeout).body(body);
         for (key, value) in headers {
             request = request.header(key, value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| fail("result_unconfirmed"))?;
+        let response = request.send().await.map_err(|error| {
+            #[cfg(test)]
+            if self.local_acceptance_origin.is_some() {
+                use std::error::Error;
+                let mut source = error.source();
+                for _ in 0..8 {
+                    let Some(cause) = source else { break };
+                    // Locked rustls 0.23.45 Display forms, inspected only in
+                    // memory. A refused TCP connection is not a TLS pass.
+                    let message = cause.to_string();
+                    if message == "invalid peer certificate: UnknownIssuer" {
+                        return fail("local_tls_unknown_issuer");
+                    }
+                    if message
+                        .starts_with("invalid peer certificate: certificate not valid for name ")
+                        || message == "invalid peer certificate: NotValidForName"
+                    {
+                        return fail("local_tls_name_mismatch");
+                    }
+                    source = cause.source();
+                }
+            }
+            let _ = error;
+            fail("result_unconfirmed")
+        })?;
         // All redirects are terminal. In particular, 307/308 never replay a paid POST.
         let status = response.status().as_u16();
         let request_id = response
