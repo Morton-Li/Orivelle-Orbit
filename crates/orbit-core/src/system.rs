@@ -36,6 +36,12 @@ pub struct SystemPaths {
     pub(crate) fixture_configuration_target: Option<
         std::sync::Arc<dyn Fn(&ClientView, bool) -> Result<CodexConfigurationTarget> + Send + Sync>,
     >,
+    #[cfg(test)]
+    pub(crate) fixture_claude_configuration_target: Option<
+        std::sync::Arc<
+            dyn Fn(&ClientView, bool) -> Result<ClaudeConfigurationTarget> + Send + Sync,
+        >,
+    >,
 }
 
 const CONFIGURATION_DESKTOP_VERSION: &str = "26.1013.40934";
@@ -678,6 +684,10 @@ impl SystemPaths {
     /// Lightweight qualification projection, without a signature process or a
     /// full ASAR hash. It is not a receipt and does not enable any writer.
     pub fn claude_configuration_hint(&self, target: &ClientView) -> Result<String> {
+        #[cfg(test)]
+        if let Some(adapter) = &self.fixture_claude_configuration_target {
+            return Ok(adapter(target, false)?.revision);
+        }
         Ok(self.claude_configuration_draft(target)?.revision)
     }
 
@@ -685,6 +695,10 @@ impl SystemPaths {
         &self,
         target: &ClientView,
     ) -> Result<ClaudeConfigurationTarget> {
+        #[cfg(test)]
+        if let Some(adapter) = &self.fixture_claude_configuration_target {
+            return adapter(target, true);
+        }
         let before = self.claude_configuration_draft(target)?;
         #[cfg(target_os = "macos")]
         {
@@ -1070,6 +1084,8 @@ impl SystemPaths {
             fixture_codex_runtime: None,
             #[cfg(test)]
             fixture_configuration_target: None,
+            #[cfg(test)]
+            fixture_claude_configuration_target: None,
         })
     }
     /// Called only by a build with the explicitly authorized system-integration feature.
@@ -1107,6 +1123,8 @@ impl SystemPaths {
             fixture_codex_runtime: None,
             #[cfg(test)]
             fixture_configuration_target: None,
+            #[cfg(test)]
+            fixture_claude_configuration_target: None,
         })
     }
     pub fn ensure_configuration_parent(&self, client: ClientKind) -> Result<()> {

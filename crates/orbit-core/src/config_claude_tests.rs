@@ -240,7 +240,10 @@ fn claude_b2a_v3_context_authenticates_exact_group_and_preview_has_no_side_effec
     let engine = fixture.engine(&guard);
     let journal = fixture.prepare(&engine);
     assert!(ConfigEngine::aad(&journal).starts_with("orbit-config-v3\n"));
-    assert_eq!(engine.claude_context(&journal).unwrap(), fixture.context);
+    assert_eq!(
+        engine.claude_operation(&journal).unwrap(),
+        (fixture.context.clone(), false)
+    );
     assert!(!fixture.context.configuration_target.config_root.exists());
     assert!(
         !fixture

@@ -1063,13 +1063,14 @@ impl ConfigEngine<'_> {
     pub(crate) fn codex_context(&self, journal: &Journal) -> Result<Option<CodexContext>> {
         Ok(self.decrypt(journal)?.codex_context.clone())
     }
-    pub(crate) fn claude_context(&self, journal: &Journal) -> Result<ClaudeContext> {
+    pub(crate) fn claude_operation(&self, journal: &Journal) -> Result<(ClaudeContext, bool)> {
         let operation = self.decrypt(journal)?;
         self.check_context_for(journal, &operation, true)?;
-        operation
+        let context = operation
             .claude_context
             .clone()
-            .ok_or_else(|| fail("claude_configuration_context_unverified"))
+            .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+        Ok((context, operation.restore))
     }
     #[cfg(test)]
     pub(crate) fn freeze_codex_context(
