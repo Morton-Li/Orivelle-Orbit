@@ -23,4 +23,4 @@ npm 使用项目 `.npmrc` 中的 npmmirror；锁文件内 npmjs 下载地址按 
 
 详见 [实施与安全合同](docs/implementation.md)、[验证记录与环境门禁](docs/validation.md)、[原生检查与候选打包](docs/build-candidates.md)。正式签名、发布、公钥与更新渠道配置另行授权。
 
-macOS arm64 已生成可审查的 `.app` 和 ZIP 构建候选，位于 `runtime/candidates/`；`runtime/logs/candidate-manifest.json` 记录源码、helper、整个应用包和归档的摘要与回读结果。候选仅有 linker ad-hoc 签名，未启用正式证书或更新渠道。它已完成构建与静态核查，真实运行、客户端配置和系统安全存储仍需专用环境授权。
+macOS arm64 已生成可审查的 `.app` 和 ZIP 构建候选，位于 `runtime/candidates/`；`runtime/logs/candidate-manifest.json` 记录源码、helper、整个应用包和归档的摘要与回读结果。候选仅有 linker ad-hoc 签名，未启用正式证书或更新渠道。它已完成构建与静态核查，真实运行、客户端配置和系统安全存储按明确授权范围分别验收并记录。
