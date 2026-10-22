@@ -317,6 +317,10 @@ type ConfigPreviewBase = {
   can_apply: boolean;
   can_export_import: boolean;
   blocking_reason: string | null;
+  claude_configuration_target: {
+    app_version: string;
+    revision: string;
+  } | null;
   codex_configuration_target: {
     cli_version: string;
     // Local configuration qualification, independent of runtime/load evidence.

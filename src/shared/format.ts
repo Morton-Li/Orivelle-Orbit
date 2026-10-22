@@ -9,6 +9,22 @@ import { locale, t } from "./i18n";
 export function configPolicyMessage(code: string): string | null {
   if (code === "managed_policy_unverified") return t("access.policyUnverified");
   if (code === "managed_policy_changed") return t("access.policyChanged");
+  if (
+    [
+      "schema_unverified",
+      "claude_library_schema_unverified",
+      "claude_configuration_target_unverified",
+    ].includes(code)
+  )
+    return t("access.claudeConfigurationUnavailable");
+  if (code === "claude_configuration_target_changed")
+    return t("access.claudeConfigurationChanged");
+  if (code === "claude_configuration_context_unverified")
+    return t("access.claudeRestoreContextUnavailable");
+  if (code === "claude_configuration_context_changed")
+    return t("access.claudeContextChanged");
+  if (code === "claude_configuration_source_unsupported")
+    return t("access.claudeSourceUnsupported");
   if (code === "codex_configuration_target_unverified")
     return t("access.codexConfigurationUnavailable");
   if (code === "codex_configuration_target_changed")

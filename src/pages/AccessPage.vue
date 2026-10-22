@@ -18,16 +18,28 @@ const manageConnectionId = ref<string | null>(null);
 const manageRevision = ref<number | null>(null);
 const manageCredentialRevision = ref<string | null>(null);
 const recoveryScope = ref("");
-const codexConfigurationAllowed = computed(() => {
-  const client = store.state.clients.find((item) => item.client === "codex");
-  return (
+function configurationAllowed(kind: ClientKind): boolean {
+  const client = store.state.clients.find((item) => item.client === kind);
+  return !!(
     client?.installed &&
     client.platform_supported &&
     client.managed !== "yes" &&
     client.configuration_access === "allowed" &&
     !!client.configuration_access_revision
   );
-});
+}
+function previewAllowed(kind: ClientKind): boolean {
+  const client = store.state.clients.find((item) => item.client === kind);
+  return (
+    configurationAllowed(kind) ||
+    !!(
+      kind === "claude" &&
+      client?.installed &&
+      client.platform_supported &&
+      client.managed === "no"
+    )
+  );
+}
 const backupScopes = computed(() =>
   Array.from(
     new Map(
@@ -86,12 +98,7 @@ watch(
 );
 async function requestPreview(client: ClientKind) {
   const connection = store.activeConnection;
-  if (
-    !connection ||
-    !selected.value[client] ||
-    (client === "codex" && !codexConfigurationAllowed.value)
-  )
-    return;
+  if (!connection || !selected.value[client] || !previewAllowed(client)) return;
   const result = await store.perform(
     `preview-${client}`,
     "preview_client_config",
@@ -106,7 +113,7 @@ async function requestPreview(client: ClientKind) {
 }
 async function restore(id: string) {
   const backup = store.state.backups.find((item) => item.id === id);
-  if (backup?.client === "codex" && !codexConfigurationAllowed.value) return;
+  if (!backup || !configurationAllowed(backup.client)) return;
   const result = await store.perform("preview-restore", "preview_restore", {
     backup_group_id: id,
   });
@@ -273,10 +280,8 @@ function changeNode(event: Event) {
           class="button primary"
           :disabled="
             !store.ready ||
-            !client.installed ||
+            !previewAllowed(client.client) ||
             !selected[client.client] ||
-            client.managed === 'yes' ||
-            (client.client === 'codex' && !codexConfigurationAllowed) ||
             store.busy.has(`preview-${client.client}`)
           "
           @click="requestPreview(client.client)"
@@ -340,7 +345,7 @@ function changeNode(event: Event) {
         class="button secondary"
         :disabled="
           backup.state === 'unavailable' ||
-          (backup.client === 'codex' && !codexConfigurationAllowed) ||
+          !configurationAllowed(backup.client) ||
           store.busy.has('preview-restore')
         "
         @click="restore(backup.id)"

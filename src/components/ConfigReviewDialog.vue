@@ -29,12 +29,22 @@ const current = computed(() => {
     Date.parse(preview.expires_at) <= now.value
   )
     return false;
+  const diagnosticExport =
+    preview.client === "claude" &&
+    preview.operation === "apply" &&
+    preview.can_export_import &&
+    !preview.can_apply;
+  if (diagnosticExport) {
+    if (client.managed !== "no") return false;
+  } else if (
+    client.managed === "yes" ||
+    client.configuration_access !== "allowed" ||
+    !client.configuration_access_revision
+  )
+    return false;
   if (preview.client === "codex") {
     const target = preview.codex_configuration_target;
     if (
-      client.managed === "yes" ||
-      client.configuration_access !== "allowed" ||
-      !client.configuration_access_revision ||
       !target?.revision ||
       !target.cli_version ||
       target.revision !== client.configuration_access_revision
@@ -46,7 +56,16 @@ const current = computed(() => {
         target.cli_version !== preview.codex_catalog.cli_version)
     )
       return false;
-  } else if (client.managed !== "no") return false;
+  } else if (!diagnosticExport) {
+    const target = preview.claude_configuration_target;
+    if (
+      !target?.revision ||
+      !target.app_version ||
+      target.app_version !== client.version ||
+      target.revision !== client.configuration_access_revision
+    )
+      return false;
+  }
   if (preview.operation === "restore")
     return store.state.backups.some(
       (backup) =>
@@ -274,6 +293,28 @@ async function confirm() {
           {{ t("access.codexConfigurationUnavailable") }}
         </p>
       </template>
+      <template v-if="preview.client === 'claude'">
+        <h3>{{ t("access.claudeConfigurationTarget") }}</h3>
+        <p class="info-box">{{ t("access.claudeDesktopScope") }}</p>
+        <dl class="preview-context">
+          <div>
+            <dt>{{ t("common.version") }}</dt>
+            <dd>
+              {{
+                preview.claude_configuration_target?.app_version ??
+                t("common.unknown")
+              }}
+            </dd>
+          </div>
+        </dl>
+        <p
+          v-if="targetClient?.managed === 'unknown'"
+          class="info-box"
+          role="status"
+        >
+          {{ t("access.remotePolicyWarning") }}
+        </p>
+      </template>
       <h3>{{ t("access.paths") }}</h3>
       <ul class="path-list">
         <li v-for="path in preview.paths" :key="path">
@@ -316,7 +357,7 @@ async function confirm() {
         <button class="button primary" :disabled="!allowed" @click="confirm">
           <OrbitIcon name="check" />{{
             t(
-              preview.client === "codex" && preview.operation === "apply"
+              preview.operation === "apply"
                 ? "access.saveLocalConfiguration"
                 : "action.apply",
             )

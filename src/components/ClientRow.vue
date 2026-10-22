@@ -66,13 +66,10 @@ const verified = computed(
           t(client.client === "codex" ? "home.codexHint" : "home.claudeHint")
         }}
       </p>
-      <p v-if="client.client === 'codex'" class="muted">
+      <p class="muted">
         {{ t(configurationAccess) }}
       </p>
-      <p
-        v-if="client.client === 'codex' && client.managed === 'unknown'"
-        class="muted"
-      >
+      <p v-if="client.managed === 'unknown'" class="muted">
         {{ t("client.remotePolicyUnknown") }}
       </p>
       <div

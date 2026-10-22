@@ -6,6 +6,7 @@ import type {
 import {
   bootstrap,
   imageModel,
+  syntheticClaudeConfigurationTarget,
   syntheticCodexCatalog,
   syntheticCodexConfigurationTarget,
   syntheticCodexModel,
@@ -39,6 +40,7 @@ export async function fixture(
       codexCatalog,
       codexConfigurationTarget,
       codexRuntime,
+      claudeConfigurationTarget,
     }) => {
       // Test-only in-memory IPC. This is injected by Playwright and is never included in the application bundle.
       const testWindow = window as unknown as {
@@ -184,7 +186,16 @@ export async function fixture(
               client: backup.client,
               operation: "restore",
               target_version: "synthetic-version",
-              paths: ["/fixture/config"],
+              paths:
+                backup.client === "claude"
+                  ? [
+                      "/fixture/synthetic-claude-profile.json",
+                      "/fixture/synthetic-claude-metadata.json",
+                      "/fixture/synthetic-claude-desktop.json",
+                    ]
+                  : ["/fixture/config"],
+              claude_configuration_target:
+                backup.client === "claude" ? claudeConfigurationTarget : null,
               codex_catalog: null,
               codex_configuration_target:
                 backup.client === "codex" ? codexConfigurationTarget : null,
@@ -206,13 +217,50 @@ export async function fixture(
                 restoreMode === "recoverable" ? null : "config_conflict",
             };
           }
-          if (command === "restore_client_config")
+          if (command === "restore_client_config") {
+            const backup = current.backups.find(
+              (item) =>
+                item.id ===
+                control.lastRequests.preview_restore?.backup_group_id,
+            )!;
             return {
-              client: "codex",
+              client: backup.client,
               state: "restored",
               loaded_state: "unconfirmed",
               backup_group_id: null,
             };
+          }
+          if (command === "apply_client_config") {
+            const kind = control.lastRequests.preview_client_config?.client;
+            const client = current.clients.find(
+              (item) => item.client === kind,
+            )!;
+            client.configuration_state = "saved";
+            client.configuration_revision = "synthetic-saved-configuration";
+            client.loaded_state = "restart_required";
+            client.connection_state = "not_tested";
+            client.loaded_evidence = null;
+            client.connection_evidence = null;
+            current.backups.push({
+              id: "synthetic-config-backup",
+              client: client.client,
+              account_id: current.session.account!.id,
+              account_label: current.session.account!.label,
+              panel_origin: current.session.panel_origin!,
+              installation_id: "synthetic-installation",
+              created_at: "2026-10-22T00:00:00Z",
+              expires_at: "2099-01-01T00:00:00Z",
+              file_count: client.client === "claude" ? 3 : 2,
+              state: "available",
+            });
+            update();
+            return {
+              client: client.client,
+              state: "saved",
+              loaded_state: "restart_required",
+              backup_group_id: "synthetic-config-backup",
+            };
+          }
           if (command === "preview_client_config") {
             const connection = current.connections.find(
               (item) => item.id === request.connection_id,
@@ -225,7 +273,15 @@ export async function fixture(
               paths:
                 request.client === "codex"
                   ? ["/fixture/config", codexCatalog.path]
-                  : ["/fixture/config"],
+                  : [
+                      "/fixture/synthetic-claude-profile.json",
+                      "/fixture/synthetic-claude-metadata.json",
+                      "/fixture/synthetic-claude-desktop.json",
+                    ],
+              claude_configuration_target:
+                request.client === "claude" && !claudeImport
+                  ? claudeConfigurationTarget
+                  : null,
               codex_catalog: request.client === "codex" ? codexCatalog : null,
               codex_configuration_target:
                 request.client === "codex" ? codexConfigurationTarget : null,
@@ -269,6 +325,7 @@ export async function fixture(
       codexCatalog: syntheticCodexCatalog(),
       codexConfigurationTarget: syntheticCodexConfigurationTarget(),
       codexRuntime: { state: "unverified", cli_version: null, revision: null },
+      claudeConfigurationTarget: syntheticClaudeConfigurationTarget(),
     },
   );
 }
