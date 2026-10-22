@@ -4718,6 +4718,8 @@ fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    mod macos_config_roundtrip;
     use crate::{
         identity::{ProofInput, canonical_proof},
         vault::FakeVault,
