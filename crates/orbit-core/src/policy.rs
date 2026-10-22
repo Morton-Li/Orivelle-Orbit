@@ -243,7 +243,9 @@ impl Snapshot {
     #[cfg(test)]
     pub(crate) fn fixture_user_config(target: &ClientView, state: State, token: &str) -> Self {
         let mut snapshot = Self::fixture(target, state, token);
-        if state == State::No && target.client == ClientKind::Codex {
+        if state == State::No
+            && (target.client == ClientKind::Codex || claude_pinned_target(target))
+        {
             snapshot.state = State::Unknown;
             snapshot.revision = sha256(format!("local-clear-global-unknown:{token}").as_bytes());
         }

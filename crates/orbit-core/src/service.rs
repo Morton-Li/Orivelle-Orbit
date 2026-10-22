@@ -13,7 +13,7 @@ use crate::{
     images::{self, InputRecord, TaskSnapshot},
     network::{CredentialDelivery, Http, ProofSession, TokenResponse},
     store::Store,
-    system::{CodexConfigurationTarget, SystemPaths, detect_clients},
+    system::{ClaudeConfigurationTarget, CodexConfigurationTarget, SystemPaths, detect_clients},
     vault::Vault,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -37,6 +37,12 @@ use tokio::{
     sync::Semaphore,
 };
 use zeroize::Zeroizing;
+
+#[path = "service_claude.rs"]
+mod claude;
+#[cfg(all(test, target_os = "macos"))]
+#[path = "service_claude_tests.rs"]
+mod claude_authority_tests;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ConnectionRecord {
@@ -95,12 +101,15 @@ struct PreviewEntry {
     import_candidate: Option<(Vec<u8>, String)>,
     policy: crate::policy::Snapshot,
     configuration_target: Option<CodexConfigurationTarget>,
+    claude_configuration_target: Option<ClaudeConfigurationTarget>,
+    claude_diagnostic_scope: Option<String>,
     catalog_context: Option<CodexContext>,
 }
 struct ConfigObservation {
     target: ClientView,
     policy: crate::policy::Snapshot,
     configuration_target: Option<CodexConfigurationTarget>,
+    claude_configuration_target: Option<ClaudeConfigurationTarget>,
     runtime_view: Option<CodexRuntimeView>,
 }
 fn configuration_access_revision(target_revision: &str, local_policy_revision: &str) -> String {
@@ -2186,7 +2195,7 @@ impl Service {
         }
     }
     fn observe_configuration(&self, client: ClientKind) -> Result<ConfigObservation> {
-        let (target, policy) = self.client_policy(client)?;
+        let (mut target, mut policy) = self.client_policy(client)?;
         let (configuration_target, runtime_view) = if client == ClientKind::Codex {
             let snapshot = self.paths.codex_runtime();
             (
@@ -2196,10 +2205,26 @@ impl Service {
         } else {
             (None, None)
         };
+        let claude_configuration_target = if client == ClientKind::Claude {
+            self.paths.claude_configuration_target(&target).ok()
+        } else {
+            None
+        };
+        if claude_configuration_target.is_some() {
+            let (after_target, after_policy) = self.client_policy(client)?;
+            if policy.revision != after_policy.revision
+                || policy.local_revision != after_policy.local_revision
+            {
+                return Err(fail("managed_policy_changed"));
+            }
+            target = after_target;
+            policy = after_policy;
+        }
         Ok(ConfigObservation {
             target,
             policy,
             configuration_target,
+            claude_configuration_target,
             runtime_view,
         })
     }
@@ -2211,6 +2236,9 @@ impl Service {
     ) -> Result<()> {
         if !self.paths.writes_authorized {
             return Err(fail("integration_authorization_required"));
+        }
+        if observation.target.client == ClientKind::Claude {
+            return self.require_claude_configuration(observation, expected_policy, None);
         }
         if observation.target.client == ClientKind::Codex {
             let current = observation
@@ -2494,24 +2522,34 @@ impl Service {
     ) -> (ClientView, crate::policy::Snapshot) {
         if target.client == ClientKind::Codex {
             target = self.paths.fresh_codex_client(&target);
+        } else {
+            target = self.paths.fresh_claude_client(&target);
         }
         self.project_configuration_revision(&mut target);
         let policy = crate::policy::observe(&self.paths, &target);
         policy.project(&mut target);
         target.configuration_access = ConfigurationAccess::Unverified;
         target.configuration_access_revision = None;
-        if target.client == ClientKind::Codex && self.paths.writes_authorized {
+        if self.paths.writes_authorized {
             if policy.state == crate::policy::State::Yes
                 || policy.user_config_state() == crate::policy::State::Yes
             {
                 target.configuration_access = ConfigurationAccess::Blocked;
             } else if policy.require_user_config_clear().is_ok() {
-                if let Ok(revision) = self.paths.codex_configuration_hint(&target) {
+                let revision = match target.client {
+                    ClientKind::Codex => self.paths.codex_configuration_hint(&target),
+                    ClientKind::Claude => self.paths.claude_configuration_hint(&target),
+                };
+                if let Ok(revision) = revision {
                     target.configuration_access = ConfigurationAccess::Allowed;
-                    target.configuration_access_revision = Some(configuration_access_revision(
-                        &revision,
-                        &policy.local_revision,
-                    ));
+                    target.configuration_access_revision = Some(match target.client {
+                        ClientKind::Codex => {
+                            configuration_access_revision(&revision, &policy.local_revision)
+                        }
+                        ClientKind::Claude => {
+                            claude::access_revision(&revision, &policy.local_revision)
+                        }
+                    });
                 }
             }
         }
@@ -2527,14 +2565,6 @@ impl Service {
             target.connection_state = "not_tested".into();
         }
         (target, policy)
-    }
-    fn validate_policy(
-        &self,
-        client: ClientKind,
-        expected: &crate::policy::Snapshot,
-    ) -> Result<()> {
-        let (_, current) = self.client_policy(client)?;
-        expected.matches(&current)
     }
     fn pending_configuration_recovery(&self, client: ClientKind) -> Result<bool> {
         for journal in self.store.list::<Journal>("journal", None)? {
@@ -2680,7 +2710,16 @@ impl Service {
         let target = &observation.target;
         let policy = &observation.policy;
         let configuration_target = observation.configuration_target.as_ref();
-        let guard = || self.validate_configuration(client, policy, configuration_target);
+        let guard = || {
+            if client == ClientKind::Claude {
+                self.validate_claude_configuration(
+                    policy,
+                    observation.claude_configuration_target.as_ref(),
+                )
+            } else {
+                self.validate_configuration(client, policy, configuration_target)
+            }
+        };
         let context_guard = |current: Option<&CodexContext>, restore: bool| {
             if restore || current != catalog_context.as_ref() {
                 return Err(fail("codex_catalog_context_unverified"));
@@ -2716,9 +2755,11 @@ impl Service {
             }),
             codex_runtime: observation.runtime_view.clone(),
             codex_configuration_target: configuration_target_view(&observation),
+            claude_configuration_target: claude::target_view(&observation),
         };
         let mut journal_id = None;
         let mut import_candidate = None;
+        let mut claude_diagnostic_scope = None;
         if let Some(error) = gate_error {
             preview.blocking_reason = Some(error.code);
         } else if self.pending_configuration_recovery(client)? {
@@ -2735,6 +2776,10 @@ impl Service {
             preview.blocking_reason = Some("model_unsupported".into());
         } else {
             guard()?;
+            if client == ClientKind::Claude {
+                claude_diagnostic_scope =
+                    Some(self.claude_diagnostic_scope(id, revision, model_id)?);
+            }
             let install = self.installation(&record)?;
             let binding_id = uuid();
             // Finish the catalog/owned patch before any helper credential or durable mutation.
@@ -2867,7 +2912,7 @@ impl Service {
             }
         }
         if client == ClientKind::Claude {
-            preview.impact.push("仅导出官方 V2 正文诊断候选；不写 configLibrary envelope/_meta，需在 Claude 官方第三方模式手工导入并重启，尚无真实加载/连通证据。".into());
+            preview.impact.push("仅生成官方 V2 正文诊断候选供核查；不承诺该候选可导入，不写配置库，尚无真实加载或连通证据。".into());
         }
         self.previews
             .lock()
@@ -2880,6 +2925,8 @@ impl Service {
                     import_candidate,
                     policy: observation.policy,
                     configuration_target: observation.configuration_target,
+                    claude_configuration_target: observation.claude_configuration_target,
+                    claude_diagnostic_scope,
                     catalog_context,
                 },
             );
@@ -3137,18 +3184,44 @@ impl Service {
         {
             return Err(fail("preview_expired"));
         }
-        if !path.is_absolute()
-            || path == self.paths.codex_config
-            || path == self.paths.codex_catalog()
-            || path.starts_with(&self.paths.claude_library)
-            || (self.paths.isolated && !path.starts_with(&self.store.root))
-        {
-            return Err(fail("invalid_path"));
-        }
+        let destination = self.claude_diagnostic_destination(path)?;
         let _gate = self
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        let guard = || {
+            self.validate_claude_configuration(
+                &entry.policy,
+                entry.claude_configuration_target.as_ref(),
+            )?;
+            if !self.paths.helper_available() {
+                return Err(fail("helper_unavailable"));
+            }
+            let context = entry
+                .view
+                .context
+                .as_ref()
+                .ok_or_else(|| fail("preview_expired"))?;
+            let current = self.claude_diagnostic_scope(
+                &context.connection_id,
+                context.connection_revision,
+                entry
+                    .view
+                    .model_id
+                    .as_deref()
+                    .ok_or_else(|| fail("preview_expired"))?,
+            )?;
+            if entry.claude_diagnostic_scope.as_ref() != Some(&current) {
+                return Err(fail("connection_conflict"));
+            }
+            if self.claude_diagnostic_destination(path)? != destination
+                || self.claude_diagnostic_destination(&destination)? != destination
+            {
+                return Err(fail("invalid_path"));
+            }
+            Ok(())
+        };
+        guard()?;
         self.validate_preview_context(
             &entry.view,
             &entry.policy,
@@ -3165,7 +3238,7 @@ impl Service {
             .get::<HelperBinding>("binding", &binding_id)?
             .ok_or_else(|| fail("binding_disabled"))?;
         binding.enabled = true;
-        self.validate_policy(ClientKind::Claude, &entry.policy)?;
+        guard()?;
         let _ = bound_helper_token(
             &binding,
             ClientKind::Claude,
@@ -3174,9 +3247,9 @@ impl Service {
             self.vault.as_ref(),
             chrono::Utc::now().timestamp(),
         )?;
-        self.validate_policy(ClientKind::Claude, &entry.policy)?;
-        crate::config::atomic_write(path, &bytes)?;
-        self.validate_policy(ClientKind::Claude, &entry.policy)?;
+        guard()?;
+        crate::config::atomic_write(&destination, &bytes)?;
+        guard()?;
         self.store
             .put("binding", &binding_id, &binding.account_id, &binding)?;
         // Exporting a diagnostic candidate is not applying, loading, or observing
@@ -3272,6 +3345,7 @@ impl Service {
             codex_catalog: None,
             codex_runtime: observation.runtime_view.clone(),
             codex_configuration_target: configuration_target_view(&observation),
+            claude_configuration_target: claude::target_view(&observation),
             blocking_reason: blocked,
         };
         self.previews
@@ -3285,6 +3359,8 @@ impl Service {
                     import_candidate: None,
                     policy: observation.policy,
                     configuration_target: observation.configuration_target,
+                    claude_configuration_target: observation.claude_configuration_target,
+                    claude_diagnostic_scope: None,
                     catalog_context,
                 },
             );
@@ -4736,11 +4812,12 @@ mod tests {
         );
         serde_json::from_str(GOLDEN).unwrap()
     }
-    struct PolicyVault {
+    pub(super) struct PolicyVault {
         inner: Arc<FakeVault>,
-        calls: AtomicU64,
-        mutations: AtomicU64,
-        pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+        pub(super) calls: AtomicU64,
+        pub(super) mutations: AtomicU64,
+        pub(super) pause:
+            Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     }
     impl Vault for PolicyVault {
         fn get(&self, reference: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
@@ -4763,15 +4840,15 @@ mod tests {
             self.inner.delete(reference)
         }
     }
-    struct PolicyFixture {
+    pub(super) struct PolicyFixture {
         _dir: tempfile::TempDir,
-        service: Arc<Service>,
-        vault: Arc<PolicyVault>,
-        record: ConnectionRecord,
-        epoch: Arc<AtomicU64>,
-        model: String,
+        pub(super) service: Arc<Service>,
+        pub(super) vault: Arc<PolicyVault>,
+        pub(super) record: ConnectionRecord,
+        pub(super) epoch: Arc<AtomicU64>,
+        pub(super) model: String,
         client: ClientKind,
-        target: Arc<AtomicU64>,
+        pub(super) target: Arc<AtomicU64>,
     }
     impl PolicyFixture {
         fn preview(&self) -> ConfigPreview {
@@ -4798,7 +4875,7 @@ mod tests {
             .unwrap()
         }
     }
-    fn policy_fixture(client: ClientKind) -> PolicyFixture {
+    pub(super) fn policy_fixture(client: ClientKind) -> PolicyFixture {
         let (dir, original, vault, mut record, install) = setup();
         original
             .accept_credential(
@@ -4829,6 +4906,11 @@ mod tests {
         target.platform_supported = true;
         target.version = Some("2.19675.0-synthetic".into());
         target.bundle_id = Some(format!("synthetic.{}", client.as_str()));
+        if client == ClientKind::Claude {
+            target.version = Some(crate::claude_config::SUPPORTED_APP_VERSION.into());
+            target.bundle_id = Some("com.anthropic.claudefordesktop".into());
+            target.app_path = Some("synthetic-installed-Claude.app".into());
+        }
         target.managed = "no".into();
         paths.fixture_clients = Some(clients);
         let epoch = Arc::new(AtomicU64::new(0));
@@ -4846,6 +4928,9 @@ mod tests {
             )
         }));
         let target = Arc::new(AtomicU64::new(0));
+        if client == ClientKind::Claude {
+            qualify_claude_paths(&mut paths, target.clone());
+        }
         let target_signal = target.clone();
         let target_paths = paths.clone();
         paths.fixture_configuration_target =
@@ -4907,6 +4992,37 @@ mod tests {
             client,
             target,
         }
+    }
+    fn qualify_claude_paths(paths: &mut SystemPaths, signal: Arc<AtomicU64>) {
+        let home = paths.codex_user_home.clone().unwrap_or_else(|| {
+            paths
+                .codex_config
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf()
+        });
+        std::fs::create_dir_all(home.join("Library/Application Support")).unwrap();
+        let root = home.join("Library/Application Support/Claude-3p");
+        paths.claude_library = root.join("configLibrary");
+        paths.configuration_roots.push(root.clone());
+        paths.fixture_claude_configuration_target = Some(Arc::new(move |target, _full| {
+            if signal.load(Ordering::SeqCst) == 2
+                || !target.installed
+                || !target.platform_supported
+                || target.client != ClientKind::Claude
+                || target.version.as_deref() != Some(crate::claude_config::SUPPORTED_APP_VERSION)
+                || target.bundle_id.as_deref() != Some("com.anthropic.claudefordesktop")
+            {
+                return Err(fail("claude_configuration_target_unverified"));
+            }
+            let mut receipt = crate::system::ClaudeConfigurationTarget::synthetic(root.clone())?;
+            receipt.revision = sha256(
+                format!("synthetic-Claude-target-{}", signal.load(Ordering::SeqCst)).as_bytes(),
+            );
+            Ok(receipt)
+        }));
     }
     fn catalog_menu(f: &PolicyFixture) {
         let mut cache = f.service.account_cache(&f.record).unwrap();
@@ -7583,6 +7699,7 @@ mod tests {
         paths.writes_authorized = true;
         std::fs::write(&paths.helper, b"synthetic helper fixture - never executed").unwrap();
         paths.helper_expected_sha256 = Some(sha256(b"synthetic helper fixture - never executed"));
+        qualify_claude_paths(&mut paths, Arc::new(AtomicU64::new(0)));
         let service = Service::new(original.store.clone(), vault.clone(), paths).unwrap();
         let mut cache = service.account_cache(&record).unwrap();
         cache.models[0]
@@ -7605,8 +7722,9 @@ mod tests {
                 .unwrap();
             client.installed = true;
             client.platform_supported = true;
-            client.version = Some("2.19675.0-synthetic".into());
+            client.version = Some(crate::claude_config::SUPPORTED_APP_VERSION.into());
             client.bundle_id = Some("com.anthropic.claudefordesktop".into());
+            client.app_path = Some("synthetic-installed-Claude.app".into());
             client.managed = "no".into();
             service
                 .store
@@ -7626,10 +7744,16 @@ mod tests {
             preview.blocking_reason.as_deref(),
             Some("schema_unverified")
         );
-        // Diagnostic exports cannot replace either member of the Codex journal.
+        // Diagnostic exports cannot replace files owned by either client writer.
         for protected in [
             service.paths.codex_config.clone(),
             service.paths.codex_catalog(),
+            service
+                .paths
+                .claude_library
+                .parent()
+                .unwrap()
+                .join("claude_desktop_config.json"),
         ] {
             let blocked = service
                 .preview_client_config(

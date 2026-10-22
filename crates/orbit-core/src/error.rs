@@ -14,7 +14,7 @@ impl PublicError {
             "binding_disabled" => "此客户端连接已停用。",
             "connection_conflict" => "连接已经改变，请重新预览。",
             "configuration_conflict" => "配置已被其他程序修改，需协调冲突。",
-            "schema_unverified" => "Claude 配置库格式尚未验证，请使用官方导入流程。",
+            "schema_unverified" => "Claude 自动写入合同尚未启用；诊断候选仅供核查。",
             "integration_authorization_required" => "此系统集成尚未取得测试授权。",
             "result_unconfirmed" => "请求已发送，结果待确认。请勿自动重新生成。",
             "image_limit_exceeded" => "图片、像素或完整请求超过资源上限。",

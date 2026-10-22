@@ -358,10 +358,17 @@ pub struct ConfigPreview {
     pub codex_runtime: Option<CodexRuntimeView>,
     #[serde(default)]
     pub codex_configuration_target: Option<CodexConfigurationTargetView>,
+    #[serde(default)]
+    pub claude_configuration_target: Option<ClaudeConfigurationTargetView>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexConfigurationTargetView {
     pub cli_version: String,
+    pub revision: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeConfigurationTargetView {
+    pub app_version: String,
     pub revision: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
