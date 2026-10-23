@@ -261,27 +261,30 @@ export const useOrbitStore = defineStore("orbit", () => {
     }
     return true;
   }
-  async function loadModels() {
+  async function loadModels(): Promise<boolean> {
     const connection = activeConnection.value;
     const capturedScope = scope.value;
     const generation = ++modelGeneration;
     if (!connection || state.value.session.status !== "authenticated") {
       if (state.value.session.status !== "refreshing") models.value = [];
       modelsLoading.value = false;
-      return;
+      return false;
     }
     modelsLoading.value = true;
     try {
       const result = await call("list_models", {
         connection_id: connection.id,
       });
-      if (generation === modelGeneration && capturedScope === scope.value)
-        models.value = result.filter(
-          (model) => model.provider_id === connection.provider_id,
-        );
+      if (generation !== modelGeneration || capturedScope !== scope.value)
+        return false;
+      models.value = result.filter(
+        (model) => model.provider_id === connection.provider_id,
+      );
+      return true;
     } catch (error) {
       if (generation === modelGeneration && capturedScope === scope.value)
         report(error);
+      return false;
     } finally {
       if (generation === modelGeneration) modelsLoading.value = false;
     }
