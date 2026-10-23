@@ -393,9 +393,13 @@ describe("Codex catalog confirmation", () => {
     },
   );
 
-  it.each(["codex", "claude"] as const)(
-    "confirms an eligible %s restore while logged out using its original backup owner",
-    async (kind) => {
+  it.each(
+    (["codex", "claude"] as const).flatMap((kind) =>
+      (["restored", "conflict"] as const).map((state) => ({ kind, state })),
+    ),
+  )(
+    "confirms an eligible $kind restore while logged out and reports $state using its original backup owner",
+    async ({ kind, state }) => {
       const store = useOrbitStore();
       const original = preview(kind);
       const owner = {
@@ -431,6 +435,7 @@ describe("Codex catalog confirmation", () => {
       const button = view.get<HTMLButtonElement>(".button.primary");
       expect(store.ready).toBe(false);
       expect(button.element.disabled).toBe(false);
+      expect(button.text()).toBe("确认恢复配置");
       expect(view.text()).toContain("远端组织策略尚未确认");
       expect(view.text()).not.toContain("本次预览的执行来源已核验");
       bridge.call.mockImplementation(async (command) =>
@@ -438,7 +443,7 @@ describe("Codex catalog confirmation", () => {
           ? bootstrap("synthetic-account-a", 2)
           : {
               client: kind,
-              state: "restored",
+              state,
               loaded_state: "unconfirmed",
               backup_group_id: null,
             },
@@ -448,6 +453,13 @@ describe("Codex catalog confirmation", () => {
       expect(bridge.call).toHaveBeenCalledWith("restore_client_config", {
         preview_id: value.id,
         confirmed: true,
+      });
+      expect(store.notice).toEqual({
+        text:
+          state === "conflict"
+            ? "配置冲突"
+            : "原配置已恢复。请完整退出目标应用并重新打开，载入和连接仍待确认。",
+        tone: state === "conflict" ? "error" : "neutral",
       });
     },
   );

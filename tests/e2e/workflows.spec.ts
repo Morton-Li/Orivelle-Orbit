@@ -257,7 +257,7 @@ for (const client of ["codex", "claude"] as const) {
       await page.getByRole("button", { name: "预览恢复", exact: true }).click();
       const apply = page
         .getByRole("dialog")
-        .getByRole("button", { name: "确认应用", exact: true });
+        .getByRole("button", { name: "确认恢复配置", exact: true });
       if (client === "claude") {
         await expect(
           page.getByRole("dialog").locator(".path-list li"),
@@ -271,6 +271,12 @@ for (const client of ["codex", "claude"] as const) {
         await apply.click();
         expect(await calls(page, "restore_client_config")).toBe(1);
         await expect(page.getByRole("dialog")).toHaveCount(0);
+        await expect(
+          page.getByText(
+            "原配置已恢复。请完整退出目标应用并重新打开，载入和连接仍待确认。",
+            { exact: true },
+          ),
+        ).toBeVisible();
       } else {
         await expect(apply).toBeDisabled();
         expect(await calls(page, "restore_client_config")).toBe(0);
