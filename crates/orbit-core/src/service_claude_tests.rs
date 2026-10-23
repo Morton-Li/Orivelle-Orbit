@@ -1,6 +1,275 @@
 use super::*;
 use crate::config::ClaudeContext;
 
+#[test]
+fn claude_core_flow_bootstrap_qualifies_legacy_state_and_replaces_obsolete_guidance() {
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let mut paths = f.service.paths.clone();
+    let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+    let full = Arc::new(AtomicU64::new(0));
+    let count = full.clone();
+    paths.fixture_claude_configuration_target = Some(Arc::new(move |client, is_full| {
+        if is_full {
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+        adapter(client, is_full)
+    }));
+    let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+    let mut legacy: ClientView = service
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    legacy.configuration_state = "unsupported".into();
+    legacy.manual_steps = vec!["Claude 第三方推理模式影响整个桌面应用；configLibrary envelope 尚未验证，请使用官方导入流程。".into(), "保留已有状态说明".into()];
+    service
+        .store
+        .put("client-state", "claude", "local", &legacy)
+        .unwrap();
+    let revision = service.store.snapshot().unwrap().revision;
+    f.vault.calls.store(0, Ordering::SeqCst);
+    f.vault.mutations.store(0, Ordering::SeqCst);
+    full.store(0, Ordering::SeqCst);
+    let first = service
+        .bootstrap()
+        .unwrap()
+        .clients
+        .into_iter()
+        .find(|client| client.client == ClientKind::Claude)
+        .unwrap();
+    assert_eq!(first.configuration_state, "not_configured");
+    assert_eq!(first.configuration_access, ConfigurationAccess::Allowed);
+    assert_eq!(first.managed, "unknown");
+    assert!(
+        first
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("Chat、Code 与 Cowork"))
+    );
+    assert!(
+        first
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("预览三文件")
+                && note.contains("确认保存")
+                && note.contains("重启"))
+    );
+    assert!(
+        first
+            .manual_steps
+            .iter()
+            .any(|note| note == "保留已有状态说明")
+    );
+    assert!(
+        !first
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("envelope") || note.contains("官方导入"))
+    );
+    assert_eq!(first.loaded_state, "unconfirmed");
+    assert_eq!(first.connection_state, "not_tested");
+    assert!(first.loaded_evidence.is_none() && first.connection_evidence.is_none());
+    let second = service
+        .bootstrap()
+        .unwrap()
+        .clients
+        .into_iter()
+        .find(|client| client.client == ClientKind::Claude)
+        .unwrap();
+    assert_eq!(second.configuration_state, first.configuration_state);
+    assert_eq!(second.manual_steps, first.manual_steps);
+    assert_eq!(
+        full.load(Ordering::SeqCst),
+        2,
+        "each legacy projection requires a fresh full receipt"
+    );
+    assert_eq!(service.store.snapshot().unwrap().revision, revision);
+    assert_eq!(
+        service
+            .store
+            .get::<ClientView>("client-state", "claude")
+            .unwrap()
+            .unwrap()
+            .configuration_state,
+        "unsupported",
+        "projection does not claim a durable save"
+    );
+    assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+    assert!(!service.paths.claude_library.parent().unwrap().exists());
+}
+
+#[test]
+fn claude_core_flow_bootstrap_keeps_unqualified_or_pending_legacy_state_conservative() {
+    for fault in [
+        "full-target",
+        "version",
+        "managed",
+        "policy-unknown",
+        "late-policy",
+        "source-format",
+        "pending",
+    ] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let mut paths = f.service.paths.clone();
+        let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+        let signal = f.epoch.clone();
+        paths.fixture_claude_configuration_target = Some(Arc::new(move |client, full| {
+            if full && fault == "full-target" {
+                return Err(fail("claude_configuration_target_unverified"));
+            }
+            let target = adapter(client, full)?;
+            if full && fault == "late-policy" {
+                signal.store(1, Ordering::SeqCst);
+            }
+            Ok(target)
+        }));
+        let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+        if fault == "managed" {
+            f.epoch.store(2, Ordering::SeqCst);
+        }
+        if fault == "policy-unknown" {
+            f.epoch.store(3, Ordering::SeqCst);
+        }
+        if fault == "version" {
+            let mut legacy: ClientView = service
+                .store
+                .get("client-state", "claude")
+                .unwrap()
+                .unwrap();
+            legacy.version = Some("unsupported-version".into());
+            service
+                .store
+                .put("client-state", "claude", "local", &legacy)
+                .unwrap();
+        }
+        if fault == "source-format" {
+            std::fs::create_dir_all(&service.paths.claude_library).unwrap();
+            std::fs::write(
+                service.paths.claude_library.join("_meta.json"),
+                b"unrecognized metadata",
+            )
+            .unwrap();
+        }
+        if fault == "pending" {
+            let preview = automatic_preview(&service, &f);
+            let mut journal = preview_journal(&service, &preview);
+            journal.phase = "publishing".into();
+            service
+                .store
+                .put("journal", &journal.id, &journal.account_id, &journal)
+                .unwrap();
+        }
+        f.vault.calls.store(0, Ordering::SeqCst);
+        f.vault.mutations.store(0, Ordering::SeqCst);
+        let revision = service.store.snapshot().unwrap().revision;
+        let client = service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Claude)
+            .unwrap();
+        assert_eq!(client.configuration_state, "unsupported", "{fault}");
+        assert!(
+            client
+                .manual_steps
+                .iter()
+                .any(|note| note.contains("未通过核验时自动接入保持禁用")),
+            "{fault}"
+        );
+        assert!(
+            !client
+                .manual_steps
+                .iter()
+                .any(|note| note.contains("预览三文件")),
+            "{fault}"
+        );
+        assert!(client.loaded_evidence.is_none() && client.connection_evidence.is_none());
+        assert_eq!(client.loaded_state, "unconfirmed");
+        assert_eq!(client.connection_state, "not_tested");
+        if fault == "managed" {
+            assert_eq!(client.configuration_access, ConfigurationAccess::Blocked);
+        }
+        if fault == "policy-unknown" || fault == "version" {
+            assert_eq!(client.configuration_access, ConfigurationAccess::Unverified);
+        }
+        assert_eq!(service.store.snapshot().unwrap().revision, revision);
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0, "{fault}");
+        assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn claude_core_flow_bootstrap_preserves_saved_conflict_and_recovery_instructions() {
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let preview = automatic_preview(&f.service, &f);
+    f.service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let mut saved: ClientView = f
+        .service
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    let saved_revision = saved.configuration_revision.clone();
+    for state in ["saved", "conflict"] {
+        saved.configuration_state = state.into();
+        f.service
+            .store
+            .put("client-state", "claude", "local", &saved)
+            .unwrap();
+        let reopened = Service::new(
+            f.service.store.clone(),
+            f.service.vault.clone(),
+            f.service.paths.clone(),
+        )
+        .unwrap();
+        let mut current: ClientView = reopened
+            .store
+            .get("client-state", "claude")
+            .unwrap()
+            .unwrap();
+        current
+            .manual_steps
+            .push("整组配置操作尚待恢复，请保留现有恢复记录。".into());
+        reopened
+            .store
+            .put("client-state", "claude", "local", &current)
+            .unwrap();
+        f.vault.calls.store(0, Ordering::SeqCst);
+        let revision = reopened.store.snapshot().unwrap().revision;
+        let client = reopened
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Claude)
+            .unwrap();
+        assert_eq!(client.configuration_state, state);
+        assert_eq!(client.configuration_revision, saved_revision);
+        assert!(
+            client
+                .manual_steps
+                .iter()
+                .any(|note| note.contains("整组配置操作尚待恢复"))
+        );
+        assert!(client.loaded_evidence.is_none() && client.connection_evidence.is_none());
+        assert_eq!(client.connection_state, "not_tested");
+        assert_eq!(
+            client.loaded_state,
+            if state == "saved" {
+                "restart_required"
+            } else {
+                "unconfirmed"
+            }
+        );
+        assert_eq!(reopened.store.snapshot().unwrap().revision, revision);
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
 fn automatic_preview(service: &Service, fixture: &tests::PolicyFixture) -> ConfigPreview {
     service
         .preview_client_config(

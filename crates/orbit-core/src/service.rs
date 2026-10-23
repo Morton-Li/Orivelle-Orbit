@@ -878,7 +878,36 @@ impl Service {
             .collect();
         let mut clients = snapshot.list::<ClientView>("client-state", Some("local"))?;
         for client in &mut clients {
-            *client = self.observe_client_policy(client.clone()).0;
+            let (mut observed, policy) = self.observe_client_policy(client.clone());
+            // Old client-state rows predate the Claude library writer. Upgrade
+            // only that display state after the full producer and local policy
+            // qualify; the lightweight access hint is never sufficient.
+            if observed.client == ClientKind::Claude
+                && observed.configuration_state == "unsupported"
+                && observed.configuration_access == ConfigurationAccess::Allowed
+                && !self.pending_configuration_recovery(ClientKind::Claude)?
+                && self.claude_revision().is_ok()
+                && let Ok(observation) = self.observe_configuration(ClientKind::Claude)
+                && self
+                    .require_claude_configuration(&observation, Some(&policy), None)
+                    .is_ok()
+            {
+                observed.configuration_state = "not_configured".into();
+                observed.configuration_access_revision = observation
+                    .claude_configuration_target
+                    .as_ref()
+                    .map(|target| {
+                        claude::access_revision(
+                            &target.revision,
+                            &observation.policy.local_revision,
+                        )
+                    });
+                let instruction = "登录 Panel 并选择节点与模型后，预览三文件变更并确认保存；重启 Claude 后，加载与连通仍需单独核验。";
+                if !observed.manual_steps.iter().any(|note| note == instruction) {
+                    observed.manual_steps.push(instruction.into());
+                }
+            }
+            *client = observed;
         }
         Ok(BootstrapView {
             schema_version: 1,

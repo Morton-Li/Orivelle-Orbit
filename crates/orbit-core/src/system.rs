@@ -68,6 +68,9 @@ const CONFIGURATION_MATERIALS: [(&str, u64, &str); 3] = [
     ),
 ];
 const CLAUDE_BUNDLE_ID: &str = "com.anthropic.claudefordesktop";
+const CLAUDE_CONFIGURATION_IMPACT: &str = "Claude 第三方推理模式影响整个桌面应用，包括 Chat、Code 与 Cowork；请先核对安装版本与本地策略，未通过核验时自动接入保持禁用。";
+const CLAUDE_LEGACY_GUIDANCE: &str =
+    "Claude 第三方推理模式影响整个桌面应用；configLibrary envelope 尚未验证，请使用官方导入流程。";
 #[cfg(target_os = "macos")]
 const CLAUDE_MATERIALS: [(&str, u64, &str); 2] = [
     (
@@ -632,10 +635,22 @@ impl SystemPaths {
     /// Metadata-only installation freshness; configuration state and existing
     /// saved/conflict evidence stay with the caller's cached view.
     pub fn fresh_claude_client(&self, cached: &ClientView) -> ClientView {
-        if self.isolated {
-            return cached.clone();
-        }
         let mut target = cached.clone();
+        // Retire only the obsolete detection note; keep saved/recovery and
+        // policy instructions while refreshing installed metadata.
+        target
+            .manual_steps
+            .retain(|note| note != CLAUDE_LEGACY_GUIDANCE);
+        if !target
+            .manual_steps
+            .iter()
+            .any(|note| note == CLAUDE_CONFIGURATION_IMPACT)
+        {
+            target.manual_steps.push(CLAUDE_CONFIGURATION_IMPACT.into());
+        }
+        if self.isolated {
+            return target;
+        }
         target.installed = false;
         target.version = None;
         target.bundle_id = None;
@@ -1192,7 +1207,7 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
         loaded_evidence: None,
         connection_evidence: None,
         manual_steps: if client == ClientKind::Claude {
-            vec!["Claude 第三方推理模式影响整个桌面应用；configLibrary envelope 尚未验证，请使用官方导入流程。".into()]
+            vec![CLAUDE_CONFIGURATION_IMPACT.into()]
         } else {
             vec!["Codex、CLI 与 IDE 可能共用用户 config.toml，保存后需重启目标应用。".into()]
         },
