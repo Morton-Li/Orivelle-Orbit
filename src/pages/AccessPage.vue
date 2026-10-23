@@ -176,11 +176,32 @@ async function requestPreview(client: ClientKind) {
 }
 async function restore(id: string) {
   const backup = store.state.backups.find((item) => item.id === id);
-  if (!backup || !configurationAllowed(backup.client)) return;
+  if (
+    !backup ||
+    !configurationAllowed(backup.client) ||
+    store.busy.has("preview-restore")
+  )
+    return;
+  const expected = { ...backup };
+  const generation = ++previewGeneration;
   const result = await store.perform("preview-restore", "preview_restore", {
     backup_group_id: id,
   });
-  if (result) preview.value = result;
+  if (!result || generation !== previewGeneration) return;
+  if (
+    result.operation !== "restore" ||
+    result.restore_source?.backup_group_id !== id ||
+    result.client !== expected.client ||
+    result.restore_owner.account_id !== expected.account_id ||
+    result.restore_owner.panel_origin !== expected.panel_origin ||
+    result.restore_owner.installation_id !== expected.installation_id ||
+    result.restore_source.expires_at !== expected.expires_at ||
+    result.paths.length !== expected.file_count
+  ) {
+    store.notify(t("access.restorePreviewExpired"));
+    return;
+  }
+  preview.value = result;
 }
 function manage(action: "revoke" | "delete") {
   const connection = store.activeConnection;

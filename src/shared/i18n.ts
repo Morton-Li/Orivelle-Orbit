@@ -113,6 +113,8 @@ const zh = {
     "Claude 配置诊断候选已导出；客户端配置、载入和连接状态未改变。",
   "access.previewExpired":
     "预览已失效，或账户、节点、凭据、模型、组织策略及客户端版本已变化，请重新预览。",
+  "access.restorePreviewExpired":
+    "恢复预览已失效，或所选备份已删除、到期或发生变化，请重新预览恢复。",
   "access.policyUnverified":
     "尚未确认目标应用的本地配置写入资格或组织管理限制，暂时无法变更或导出配置。请重新检测并预览。",
   "access.policyChanged":
@@ -439,6 +441,8 @@ const en: Record<keyof typeof zh, string> = {
     "Claude diagnostic candidate exported. Client configuration, loading and connection status remain unchanged.",
   "access.previewExpired":
     "This preview is no longer valid, or the account, node, credential, model, organization policy or client version changed. Create a new preview.",
+  "access.restorePreviewExpired":
+    "This restore preview is no longer valid, or the selected backup was removed, expired or changed. Create a new restore preview.",
   "access.policyUnverified":
     "Local configuration write eligibility or organization restrictions are unconfirmed. Configuration cannot be changed or exported. Check again and create a new preview.",
   "access.policyChanged":

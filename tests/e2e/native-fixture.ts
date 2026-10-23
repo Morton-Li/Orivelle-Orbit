@@ -193,7 +193,7 @@ export async function fixture(
                       "/fixture/synthetic-claude-metadata.json",
                       "/fixture/synthetic-claude-desktop.json",
                     ]
-                  : ["/fixture/config"],
+                  : ["/fixture/config", codexCatalog.path],
               claude_configuration_target:
                 backup.client === "claude" ? claudeConfigurationTarget : null,
               codex_catalog: null,
@@ -207,6 +207,10 @@ export async function fixture(
                 account_label: backup.account_label,
                 panel_origin: backup.panel_origin,
                 installation_id: backup.installation_id,
+              },
+              restore_source: {
+                backup_group_id: backup.id,
+                expires_at: backup.expires_at,
               },
               impact: ["Synthetic complete original operation group"],
               redacted_diff: "- mixed fixture state\n+ original fixture group",
@@ -298,6 +302,7 @@ export async function fixture(
                 model_revision: "model-revision-1",
               },
               restore_owner: null,
+              restore_source: null,
               impact: ["Synthetic fixture configuration only"],
               redacted_diff:
                 "- model = old\n+ model = synthetic-text\n+ helper binding = [redacted]",

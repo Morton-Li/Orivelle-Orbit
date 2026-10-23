@@ -77,6 +77,7 @@ function preview(): ConfigPreview {
       model_revision: "R2",
     },
     restore_owner: null,
+    restore_source: null,
     impact: [],
     redacted_diff: "Synthetic Claude configuration only",
     expires_at: new Date(Date.now() + 60_000).toISOString(),

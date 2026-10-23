@@ -2800,7 +2800,7 @@ impl Service {
         let now = chrono::Utc::now();
         let mut preview = ConfigPreview {
             id: uuid(), client, operation: "apply".into(), target_version: target.version.clone(),
-            paths: target.config_paths.clone(), model_id: Some(model_id.into()), context: Some(context), restore_owner: None,
+            paths: target.config_paths.clone(), model_id: Some(model_id.into()), context: Some(context), restore_owner: None, restore_source: None,
             impact: match client {
                 ClientKind::Codex => vec![
                     "修改用户默认模型、推理默认值、Orivelle provider 与独立模型目录；Codex、CLI 与 IDE 可能共用此配置。".into(),
@@ -3435,6 +3435,10 @@ impl Service {
             paths: backup.paths,
             model_id: None,
             context: None,
+            restore_source: Some(RestoreSource {
+                backup_group_id: backup_id.into(),
+                expires_at: backup.expires_at.clone(),
+            }),
             restore_owner: Some(RestoreOwner {
                 account_id: backup.account_id.clone(),
                 account_label: if backup.account_label.is_empty() {

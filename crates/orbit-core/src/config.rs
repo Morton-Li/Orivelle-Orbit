@@ -1334,6 +1334,16 @@ impl ConfigEngine<'_> {
         {
             return Err(fail("configuration_conflict"));
         }
+        // A new restore cannot outlive its selected source. Once publication
+        // starts, elapsed retention must not strand a partial restoration.
+        if journal.phase == "prepared" {
+            if chrono::DateTime::parse_from_rfc3339(&source.expires_at)
+                .map_err(|_| fail("backup_invalid"))?
+                <= chrono::Utc::now()
+            {
+                return Err(fail("backup_expired"));
+            }
+        }
         Ok(())
     }
 
