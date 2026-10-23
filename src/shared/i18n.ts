@@ -103,6 +103,9 @@ const zh = {
   "access.selectBackupAccount": "选择明确的原账户与 Panel 地址",
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
+  "access.restoreLocalConfiguration": "确认恢复配置",
+  "access.restored":
+    "原配置已恢复。请完整退出目标应用并重新打开，载入和连接仍待确认。",
   "access.exportImport": "确认导出 Claude 诊断候选",
   "access.importHint":
     "仅保存供核查的 Claude 配置诊断候选，不会写入客户端配置，也不代表可直接导入。客户端的保存、载入和连接状态均不会因此改变。",
@@ -426,6 +429,9 @@ const en: Record<keyof typeof zh, string> = {
     "Select the original account and Panel explicitly",
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
+  "access.restoreLocalConfiguration": "Confirm configuration restore",
+  "access.restored":
+    "Original configuration restored. Quit and reopen the client; loading and connection remain unconfirmed.",
   "access.exportImport": "Confirm and export Claude diagnostic candidate",
   "access.importHint":
     "Saves a Claude configuration candidate for inspection. It does not write the client configuration or establish import compatibility. Client configuration, loading and connection status remain unchanged.",

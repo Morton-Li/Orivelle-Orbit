@@ -165,7 +165,9 @@ async function confirm() {
   if (result) {
     await store.refresh();
     store.notify(
-      result.state === "conflict" ? t("client.conflict") : t("access.saved"),
+      result.state === "conflict"
+        ? t("client.conflict")
+        : t(result.state === "restored" ? "access.restored" : "access.saved"),
       result.state === "conflict" ? "error" : "neutral",
     );
     emit("applied");
@@ -359,7 +361,7 @@ async function confirm() {
             t(
               preview.operation === "apply"
                 ? "access.saveLocalConfiguration"
-                : "action.apply",
+                : "access.restoreLocalConfiguration",
             )
           }}
         </button>
