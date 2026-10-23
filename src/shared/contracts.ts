@@ -360,12 +360,14 @@ export type ConfigPreview = ConfigPreviewBase &
           model_revision: string;
         };
         restore_owner: null;
+        restore_source: null;
       }
     | {
         operation: "restore";
         model_id: null;
         context: null;
         restore_owner: RestoreOwner;
+        restore_source: { backup_group_id: string; expires_at: string };
       }
   );
 export type ConfigResult = {

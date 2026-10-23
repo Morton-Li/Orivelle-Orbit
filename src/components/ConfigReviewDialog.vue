@@ -22,11 +22,13 @@ const current = computed(() => {
   const preview = props.preview;
   if (!preview || rejectedPreviewIds.value.has(preview.id)) return false;
   const client = targetClient.value;
+  const expiresAt = Date.parse(preview.expires_at);
   if (
     !client?.installed ||
     !client.platform_supported ||
     client.version !== preview.target_version ||
-    Date.parse(preview.expires_at) <= now.value
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= now.value
   )
     return false;
   const diagnosticExport =
@@ -66,15 +68,26 @@ const current = computed(() => {
     )
       return false;
   }
-  if (preview.operation === "restore")
+  if (preview.operation === "restore") {
+    const source = preview.restore_source;
+    if (
+      !source?.backup_group_id ||
+      !Number.isFinite(Date.parse(source.expires_at)) ||
+      Date.parse(source.expires_at) <= now.value
+    )
+      return false;
     return store.state.backups.some(
       (backup) =>
+        backup.id === source.backup_group_id &&
         backup.account_id === preview.restore_owner.account_id &&
         backup.panel_origin === preview.restore_owner.panel_origin &&
         backup.installation_id === preview.restore_owner.installation_id &&
         backup.client === preview.client &&
-        backup.state !== "unavailable",
+        backup.expires_at === source.expires_at &&
+        backup.file_count === preview.paths.length &&
+        ["available", "conflict"].includes(backup.state),
     );
+  }
   const connection = store.activeConnection;
   if (!connection) return false;
   return (
@@ -330,7 +343,13 @@ async function confirm() {
       <h3>{{ t("access.changes") }}</h3>
       <pre class="diff-preview">{{ preview.redacted_diff }}</pre>
       <p v-if="!current" class="error-text" role="alert">
-        {{ t("access.previewExpired") }}
+        {{
+          t(
+            preview.operation === "restore"
+              ? "access.restorePreviewExpired"
+              : "access.previewExpired",
+          )
+        }}
       </p>
       <p v-if="preview.blocking_reason" class="info-box">
         {{

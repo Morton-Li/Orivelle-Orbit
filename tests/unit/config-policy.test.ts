@@ -76,6 +76,7 @@ function preview(client: "codex" | "claude" = "codex"): ConfigPreview {
       model_revision: model.revision,
     },
     restore_owner: null,
+    restore_source: null,
     impact: [],
     redacted_diff: "synthetic config",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -428,6 +429,10 @@ describe("Codex catalog confirmation", () => {
         model_id: null,
         context: null,
         restore_owner: owner,
+        restore_source: {
+          backup_group_id: "synthetic-backup",
+          expires_at: "2099-01-01T00:00:00Z",
+        },
         codex_catalog: null,
         codex_runtime: null,
       };
