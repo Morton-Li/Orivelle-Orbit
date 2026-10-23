@@ -13,7 +13,11 @@ vi.mock("../../src/shared/bridge", async (importOriginal) => ({
 }));
 import { useOrbitStore } from "../../src/stores/orbit";
 import { bootstrap, imageModel, task } from "../fixtures";
-import type { ModelView } from "../../src/shared/contracts";
+import type {
+  AuthorizationEvent,
+  LoginStart,
+  ModelView,
+} from "../../src/shared/contracts";
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -27,6 +31,66 @@ beforeEach(() => {
   bridge.call.mockResolvedValue([]);
 });
 describe("account and revision isolation", () => {
+  it.each(
+    (
+      ["connected", "denied", "expired", "failed", "cancelled"] as const
+    ).flatMap((terminal) =>
+      [true, false].map((pendingSeen) => ({ terminal, pendingSeen })),
+    ),
+  )(
+    "does not revive $terminal after a late login start acknowledgement; pending state seen=$pendingSeen",
+    async ({ terminal, pendingSeen }) => {
+      const store = useOrbitStore();
+      const acknowledgement = deferred<LoginStart>();
+      const finished = bootstrap("synthetic-account-a", 3);
+      bridge.call.mockImplementation((command) => {
+        if (command === "start_login") return acknowledgement.promise;
+        return command === "bootstrap" ? finished : [];
+      });
+      store.acceptState(bootstrap());
+      store.loginOpen = true;
+      const starting = store.login("https://panel.invalid");
+      if (pendingSeen) {
+        const pending = bootstrap("synthetic-account-a", 2);
+        pending.pending_authorization = {
+          request_id: "current-login",
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        };
+        store.acceptState(pending);
+      }
+      store.acceptState(finished);
+      const event: AuthorizationEvent = {
+        request_id: "current-login",
+        state: terminal,
+        error:
+          terminal === "failed"
+            ? {
+                code: "authorization_failed",
+                message: "Private",
+                retryable: false,
+              }
+            : null,
+      };
+      store.acceptAuthorization(event);
+      const handledNotice = store.notice;
+      acknowledgement.resolve({
+        request_id: event.request_id,
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await starting;
+      expect(store.state.state_revision).toBe(finished.state_revision);
+      expect(store.loginPending).toBe(false);
+      expect(store.loginRequestId).toBeNull();
+      expect(store.loginExpiresAt).toBeNull();
+      expect(store.loginOpen).toBe(terminal !== "connected");
+      expect(store.notice).not.toBeNull();
+      if (pendingSeen) expect(store.notice).toEqual(handledNotice);
+      expect(store.notice?.text).not.toContain("Private");
+      expect(
+        bridge.call.mock.calls.filter(([name]) => name === "start_login"),
+      ).toHaveLength(1);
+    },
+  );
   it("blocks mutations during update maintenance while allowing a local state read", async () => {
     const store = useOrbitStore();
     const state = bootstrap();
@@ -47,6 +111,65 @@ describe("account and revision isolation", () => {
     await store.refresh();
     expect(bridge.call).toHaveBeenCalledWith("bootstrap", {});
     expect(store.notice?.text).toContain("准备安装更新");
+  });
+  it("isolates early terminal events across login retries and ignores duplicates", async () => {
+    const store = useOrbitStore();
+    const first = deferred<LoginStart>();
+    const second = deferred<LoginStart>();
+    const pending = bootstrap("synthetic-account-a", 2);
+    pending.pending_authorization = {
+      request_id: "first-login",
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    };
+    let current = pending;
+    let starts = 0;
+    bridge.call.mockImplementation((command) => {
+      if (command === "start_login")
+        return ++starts === 1 ? first.promise : second.promise;
+      return command === "bootstrap" ? current : [];
+    });
+    store.acceptState(bootstrap());
+    store.loginOpen = true;
+    const startingFirst = store.login("https://panel.invalid");
+    expect(await store.login("https://other.invalid")).toBeUndefined();
+    store.acceptAuthorization({
+      request_id: "old-login",
+      state: "connected",
+      error: null,
+    });
+    expect(store.loginOpen).toBe(true);
+    first.resolve(pending.pending_authorization);
+    await startingFirst;
+    expect(store.loginPending).toBe(true);
+    const denied: AuthorizationEvent = {
+      request_id: "first-login",
+      state: "denied",
+      error: null,
+    };
+    store.acceptAuthorization(denied);
+    const notice = store.notice;
+    store.acceptAuthorization({ ...denied, state: "connected" });
+    expect(store.notice).toEqual(notice);
+    expect(store.loginOpen).toBe(true);
+    current = bootstrap("synthetic-account-a", 3);
+    store.acceptState(current);
+    const startingSecond = store.login("https://panel.invalid");
+    store.acceptAuthorization({
+      request_id: "second-login",
+      state: "connected",
+      error: null,
+    });
+    store.acceptAuthorization(denied);
+    second.resolve({
+      request_id: "second-login",
+      expires_at: pending.pending_authorization.expires_at,
+    });
+    await startingSecond;
+    expect(starts).toBe(2);
+    expect(store.loginPending).toBe(false);
+    expect(store.loginRequestId).toBeNull();
+    expect(store.loginOpen).toBe(false);
+    expect(store.notice?.text).toBe("账户连接已完成。");
   });
   it("preserves actor scope and draft models during a healthy refresh but stops new paid actions", async () => {
     const store = useOrbitStore();

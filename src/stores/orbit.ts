@@ -97,6 +97,12 @@ export const useOrbitStore = defineStore("orbit", () => {
   const loginPending = ref(false);
   const loginExpiresAt = ref<string | null>(null);
   const loginRequestId = ref<string | null>(null);
+  let loginAttempt: {
+    terminalEvents: Map<
+      string,
+      { event: AuthorizationEvent; handled: boolean }
+    >;
+  } | null = null;
   let unsubscribe: (() => void) | undefined;
   let unsubscribeErrors: (() => void) | undefined;
   let unsubscribeAuthorization: (() => void) | undefined;
@@ -205,7 +211,15 @@ export const useOrbitStore = defineStore("orbit", () => {
     report(publicFailure(event.error));
   }
   function acceptAuthorization(event: AuthorizationEvent) {
+    // Opening the browser can finish authorization before start_login returns.
+    // Keep early events only for that in-flight command and match its returned ID.
+    let terminal = loginAttempt?.terminalEvents.get(event.request_id);
+    if (loginAttempt && !terminal) {
+      terminal = { event, handled: false };
+      loginAttempt.terminalEvents.set(event.request_id, terminal);
+    }
     if (event.request_id !== loginRequestId.value) return;
+    if (terminal) terminal.handled = true;
     loginPending.value = false;
     loginExpiresAt.value = null;
     loginRequestId.value = null;
@@ -360,16 +374,37 @@ export const useOrbitStore = defineStore("orbit", () => {
     unsubscribeAuthorization = undefined;
   }
   async function login(panelOrigin: string) {
-    const result = await perform("login", "start_login", {
-      panel_origin: panelOrigin,
-    });
-    if (result) {
-      loginPending.value = true;
-      loginRequestId.value = result.request_id;
-      loginExpiresAt.value = result.expires_at;
-      await refresh();
+    if (loginAttempt || loginPending.value) return undefined;
+    const attempt = {
+      terminalEvents: new Map<
+        string,
+        {
+          event: AuthorizationEvent;
+          handled: boolean;
+        }
+      >(),
+    };
+    loginAttempt = attempt;
+    try {
+      const result = await perform("login", "start_login", {
+        panel_origin: panelOrigin,
+      });
+      if (result) {
+        const terminal = attempt.terminalEvents.get(result.request_id);
+        if (!terminal?.handled) {
+          loginRequestId.value = result.request_id;
+          if (terminal) acceptAuthorization(terminal.event);
+          else {
+            loginPending.value = true;
+            loginExpiresAt.value = result.expires_at;
+          }
+        }
+        await refresh();
+      }
+      return result;
+    } finally {
+      loginAttempt = null;
     }
-    return result;
   }
   async function cancelLogin() {
     const id = loginRequestId.value;
