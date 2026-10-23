@@ -141,7 +141,7 @@ impl Service {
         let mut view = ConfigPreview {
             id: uuid(), client: ClientKind::Claude, operation: "apply".into(),
             target_version: observation.target.version.clone(), paths: Vec::new(),
-            model_id: Some(model_id.into()), context: Some(self.context(&record, &cache, model)?), restore_owner: None,
+            model_id: Some(model_id.into()), context: Some(self.context(&record, &cache, model)?), restore_owner: None, restore_source: None,
             impact: vec![
                 "创建新的 Orivelle 配置，依次保存 profile、配置库索引和第三方模式；影响 Claude 的 Chat、Code 与 Cowork。".into(),
                 "保留原配置与未知索引字段；保存后需重启，尚未证明客户端加载或连通。".into(),
@@ -427,6 +427,11 @@ impl Service {
         let context_guard =
             |context: &ClaudeContext, _: bool| self.validate_claude_context(context, true);
         let engine = self.claude_engine(&guard, &context_guard);
+        let source_expiry = chrono::DateTime::parse_from_rfc3339(&backup.expires_at)
+            .map_err(|_| fail("backup_invalid"))?;
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5))
+            .min(source_expiry.with_timezone(&chrono::Utc))
+            .to_rfc3339();
         let mut frozen = None;
         let mut paths = backup.paths.clone();
         paths.reverse();
@@ -445,13 +450,14 @@ impl Service {
         let view = ConfigPreview {
             id: uuid(), client: ClientKind::Claude, operation: "restore".into(),
             target_version: observation.target.version.clone(), paths, model_id: None, context: None,
+            restore_source: Some(RestoreSource { backup_group_id: backup_id.into(), expires_at: backup.expires_at.clone() }),
             restore_owner: Some(RestoreOwner { account_id: backup.account_id.clone(),
                 account_label: if backup.account_label.is_empty() { backup.account_id } else { backup.account_label },
                 panel_origin: backup.installation.origin, installation_id: backup.installation.id }),
             impact: vec!["依次恢复主配置、配置库索引和新 profile 的原字节；客户端仍需重启。".into(),
                 "恢复不依赖当前账户会话、key、节点或 helper；外部修改时整组停止，失效授权不会复活。".into()],
             redacted_diff: "Restore encrypted original configuration; original secrets stay redacted.".into(),
-            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+            expires_at,
             can_apply: blocked.is_none(), can_export_import: false, blocking_reason: blocked,
             codex_catalog: None, codex_runtime: None, codex_configuration_target: None,
             claude_configuration_target: target_view(&observation),

@@ -337,6 +337,11 @@ pub struct PreviewContext {
     pub model_revision: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreSource {
+    pub backup_group_id: String,
+    pub expires_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPreview {
     pub id: String,
     pub client: ClientKind,
@@ -346,6 +351,8 @@ pub struct ConfigPreview {
     pub model_id: Option<String>,
     pub context: Option<PreviewContext>,
     pub restore_owner: Option<RestoreOwner>,
+    #[serde(default)]
+    pub restore_source: Option<RestoreSource>,
     pub impact: Vec<String>,
     pub redacted_diff: String,
     pub expires_at: String,

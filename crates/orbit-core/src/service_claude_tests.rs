@@ -387,6 +387,226 @@ fn grants(service: &Service) -> Value {
     .unwrap()
 }
 
+fn set_claude_backup_expiry(service: &Service, id: &str, expires_at: &str) {
+    for kind in ["journal", "backup"] {
+        let mut source: Journal = service.store.get(kind, id).unwrap().unwrap();
+        source.expires_at = expires_at.into();
+        service
+            .store
+            .put(kind, id, &source.account_id, &source)
+            .unwrap();
+    }
+}
+
+fn wait_for_claude_backup_expiry(expires_at: &str) {
+    let deadline = chrono::DateTime::parse_from_rfc3339(expires_at).unwrap();
+    let limit = std::time::Instant::now() + Duration::from_secs(5);
+    while chrono::Utc::now() <= deadline {
+        assert!(std::time::Instant::now() < limit, "bounded expiry wait");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn claude_restore_preview_binds_exact_selected_source_and_uses_its_shorter_deadline() {
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let apply = automatic_preview(&f.service, &f);
+    assert!(serde_json::to_value(&apply).unwrap()["restore_source"].is_null());
+    let saved = f
+        .service
+        .apply_client_config(&apply.id, true, false)
+        .unwrap();
+    let source_id = saved.backup_group_id.unwrap();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339();
+    set_claude_backup_expiry(&f.service, &source_id, &expires_at);
+    let restore = f.service.preview_restore(&source_id).unwrap();
+    assert!(restore.can_apply);
+    assert_eq!(
+        serde_json::to_value(&restore).unwrap()["restore_source"],
+        json!({"backup_group_id": source_id, "expires_at": expires_at})
+    );
+    assert_eq!(restore.expires_at, expires_at);
+    assert!(apply.paths.iter().all(|path| Path::new(path).is_file()));
+    let diagnostic = f
+        .service
+        .preview_claude_diagnostic(&f.record.view.id, f.record.view.revision, &f.model)
+        .unwrap();
+    assert!(serde_json::to_value(&diagnostic).unwrap()["restore_source"].is_null());
+    let mut legacy = serde_json::to_value(&restore).unwrap();
+    legacy.as_object_mut().unwrap().remove("restore_source");
+    assert!(
+        serde_json::from_value::<ConfigPreview>(legacy)
+            .unwrap()
+            .restore_source
+            .is_none()
+    );
+}
+
+#[test]
+fn claude_restore_prepared_after_source_expiry_refuses_before_file_or_grant_writes() {
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let apply = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&apply.id, true, false)
+        .unwrap();
+    let source_id = saved.backup_group_id.unwrap();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
+    set_claude_backup_expiry(&f.service, &source_id, &expires_at);
+    let restore = f.service.preview_restore(&source_id).unwrap();
+    let journal = preview_journal(&f.service, &restore);
+    assert_eq!(journal.phase, "prepared");
+    let before: Vec<_> = apply
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect();
+    let before_grants = grants(&f.service);
+    wait_for_claude_backup_expiry(&expires_at);
+    let observation = f.service.observe_configuration(ClientKind::Claude).unwrap();
+    let guard = || {
+        f.service.validate_claude_configuration(
+            &observation.policy,
+            observation.claude_configuration_target.as_ref(),
+        )
+    };
+    let context = |context: &ClaudeContext, restoring: bool| {
+        f.service.validate_claude_context(context, restoring)
+    };
+    let engine = ConfigEngine {
+        store: &f.service.store,
+        vault: f.service.vault.as_ref(),
+        allowed_roots: f.service.paths.configuration_roots.clone(),
+        policy_guard: Some(&guard),
+        context_guard: None,
+        claude_context_guard: Some(&context),
+    };
+    // The domain boundary must refuse even without relying on the UI preview TTL.
+    assert_eq!(
+        engine.apply(&journal.id).unwrap_err().code,
+        "backup_expired"
+    );
+    for (path, bytes) in apply.paths.iter().zip(before) {
+        assert_eq!(read_file(Path::new(path)).unwrap(), bytes);
+    }
+    assert_eq!(grants(&f.service), before_grants);
+    assert_eq!(
+        f.service
+            .store
+            .get::<Journal>("journal", &journal.id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "prepared"
+    );
+    assert_eq!(
+        f.service
+            .store
+            .get::<Journal>("journal", &source_id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "committed"
+    );
+}
+
+#[test]
+fn claude_restore_publishing_can_finish_after_source_expiry_without_reviving_revoked_grants() {
+    for logged_out in [false, true] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let first = automatic_preview(&f.service, &f);
+        f.service
+            .apply_client_config(&first.id, true, false)
+            .unwrap();
+        let before: Vec<_> = first
+            .paths
+            .iter()
+            .map(|path| read_file(Path::new(path)).unwrap())
+            .collect();
+        let first_grant: HelperBinding = f
+            .service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .into_iter()
+            .find(|binding| binding.enabled)
+            .unwrap();
+        let second = automatic_preview(&f.service, &f);
+        let saved = f
+            .service
+            .apply_client_config(&second.id, true, false)
+            .unwrap();
+        let source_id = saved.backup_group_id.unwrap();
+        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
+        set_claude_backup_expiry(&f.service, &source_id, &expires_at);
+        let restore = f.service.preview_restore(&source_id).unwrap();
+        let mut restoring = preview_journal(&f.service, &restore);
+        assert!(chrono::Utc::now() < chrono::DateTime::parse_from_rfc3339(&expires_at).unwrap());
+        restoring.phase = "publishing".into();
+        f.service
+            .store
+            .put("journal", &restoring.id, &restoring.account_id, &restoring)
+            .unwrap();
+        // A confirmed restoration was interrupted after its first file write.
+        assert_eq!(restore.paths[0], first.paths[2]);
+        std::fs::write(&restore.paths[0], before[2].as_ref().unwrap()).unwrap();
+        if logged_out {
+            f.service.commit_logout(&f.record.view.id).unwrap();
+        }
+        wait_for_claude_backup_expiry(&expires_at);
+        let recovered = Service::new(
+            f.service.store.clone(),
+            f.service.vault.clone(),
+            f.service.paths.clone(),
+        )
+        .unwrap();
+        for (path, original) in first.paths.iter().zip(before) {
+            assert_eq!(read_file(Path::new(path)).unwrap(), original);
+        }
+        assert!(!Path::new(&second.paths[0]).exists());
+        let bindings = recovered
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap();
+        assert!(
+            bindings
+                .iter()
+                .all(|binding| binding.enabled == (!logged_out && binding.id == first_grant.id))
+        );
+        assert_eq!(
+            recovered
+                .store
+                .get::<Journal>("journal", &restoring.id)
+                .unwrap()
+                .unwrap()
+                .phase,
+            "committed"
+        );
+        // Successful commit permits the existing retention policy to prune
+        // this now-expired source, including its restored journal row.
+        assert!(
+            recovered
+                .store
+                .get::<Journal>("journal", &source_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            recovered
+                .store
+                .get::<Journal>("backup", &source_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !recovered
+                .pending_configuration_recovery(ClientKind::Claude)
+                .unwrap()
+        );
+        assert_unobserved(&recovered, "not_configured");
+    }
+}
+
 #[tokio::test]
 async fn claude_b3c_automatic_command_consumes_late_authority_changes_before_vault_or_writes() {
     for fault in [
