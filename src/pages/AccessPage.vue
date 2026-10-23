@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import { t } from "../shared/i18n";
 import type { ClientKind, ConfigPreview } from "../shared/contracts";
@@ -12,6 +12,14 @@ import StatusBadge from "../components/StatusBadge.vue";
 const store = useOrbitStore();
 const selected = ref<Record<ClientKind, string>>({ codex: "", claude: "" });
 const preview = ref<ConfigPreview | null>(null);
+const previewing = ref<Record<ClientKind, boolean>>({
+  codex: false,
+  claude: false,
+});
+let previewGeneration = 0;
+onUnmounted(() => {
+  previewGeneration++;
+});
 const manageAction = ref<"revoke" | "delete" | null>(null);
 const revokeOnDelete = ref(false);
 const manageConnectionId = ref<string | null>(null);
@@ -76,8 +84,10 @@ const manageCurrent = computed(
 watch(
   () => store.scope,
   () => {
+    previewGeneration++;
     selected.value = { codex: "", claude: "" };
   },
+  { flush: "sync" },
 );
 watch(
   () => store.scope,
@@ -98,18 +108,71 @@ watch(
 );
 async function requestPreview(client: ClientKind) {
   const connection = store.activeConnection;
-  if (!connection || !selected.value[client] || !previewAllowed(client)) return;
-  const result = await store.perform(
-    `preview-${client}`,
-    "preview_client_config",
-    {
-      connection_id: connection.id,
-      expected_revision: connection.revision,
-      client,
-      model_id: selected.value[client],
-    },
-  );
-  if (result) preview.value = result;
+  if (
+    !connection ||
+    !selected.value[client] ||
+    !previewAllowed(client) ||
+    previewing.value[client]
+  )
+    return;
+  const scope = store.scope;
+  const origin = connection.panel_origin;
+  const modelId = selected.value[client];
+  const generation = ++previewGeneration;
+  const current = () =>
+    generation === previewGeneration &&
+    scope === store.scope &&
+    origin === store.activeConnection?.panel_origin;
+  previewing.value[client] = true;
+  try {
+    const result = await store.perform(
+      `preview-${client}`,
+      "preview_client_config",
+      {
+        connection_id: connection.id,
+        expected_revision: connection.revision,
+        client,
+        model_id: modelId,
+      },
+    );
+    if (!result || !current()) return;
+    // Native preview refreshes Panel's catalogue. Synchronize that authoritative
+    // model revision before the dialog can permanently retire a fresh preview.
+    const noticeBeforeRead = store.notice;
+    const synchronized = await store.loadModels();
+    if (!current()) return;
+    if (
+      !synchronized &&
+      store.notice !== noticeBeforeRead &&
+      store.notice?.tone === "error"
+    )
+      return;
+    const active = store.activeConnection;
+    if (
+      !synchronized ||
+      result.operation !== "apply" ||
+      result.client !== client ||
+      !store.ready ||
+      selected.value[client] !== modelId ||
+      result.model_id !== modelId ||
+      result.context.connection_id !== active?.id ||
+      result.context.account_id !== active.account_id ||
+      result.context.connection_revision !== active.revision ||
+      result.context.credential_revision !== active.credential_revision ||
+      result.context.node_id !== active.node_id ||
+      !store.models.some(
+        (model) =>
+          model.id === modelId &&
+          model.revision === result.context.model_revision,
+      )
+    ) {
+      store.notify(t("access.previewExpired"));
+      return;
+    }
+    preview.value = result;
+  } finally {
+    previewing.value[client] = false;
+  }
 }
 async function restore(id: string) {
   const backup = store.state.backups.find((item) => item.id === id);
@@ -282,6 +345,7 @@ function changeNode(event: Event) {
             !store.ready ||
             !previewAllowed(client.client) ||
             !selected[client.client] ||
+            previewing[client.client] ||
             store.busy.has(`preview-${client.client}`)
           "
           @click="requestPreview(client.client)"
