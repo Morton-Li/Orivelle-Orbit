@@ -49,7 +49,7 @@ describe("account and revision isolation", () => {
       });
       store.acceptState(bootstrap());
       store.loginOpen = true;
-      const starting = store.login("https://panel.invalid");
+      const starting = store.login();
       if (pendingSeen) {
         const pending = bootstrap("synthetic-account-a", 2);
         pending.pending_authorization = {
@@ -130,8 +130,8 @@ describe("account and revision isolation", () => {
     });
     store.acceptState(bootstrap());
     store.loginOpen = true;
-    const startingFirst = store.login("https://panel.invalid");
-    expect(await store.login("https://other.invalid")).toBeUndefined();
+    const startingFirst = store.login();
+    expect(await store.login()).toBeUndefined();
     store.acceptAuthorization({
       request_id: "old-login",
       state: "connected",
@@ -153,7 +153,7 @@ describe("account and revision isolation", () => {
     expect(store.loginOpen).toBe(true);
     current = bootstrap("synthetic-account-a", 3);
     store.acceptState(current);
-    const startingSecond = store.login("https://panel.invalid");
+    const startingSecond = store.login();
     store.acceptAuthorization({
       request_id: "second-login",
       state: "connected",

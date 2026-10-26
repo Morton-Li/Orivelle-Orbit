@@ -139,12 +139,21 @@ test("browser authorization remains pending and supports explicit denial and can
     .last()
     .click();
   const dialog = page.getByRole("dialog");
-  await dialog.locator("#panel-address").fill("https://panel.invalid");
+  await expect(
+    dialog.getByText("https://orivelle.powerbyte.io", { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.locator("input, textarea, select")).toHaveCount(0);
   await dialog.getByRole("button", { name: "继续", exact: true }).click();
   await expect(
     dialog.getByRole("button", { name: "继续", exact: true }),
   ).toBeDisabled();
-  await expect(dialog.locator("#panel-address")).toBeDisabled();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.start_login,
+    ),
+  ).toEqual({});
   await page.evaluate(() =>
     (
       window as unknown as { __ORBIT_TEST__: FixtureControl }
@@ -161,7 +170,9 @@ test("browser authorization remains pending and supports explicit denial and can
     dialog.getByRole("button", { name: "继续", exact: true }),
   ).toBeEnabled();
   await dialog.getByRole("button", { name: "继续", exact: true }).click();
-  await expect(dialog.locator("#panel-address")).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: "继续", exact: true }),
+  ).toBeDisabled();
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await calls(page, "cancel_login")).toBe(1);

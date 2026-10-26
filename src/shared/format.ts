@@ -154,21 +154,6 @@ export function clientStatus(
     return { text: t("client.restart"), tone: "warning" };
   return { text: t("client.notConfigured"), tone: "neutral" };
 }
-export function canonicalPanelOrigin(value: string): string | null {
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      !url.search &&
-      !url.hash &&
-      url.pathname === "/"
-      ? url.origin
-      : null;
-  } catch {
-    return null;
-  }
-}
 export function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }

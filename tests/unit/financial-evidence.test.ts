@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import PriceDetails from "../../src/components/PriceDetails.vue";
 import {
-  canonicalPanelOrigin,
   clientStatus,
   evidenceMatches,
   formatDecimal,
@@ -133,19 +132,6 @@ describe("IPC-facing bounds", () => {
     expect(utf8Bytes("中".repeat(10922))).toBe(32766);
     expect(utf8Bytes("中".repeat(10923))).toBe(32769);
     expect(utf8Bytes("😀".repeat(8192))).toBe(32768);
-  });
-  it("accepts only a canonical HTTPS authorization origin", () => {
-    expect(canonicalPanelOrigin(" https://panel.example.com/ ")).toBe(
-      "https://panel.example.com",
-    );
-    for (const value of [
-      "http://panel.invalid",
-      "https://user:secret@panel.invalid",
-      "https://panel.invalid/x",
-      "https://panel.invalid/?code=secret",
-      "https://panel.invalid/#secret",
-    ])
-      expect(canonicalPanelOrigin(value)).toBeNull();
   });
   it("keeps images on the scoped native asset protocol", () => {
     expect(safePreviewUrl("asset://localhost/fixture/thumb.png")).toBe(

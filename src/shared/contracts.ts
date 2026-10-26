@@ -411,7 +411,7 @@ export type ForgetInstallationPreview = {
 
 export interface IpcCommands {
   bootstrap: { args: Record<string, never>; result: BootstrapView };
-  start_login: { args: { panel_origin: string }; result: LoginStart };
+  start_login: { args: Record<string, never>; result: LoginStart };
   cancel_login: { args: { request_id: string }; result: BootstrapView };
   refresh_account: {
     args: { connection_id: string; expected_revision: number };
