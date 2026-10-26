@@ -36,11 +36,6 @@ impl ImageClipboardSink for NativeImageClipboard {
 pub struct Empty {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Origin {
-    panel_origin: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Connection {
     connection_id: String,
 }
@@ -204,9 +199,13 @@ pub async fn refresh_account(
 pub async fn start_login(
     app: AppHandle,
     native: State<'_, Native>,
-    request: Origin,
+    request: Empty,
 ) -> Result<LoginStart> {
-    let (view, url) = native.service.start_login(&request.panel_origin).await?;
+    let _ = request;
+    let (view, url) = native
+        .service
+        .start_login(orbit_core::network::PRODUCTION_PANEL_ORIGIN)
+        .await?;
     if app.opener().open_url(url, None::<&str>).is_err() {
         let error = fail("browser_unavailable");
         native.service.fail_login(&view.request_id, error.clone())?;
@@ -602,5 +601,26 @@ async fn install_verified_candidate(
     {
         let _ = (app, service, artifact);
         Err(fail("platform_unsupported"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_panel_login_empty_request_rejects_caller_selected_origin() {
+        async fn typed_command(app: AppHandle, native: State<'_, Native>, request: Empty) {
+            let _ = start_login(app, native, request).await;
+        }
+        let _ = typed_command;
+        assert!(serde_json::from_value::<Empty>(serde_json::json!({})).is_ok());
+        for input in [
+            serde_json::json!({"panel_origin":"https://panel.example.test"}),
+            serde_json::json!({"panel_origin":orbit_core::network::PRODUCTION_PANEL_ORIGIN}),
+            serde_json::json!({"origin":"https://panel.example.test"}),
+        ] {
+            assert!(serde_json::from_value::<Empty>(input).is_err());
+        }
     }
 }

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::time::Duration;
 use url::Url;
 
+pub const PRODUCTION_PANEL_ORIGIN: &str = "https://orivelle.powerbyte.io";
+
 #[derive(Clone)]
 pub struct Http {
     client: Client,
@@ -154,6 +156,18 @@ impl Http {
     #[cfg(test)]
     pub fn scripted(&self, handler: FixtureHandler) {
         *self.fixture.lock().unwrap() = Some(handler);
+    }
+    pub(crate) fn require_panel_origin(&self, origin: &str) -> Result<()> {
+        // Alternate issuers exist only in explicit, compile-time test clients.
+        // Production and ordinary debug builds have no configurable override.
+        #[cfg(test)]
+        if self.allow_loopback || self.local_acceptance_origin.as_deref() == Some(origin) {
+            return Ok(());
+        }
+        if origin != PRODUCTION_PANEL_ORIGIN {
+            return Err(fail("panel_origin_not_allowed"));
+        }
+        Ok(())
     }
     pub fn validate_url(&self, raw: &str) -> Result<Url> {
         let url = Url::parse(raw).map_err(|_| fail("invalid_remote_url"))?;
@@ -315,6 +329,7 @@ impl Http {
         credential: Option<(&Installation, &ProofSession, &dyn Vault)>,
         proof_with_bearer: bool,
     ) -> Result<PanelEnvelope<T>> {
+        self.require_panel_origin(origin)?;
         if canonical_origin(origin)? != origin
             || !target.starts_with("/api/v1/orbit/")
             || target.contains('#')
@@ -493,6 +508,153 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    struct CountingVault(AtomicUsize);
+    impl Vault for CountingVault {
+        fn get(&self, _: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(fail("unexpected_vault_access"))
+        }
+        fn put(&self, _: &str, _: &[u8]) -> Result<()> {
+            panic!("production origin check must not mutate credentials")
+        }
+        fn delete(&self, _: &str) -> Result<()> {
+            panic!("production origin check must not delete credentials")
+        }
+    }
+
+    #[tokio::test]
+    async fn production_panel_origin_rejects_foreign_before_credentials_or_transport() {
+        let http = Http::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sent = calls.clone();
+        http.scripted(Arc::new(move |_| {
+            sent.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(fail("unexpected_transport")) })
+        }));
+        let vault = CountingVault(AtomicUsize::new(0));
+        let session = ProofSession {
+            binding_id: "synthetic-binding".into(),
+            nonce: "synthetic-nonce".into(),
+            access_token: "synthetic-access".into(),
+            refresh_token: "synthetic-refresh".into(),
+            expires_at: 1,
+            session_expires_at: "2099-01-01T00:00:00Z".into(),
+            scopes: vec![],
+            credential_delivery_ticket: None,
+        };
+        for origin in [
+            "https://panel.example.test",
+            "https://orivelle.powerbyte.io.evil.test",
+            "https://orivelle.powerbyte.io:8443",
+            "https://orivelle.powerbyte.io:443",
+            "https://user@orivelle.powerbyte.io",
+            "https://orivelle.powerbyte.io/path",
+            "https://orivelle.powerbyte.io/?query=synthetic",
+            "https://orivelle.powerbyte.io/#fragment",
+            "http://orivelle.powerbyte.io",
+        ] {
+            let installation = Installation {
+                id: "11111111-1111-4111-8111-111111111111".into(),
+                origin: origin.into(),
+                public_key: "synthetic-public-key".into(),
+                signing_reference: "synthetic-signing".into(),
+                backup_reference: "synthetic-backup".into(),
+            };
+            let error = http
+                .panel::<serde_json::Value>(
+                    origin,
+                    "/api/v1/orbit/bootstrap",
+                    Method::GET,
+                    vec![],
+                    Some((&installation, &session, &vault)),
+                    true,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "panel_origin_not_allowed", "{origin}");
+            assert_eq!(vault.0.load(Ordering::SeqCst), 0);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn production_panel_origin_rejects_unsigned_foreign_start_before_transport() {
+        let http = Http::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sent = calls.clone();
+        http.scripted(Arc::new(move |_| {
+            sent.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(RemoteResponse {
+                    status: 200,
+                    request_id: None,
+                    bytes: br#"{"data":{"unexpected":true}}"#.to_vec(),
+                })
+            })
+        }));
+        assert_eq!(
+            http.panel::<serde_json::Value>(
+                "https://panel.example.test",
+                "/api/v1/orbit/authorization-requests",
+                Method::POST,
+                b"{}".to_vec(),
+                None,
+                false,
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "panel_origin_not_allowed"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn production_panel_origin_allows_official_panel_and_other_inference_hosts() {
+        let http = Http::new().unwrap();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sent = calls.clone();
+        http.scripted(Arc::new(move |request| {
+            sent.lock().unwrap().push(request.url);
+            Box::pin(async {
+                Ok(RemoteResponse {
+                    status: 200,
+                    request_id: None,
+                    bytes: br#"{"data":{"ok":true}}"#.to_vec(),
+                })
+            })
+        }));
+        let value: serde_json::Value = http
+            .panel(
+                "https://orivelle.powerbyte.io",
+                "/api/v1/orbit/bootstrap",
+                Method::GET,
+                vec![],
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(value["ok"], true);
+        http.request(
+            Method::POST,
+            "https://edge.example.test/v1/images/generations",
+            b"{}".to_vec(),
+            vec![("Authorization".into(), "Bearer synthetic".into())],
+            1024,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [
+                "https://orivelle.powerbyte.io/api/v1/orbit/bootstrap",
+                "https://edge.example.test/v1/images/generations"
+            ]
+        );
+    }
     #[tokio::test]
     async fn post_redirect_never_resends_credentials_or_generation() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

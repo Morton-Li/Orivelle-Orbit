@@ -281,6 +281,62 @@ fn automatic_preview(service: &Service, fixture: &tests::PolicyFixture) -> Confi
         .unwrap()
 }
 
+#[test]
+fn production_panel_origin_preserves_legacy_offline_claude_backup_restore() {
+    let mut fixture = tests::policy_fixture(ClientKind::Claude);
+    let first = automatic_preview(&fixture.service, &fixture);
+    fixture
+        .service
+        .apply_client_config(&first.id, true, false)
+        .unwrap();
+    let original: Vec<_> = first
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect();
+    let second = automatic_preview(&fixture.service, &fixture);
+    let saved = fixture
+        .service
+        .apply_client_config(&second.id, true, false)
+        .unwrap();
+    fixture
+        .service
+        .commit_logout(&fixture.record.view.id)
+        .unwrap();
+    let http = Http::new().unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let sent = calls.clone();
+    http.scripted(Arc::new(move |_| {
+        sent.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(fail("unexpected_transport")) })
+    }));
+    Arc::get_mut(&mut fixture.service).unwrap().http = http;
+    let restore = fixture
+        .service
+        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    assert!(restore.can_apply);
+    let result = fixture
+        .service
+        .apply_client_config(&restore.id, true, true)
+        .unwrap();
+    assert_eq!(result.state, "restored");
+    for (path, bytes) in first.paths.iter().zip(original) {
+        assert_eq!(read_file(Path::new(path)).unwrap(), bytes);
+    }
+    assert!(!Path::new(&second.paths[0]).exists());
+    assert!(
+        fixture
+            .service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .iter()
+            .all(|binding| !binding.enabled)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
 fn assert_unobserved(service: &Service, state: &str) {
     let client = service
         .bootstrap()

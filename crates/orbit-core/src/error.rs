@@ -13,6 +13,7 @@ impl PublicError {
             "credential_missing" => "所需凭据不可用，请在 Orbit 重新登录。",
             "binding_disabled" => "此客户端连接已停用。",
             "connection_conflict" => "连接已经改变，请重新预览。",
+            "panel_origin_not_allowed" => "此版本仅连接 Orivelle 官方服务，请重新登录。",
             "configuration_conflict" => "配置已被其他程序修改，需协调冲突。",
             "schema_unverified" => "Claude 自动写入合同尚未启用；诊断候选仅供核查。",
             "integration_authorization_required" => "此系统集成尚未取得测试授权。",
