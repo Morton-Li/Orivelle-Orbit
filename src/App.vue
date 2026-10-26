@@ -3,13 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useOrbitStore } from "./stores/orbit";
 import { locale, t } from "./shared/i18n";
-import { canonicalPanelOrigin } from "./shared/format";
 import OrbitIcon from "./components/OrbitIcon.vue";
 import OrbitDialog from "./components/OrbitDialog.vue";
 const store = useOrbitStore();
 const router = useRouter();
-const panelAddress = ref("");
-const loginInvalid = ref(false);
 const systemDark = ref(false);
 const dark = computed(
   () =>
@@ -43,13 +40,7 @@ function keyboard(event: KeyboardEvent) {
   }
 }
 async function login() {
-  const origin = canonicalPanelOrigin(panelAddress.value);
-  if (!origin) {
-    loginInvalid.value = true;
-    return;
-  }
-  loginInvalid.value = false;
-  await store.login(origin);
+  await store.login();
 }
 watch(
   dark,
@@ -62,13 +53,6 @@ watch(
     document.documentElement.lang = value;
   },
   { immediate: true },
-);
-watch(
-  () => store.loginOpen,
-  (value) => {
-    if (value && !panelAddress.value)
-      panelAddress.value = store.activeConnection?.panel_origin ?? "";
-  },
 );
 onMounted(() => {
   media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -171,29 +155,11 @@ onUnmounted(() => {
       :description="t('login.description')"
     >
       <form class="dialog-form" @submit.prevent="login">
-        <label class="field-label" for="panel-address">{{
-          t("login.panel")
-        }}</label
-        ><input
-          id="panel-address"
-          v-model="panelAddress"
-          type="url"
-          placeholder="https://panel.example.com"
-          autocomplete="url"
-          :aria-invalid="loginInvalid"
-          :aria-describedby="loginInvalid ? 'login-invalid' : 'login-hint'"
-          :disabled="store.loginPending"
-          required
-        />
-        <p id="login-hint" class="field-hint">{{ t("login.hint") }}</p>
-        <p
-          v-if="loginInvalid"
-          id="login-invalid"
-          class="error-text"
-          role="alert"
-        >
-          {{ t("login.invalid") }}
-        </p>
+        <div>
+          <p class="field-label">{{ t("login.service") }}</p>
+          <p class="mono">https://orivelle.powerbyte.io</p>
+          <p class="field-hint">{{ t("login.hint") }}</p>
+        </div>
         <p v-if="store.loginPending" class="info-box" role="status">
           {{ t("login.waiting") }}
         </p>

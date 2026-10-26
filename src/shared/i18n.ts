@@ -30,9 +30,10 @@ const zh = {
   "login.description":
     "在系统浏览器登录并授权 Orbit，接入凭据将由授权流程安全取得。",
   "login.panel": "Panel 地址",
-  "login.hint": "使用你的 Orivelle 官方 HTTPS 地址。",
+  "login.service": "Orivelle 官方服务",
+  "login.officialOnly": "此版本仅连接 Orivelle 官方服务，请重新登录。",
+  "login.hint": "继续后将在系统浏览器打开 Orivelle 登录与授权页面。",
   "login.waiting": "请在系统浏览器完成登录和授权。",
-  "login.invalid": "请输入不含用户信息、参数或片段的 HTTPS Panel 地址。",
   "home.eyebrow": "桌面接入",
   "home.title": "让 AI 工具接入 Orivelle",
   "home.description": "从一个账户管理桌面工具的节点、模型与接入配置。",
@@ -348,10 +349,12 @@ const en: Record<keyof typeof zh, string> = {
   "login.description":
     "Sign in and authorize Orbit in your system browser. The authorization flow obtains inference credentials securely.",
   "login.panel": "Panel address",
-  "login.hint": "Use your official Orivelle HTTPS address.",
+  "login.service": "Official Orivelle service",
+  "login.officialOnly":
+    "This version connects only to the official Orivelle service. Please sign in again.",
+  "login.hint":
+    "Continue to Orivelle sign-in and authorization in your system browser.",
   "login.waiting": "Complete sign-in and authorization in the system browser.",
-  "login.invalid":
-    "Enter an HTTPS Panel address without credentials, query or fragment.",
   "home.eyebrow": "DESKTOP ACCESS",
   "home.title": "Connect your AI tools to Orivelle",
   "home.description":

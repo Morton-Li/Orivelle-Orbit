@@ -333,10 +333,17 @@ impl Service {
         for client in &clients {
             store.put("client-state", client.client.as_str(), "local", client)?;
         }
+        let http = Http::new()?;
+        #[cfg(test)]
+        let http = if paths.isolated {
+            Http::fixture()
+        } else {
+            http
+        };
         let service = Arc::new(Self {
             store,
             vault,
-            http: Http::new()?,
+            http,
             paths,
             state_revision: AtomicU64::new(1),
             login_epoch: AtomicU64::new(0),
@@ -663,6 +670,7 @@ impl Service {
             .map_err(|_| fail("image_busy"))
     }
     fn session(&self, record: &ConnectionRecord) -> Result<ProofSession> {
+        self.http.require_panel_origin(&record.view.panel_origin)?;
         let bytes = self.vault.get(&record.session_reference)?;
         let envelope: SessionEnvelope =
             serde_json::from_slice(&bytes).map_err(|_| fail("credential_missing"))?;
@@ -938,6 +946,7 @@ impl Service {
         })
     }
     pub async fn start_login(self: &Arc<Self>, panel_origin: &str) -> Result<(LoginStart, String)> {
+        self.http.require_panel_origin(panel_origin)?;
         let operation = self.begin_mutation()?;
         let origin = canonical_origin(panel_origin)?;
         let epoch = {
@@ -1432,6 +1441,7 @@ impl Service {
         };
         let _guard = lock.lock().await;
         let mut record = self.record(id)?;
+        self.http.require_panel_origin(&record.view.panel_origin)?;
         self.ensure_installation_available(&record.installation_id)?;
         if record.session_status != "authenticated" {
             return Err(fail("session_expired"));
@@ -6269,6 +6279,57 @@ mod tests {
         );
         assert!(before.as_array().unwrap().is_empty());
     }
+    #[tokio::test]
+    async fn production_panel_origin_rejects_legacy_login_and_saved_account_before_vault() {
+        let mut fixture = policy_fixture(ClientKind::Claude);
+        let http = Http::new().unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let sent = calls.clone();
+        http.scripted(Arc::new(move |_| {
+            sent.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(fail("unexpected_transport")) })
+        }));
+        Arc::get_mut(&mut fixture.service).unwrap().http = http;
+        fixture.vault.calls.store(0, Ordering::SeqCst);
+        fixture.vault.mutations.store(0, Ordering::SeqCst);
+        let revision = fixture.service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            fixture
+                .service
+                .start_login(&fixture.record.view.panel_origin)
+                .await
+                .unwrap_err()
+                .code,
+            "panel_origin_not_allowed"
+        );
+        assert_eq!(
+            fixture.service.session(&fixture.record).err().unwrap().code,
+            "panel_origin_not_allowed"
+        );
+        assert_eq!(
+            fixture
+                .service
+                .refresh_account(&fixture.record.view.id, fixture.record.view.revision)
+                .await
+                .unwrap_err()
+                .code,
+            "panel_origin_not_allowed"
+        );
+        assert_eq!(
+            fixture
+                .service
+                .list_models(&fixture.record.view.id)
+                .await
+                .unwrap_err()
+                .code,
+            "panel_origin_not_allowed"
+        );
+        assert_eq!(fixture.vault.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.vault.mutations.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.service.store.snapshot().unwrap().revision, revision);
+    }
+
     fn setup() -> (
         tempfile::TempDir,
         Arc<Service>,

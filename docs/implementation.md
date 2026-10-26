@@ -12,6 +12,8 @@ Vue 3、TypeScript、Vite、Pinia、Vue Router、Tailwind CSS、Reka UI 负责�
 
 Panel 复用现有网页登录、验证、2FA/passkey 与权限服务。独立桌面授权使用系统浏览器、短时单次授权码、state、PKCE、HTTPS 交换和绑定的 loopback callback。回调只携带短时代码、state、issuer，不能携带账户或推理凭据。
 
+Panel 地址固定为 `https://orivelle.powerbyte.io`。登录界面只显示官方服务；`start_login` IPC 只接收空对象，拒绝附加 origin 字段，原生层使用编译期常量。原生 Panel 请求和会话读取在凭据访问前拒绝其他 origin，历史连接也不能继续访问其他站点；没有环境变量、配置文件或普通 debug 覆盖入口。测试站点仅由 `cfg(test)` 的显式 Http fixture 放行。此约束不限制 Panel 授权返回的 Edge 推理节点，也不改变原账户/origin 身份的历史备份离线恢复。
+
 安装 Ed25519 身份、备份加密密钥、桌面账户会话和推理 key 分别存入原生系统安全存储；安装证明不能代替用户授权。前端和 SQLite 只取得不含秘密的元信息和引用。不可用、拒绝访问或缺少凭据明确失败，不回落明文。refresh 单次旋转；响应丢失或本地写入失败需重新授权，不重试旧 refresh。
 
 浏览器授权 pending 使用请求 ID 和期限独立表示；连接、拒绝、过期、失败、取消均返回关联终态。取消会关闭本地请求并阻止迟到回调写入凭据。正常会话轮换保留同账户作用域和草稿，同时暂停新的付费操作；轮换失败进入过期状态。首次授权已成功但账户查询失败时，可按 active connection 和 Panel origin 重新发只读查询，取得账户前不能执行付费操作。

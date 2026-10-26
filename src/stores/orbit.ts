@@ -187,7 +187,10 @@ export const useOrbitStore = defineStore("orbit", () => {
   }
   function report(error: unknown) {
     const code = error instanceof OrbitError ? error.code : "operation_failed";
-    const policyMessage = configPolicyMessage(code);
+    const policyMessage =
+      code === "panel_origin_not_allowed"
+        ? t("login.officialOnly")
+        : configPolicyMessage(code);
     notify(
       policyMessage ??
         `${error instanceof OrbitError ? error.message : t("common.failed")} (${code})`,
@@ -376,7 +379,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     unsubscribeAuthorization?.();
     unsubscribeAuthorization = undefined;
   }
-  async function login(panelOrigin: string) {
+  async function login() {
     if (loginAttempt || loginPending.value) return undefined;
     const attempt = {
       terminalEvents: new Map<
@@ -389,9 +392,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     };
     loginAttempt = attempt;
     try {
-      const result = await perform("login", "start_login", {
-        panel_origin: panelOrigin,
-      });
+      const result = await perform("login", "start_login", {});
       if (result) {
         const terminal = attempt.terminalEvents.get(result.request_id);
         if (!terminal?.handled) {

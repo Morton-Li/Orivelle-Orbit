@@ -2,7 +2,7 @@
 
 独立桌面客户端，优先管理 Codex 与 Claude Desktop 的 Orivelle 接入；同时提供本地图片生成、编辑和历史工作台。四个主要页面为首页、图片工作台、接入、设置。通过系统浏览器完成 Orivelle 授权，API key 不作为桌面登录身份。
 
-Orbit 直接对接 Panel，取得桌面账户会话、安装关联 key、账户信息、获准节点和模型。Panel 是权限、预算与结算的权威；桌面配置和图片请求使用 Panel 返回的现有节点地址，推理由 Edge 执行。
+Orbit 固定对接生产 Panel `https://orivelle.powerbyte.io`，不提供手填地址或运行时覆盖入口，取得桌面账户会话、安装关联 key、账户信息、获准节点和模型。Panel 是权限、预算与结算的权威；桌面配置和图片请求使用 Panel 返回的现有节点地址，推理由 Edge 执行。
 
 当前为项目内开发候选。目标平台为 **Windows 11 25H2 x64**、**macOS 15+ Apple Silicon**；平台支持必须以真实系统验收为准。macOS Intel 已移除。Linux、Windows ARM64和移动端不在范围内。
 
