@@ -87,6 +87,7 @@ const zh = {
   "access.noModels": "连接账户和节点后取得模型",
   "access.noConnection": "尚无账户连接",
   "access.noNode": "尚无可用节点",
+  "access.selectNode": "选择获准的节点",
   "access.nodeUnavailable": "节点当前不可用",
   "access.readonly":
     "只读账户可查看预算和消费，自动取得接入凭据需现有业务写权限。",
@@ -415,6 +416,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.noModels": "Connect an account and node to obtain models",
   "access.noConnection": "No account connection",
   "access.noNode": "No available nodes",
+  "access.selectNode": "Select an authorized node",
   "access.nodeUnavailable": "Node is currently unavailable",
   "access.readonly":
     "Read-only accounts can view budgets and usage. Automatic credential delivery requires existing business write permissions.",

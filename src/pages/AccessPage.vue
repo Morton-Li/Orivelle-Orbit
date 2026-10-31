@@ -293,7 +293,15 @@ function changeNode(event: Event) {
         :disabled="!store.activeConnection || store.busy.has('node')"
         @change="changeNode"
       >
-        <option value="" disabled>{{ t("access.noNode") }}</option>
+        <option value="" disabled>
+          {{
+            t(
+              store.state.nodes.some((node) => node.available)
+                ? "access.selectNode"
+                : "access.noNode",
+            )
+          }}
+        </option>
         <option
           v-for="node in store.state.nodes"
           :key="node.id"
