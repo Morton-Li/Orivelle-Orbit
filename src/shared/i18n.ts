@@ -129,6 +129,8 @@ const zh = {
     "尚未确认当前 Claude Desktop 版本的配置合同，暂时无法保存或恢复。诊断候选导出不代表配置已生效。",
   "access.claudeVerificationTimeout":
     "Claude 应用身份校验超时，操作已停止。请核对状态后重新预览。",
+  "access.claudeNativeMigrationRequired":
+    "Claude 需要先迁移现有本地配置。请核对当前操作状态，完成 Claude 原生迁移并退出后重新预览。",
   "access.claudeConfigurationChanged":
     "Claude Desktop 配置目标或本地写入资格已变化，本次确认已失效。请重新预览。",
   "access.claudeRestoreContextUnavailable":
@@ -463,6 +465,8 @@ const en: Record<keyof typeof zh, string> = {
     "The configuration contract for this Claude Desktop version is unconfirmed. Saving or restoring is unavailable. Exporting a diagnostic candidate does not confirm configuration activation.",
   "access.claudeVerificationTimeout":
     "Claude app identity verification timed out. The operation stopped; check its status and preview again.",
+  "access.claudeNativeMigrationRequired":
+    "Claude must migrate the existing local configuration. Check this operation's status, complete migration in Claude, quit it, then preview again.",
   "access.claudeConfigurationChanged":
     "The Claude Desktop configuration target or local write eligibility changed. This confirmation is no longer valid. Create a new preview.",
   "access.claudeRestoreContextUnavailable":
