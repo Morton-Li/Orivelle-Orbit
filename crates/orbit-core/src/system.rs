@@ -75,13 +75,13 @@ const CLAUDE_LEGACY_GUIDANCE: &str =
 const CLAUDE_MATERIALS: [(&str, u64, &str); 2] = [
     (
         "Contents/Info.plist",
-        12_456,
-        "f18af671edea570f867f3f59ddd0ac8f9341275cb61f6262f85afb986ce68c31",
+        12_938,
+        "7ff3c89ba08993679d13e2b5d3b3f6de331233901aa069ae83591a5168e42344",
     ),
     (
         "Contents/Resources/app.asar",
-        49_827_880,
-        "817767bfbad77ea60678e22df90baba2cbabba9dda90201c65a49f0176fc7306",
+        64_685_328,
+        "0f8f7d420223874fbcfc8de8e29a978d0a04bb2ae620d4b454dc3714f275035c",
     ),
 ];
 #[cfg(target_os = "macos")]
@@ -589,6 +589,173 @@ fn configuration_hash(path: &Path, bytes: u64) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+#[cfg(target_os = "macos")]
+const MAX_CLAUDE_MIGRATION_ENTRIES: usize = crate::claude_config::MAX_ENTRIES * 4;
+#[cfg(target_os = "macos")]
+const MAX_CLAUDE_MIGRATION_BYTES: usize = crate::claude_config::MAX_FILE_BYTES * 16;
+
+#[cfg(target_os = "macos")]
+fn claude_migration_profile_name(name: &[u8]) -> bool {
+    // Match Desktop's /^[a-f0-9-]{36}$/ ID, not the compiler's narrower UUID
+    // contract: orphan and noncanonical entries are swept by Desktop too.
+    name.len() == 41
+        && name.ends_with(b".json")
+        && name[..36]
+            .iter()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c) || *c == b'-')
+}
+
+#[cfg(target_os = "macos")]
+fn claude_migration_open(
+    parent: &fs::File,
+    name: &std::ffi::CStr,
+    directory: bool,
+) -> std::io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK
+                | libc::O_CLOEXEC
+                | if directory { libc::O_DIRECTORY } else { 0 },
+        )
+    };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(unsafe { fs::File::from_raw_fd(fd) })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn claude_migration_same(before: &fs::Metadata, after: &fs::Metadata) -> Result<()> {
+    if configuration_stamp(before) != configuration_stamp(after) {
+        return Err(fail("claude_configuration_target_changed"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn claude_migration_file(
+    directory: &fs::File,
+    name: &std::ffi::CStr,
+    main_config: bool,
+    total: &mut usize,
+) -> Result<()> {
+    let unverified = || fail("claude_configuration_target_unverified");
+    let mut file = match claude_migration_open(directory, name, false) {
+        Ok(file) => file,
+        Err(error) if main_config && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(unverified()),
+    };
+    let before = file.metadata().map_err(|_| unverified())?;
+    let remaining = MAX_CLAUDE_MIGRATION_BYTES.saturating_sub(*total);
+    let limit = crate::claude_config::MAX_FILE_BYTES.min(remaining);
+    if !before.is_file() || before.len() > limit as u64 {
+        return Err(unverified());
+    }
+    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(limit + 1));
+    Read::by_ref(&mut file)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unverified())?;
+    if bytes.len() > limit {
+        return Err(unverified());
+    }
+    claude_migration_same(&before, &file.metadata().map_err(|_| unverified())?)?;
+    let named = claude_migration_open(directory, name, false).map_err(|_| unverified())?;
+    claude_migration_same(&before, &named.metadata().map_err(|_| unverified())?)?;
+    *total += bytes.len();
+    if crate::claude_config::native_migration_required(&bytes, main_config)? {
+        return Err(fail("claude_native_migration_required"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn claude_native_migration_clear(root: &Path) -> Result<()> {
+    use std::{
+        ffi::{CStr, CString},
+        os::fd::AsRawFd,
+    };
+    let unverified = || fail("claude_configuration_target_unverified");
+    match fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(unverified()),
+        Ok(_) => {}
+    }
+    let directory = configuration_directory(root).map_err(claude_target_error)?;
+    let root_before = directory.metadata().map_err(|_| unverified())?;
+    let mut total = 0;
+    claude_migration_file(&directory, c"claude_desktop_config.json", true, &mut total)?;
+    match claude_migration_open(&directory, c"configLibrary", true) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(unverified()),
+        Ok(library) => {
+            let before = library.metadata().map_err(|_| unverified())?;
+            let fd = unsafe { libc::fcntl(library.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+            if fd < 0 {
+                return Err(unverified());
+            }
+            let raw = unsafe { libc::fdopendir(fd) };
+            if raw.is_null() {
+                unsafe { libc::close(fd) };
+                return Err(unverified());
+            }
+            struct Entries(*mut libc::DIR);
+            impl Drop for Entries {
+                fn drop(&mut self) {
+                    unsafe { libc::closedir(self.0) };
+                }
+            }
+            let entries = Entries(raw);
+            let mut count = 0;
+            let mut profiles = Vec::new();
+            loop {
+                unsafe { *libc::__error() = 0 };
+                let entry = unsafe { libc::readdir(entries.0) };
+                if entry.is_null() {
+                    if std::io::Error::last_os_error().raw_os_error() != Some(0) {
+                        return Err(unverified());
+                    }
+                    break;
+                }
+                let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+                if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                    continue;
+                }
+                count += 1;
+                if count > MAX_CLAUDE_MIGRATION_ENTRIES {
+                    return Err(unverified());
+                }
+                if claude_migration_profile_name(name.to_bytes()) {
+                    if profiles.len() >= crate::claude_config::MAX_ENTRIES {
+                        return Err(unverified());
+                    }
+                    profiles.push(CString::from(name));
+                }
+            }
+            drop(entries);
+            for name in profiles {
+                claude_migration_file(&library, &name, false, &mut total)?;
+            }
+            claude_migration_same(&before, &library.metadata().map_err(|_| unverified())?)?;
+            let named = claude_migration_open(&directory, c"configLibrary", true)
+                .map_err(|_| unverified())?;
+            claude_migration_same(&before, &named.metadata().map_err(|_| unverified())?)?;
+        }
+    }
+    claude_migration_same(
+        &root_before,
+        &directory.metadata().map_err(|_| unverified())?,
+    )?;
+    let named = configuration_directory(root).map_err(claude_target_error)?;
+    claude_migration_same(&root_before, &named.metadata().map_err(|_| unverified())?)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CodexRuntimeIdentity {
     pub(crate) cli_version: String,
@@ -717,10 +884,15 @@ impl SystemPaths {
         let before = self.claude_configuration_draft(target)?;
         #[cfg(target_os = "macos")]
         {
+            claude_native_migration_clear(&before.config_root)?;
             claude_verify_cached(
                 &self.claude_configuration_cache,
                 before,
-                || self.claude_configuration_draft(target),
+                || {
+                    let current = self.claude_configuration_draft(target)?;
+                    claude_native_migration_clear(&current.config_root)?;
+                    Ok(current)
+                },
                 || {
                     let app = Path::new(
                         target
@@ -1411,6 +1583,216 @@ pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_native_migration_missing_and_sealed_profiles_are_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Claude-3p");
+        claude_native_migration_clear(&root).unwrap();
+        assert!(!root.exists());
+        fs::create_dir(&root).unwrap();
+        claude_native_migration_clear(&root).unwrap();
+        let library = root.join("configLibrary");
+        fs::create_dir(&library).unwrap();
+        let main = root.join("claude_desktop_config.json");
+        fs::write(&main, b"{\"deploymentMode\":\"3p\"}").unwrap();
+        for (index, bytes) in [
+            br#"{"inferenceGatewayApiKey":""}"#.as_slice(),
+            br#"{"inferenceGatewayApiKey":"__sealed__:v1:synthetic"}"#,
+            br#"{"inferenceGatewayApiKey":"\uFEFF __sealed__:v1:synthetic"}"#,
+            br#"{"inferenceCredentialHelper":"/synthetic/helper"}"#,
+        ]
+        .iter()
+        .enumerate()
+        {
+            fs::write(library.join(format!("{index:036x}.json")), bytes).unwrap();
+        }
+        fs::write(
+            library.join("_meta.json"),
+            b"not inspected by the migration sweep",
+        )
+        .unwrap();
+        let before = fs::read(&main).unwrap();
+        claude_native_migration_clear(&root).unwrap();
+        assert_eq!(fs::read(&main).unwrap(), before);
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 5);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_native_migration_scans_orphan_and_noncanonical_official_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Claude-3p");
+        let library = root.join("configLibrary");
+        fs::create_dir_all(&library).unwrap();
+        for name in [
+            "00000000-0000-4000-8000-000000000001.json".to_owned(),
+            format!("{}.json", "-".repeat(36)),
+            format!("{}.json", "a".repeat(36)),
+        ] {
+            assert!(claude_migration_profile_name(name.as_bytes()));
+            let path = library.join(name);
+            fs::write(&path, br#"{"inferenceGatewayApiKey":"synthetic"}"#).unwrap();
+            let before = fs::read(&path).unwrap();
+            assert_eq!(
+                claude_native_migration_clear(&root).unwrap_err(),
+                fail("claude_native_migration_required")
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+            fs::remove_file(path).unwrap();
+        }
+        for name in [
+            "A".repeat(36) + ".json",
+            "g".repeat(36) + ".json",
+            "a".repeat(35) + ".json",
+            "a".repeat(36) + ".json.tmp",
+            "_meta.json".into(),
+        ] {
+            assert!(!claude_migration_profile_name(name.as_bytes()));
+            fs::write(library.join(name), b"not an official profile").unwrap();
+        }
+        claude_native_migration_clear(&root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_native_migration_main_enterprise_and_invalid_json_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Claude-3p");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("claude_desktop_config.json");
+        for bytes in [
+            br#"{"enterpriseConfig":{}}"#.as_slice(),
+            br#"{"enterpriseConfig":null}"#,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(
+                claude_native_migration_clear(&root).unwrap_err(),
+                fail("claude_native_migration_required")
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        fs::write(&path, b"{").unwrap();
+        assert_eq!(
+            claude_native_migration_clear(&root).unwrap_err(),
+            fail("claude_configuration_target_unverified")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_native_migration_rejects_links_nonfiles_and_identity_changes() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Claude-3p");
+        let library = root.join("configLibrary");
+        fs::create_dir_all(&library).unwrap();
+        let external = dir.path().join("external.json");
+        fs::write(&external, b"{}").unwrap();
+        let main = root.join("claude_desktop_config.json");
+        symlink(&external, &main).unwrap();
+        assert!(claude_native_migration_clear(&root).is_err());
+        fs::remove_file(&main).unwrap();
+        let path = library.join("00000000-0000-4000-8000-000000000001.json");
+        symlink(&external, &path).unwrap();
+        assert!(claude_native_migration_clear(&root).is_err());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(claude_native_migration_clear(&root).is_err());
+        fs::remove_dir(&path).unwrap();
+        let original = library.metadata().unwrap();
+        fs::write(&path, b"{}").unwrap();
+        assert_eq!(
+            claude_migration_same(&original, &library.metadata().unwrap()).unwrap_err(),
+            fail("claude_configuration_target_changed")
+        );
+        fs::write(&path, br#"{"a":1}"#).unwrap();
+        let original = path.metadata().unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"{}").unwrap();
+        assert!(claude_migration_same(&original, &path.metadata().unwrap()).is_err());
+        assert_eq!(fs::read(&external).unwrap(), b"{}");
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&library).unwrap();
+        symlink(dir.path(), &library).unwrap();
+        assert!(claude_native_migration_clear(&root).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_native_migration_file_count_size_and_total_bounds_refuse_incomplete_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Claude-3p");
+        let library = root.join("configLibrary");
+        fs::create_dir_all(&library).unwrap();
+        let path = library.join("00000000-0000-4000-8000-000000000001.json");
+        fs::write(&path, vec![b' '; crate::claude_config::MAX_FILE_BYTES + 1]).unwrap();
+        assert!(claude_native_migration_clear(&root).is_err());
+        fs::remove_file(&path).unwrap();
+        for index in 0..=crate::claude_config::MAX_ENTRIES {
+            fs::write(library.join(format!("{index:036x}.json")), b"{}").unwrap();
+        }
+        assert!(claude_native_migration_clear(&root).is_err());
+        fs::remove_dir_all(&library).unwrap();
+        fs::create_dir(&library).unwrap();
+        for index in 0..=MAX_CLAUDE_MIGRATION_ENTRIES {
+            fs::write(library.join(format!("ignored-{index}")), b"").unwrap();
+        }
+        assert!(claude_native_migration_clear(&root).is_err());
+        fs::remove_dir_all(&library).unwrap();
+        fs::create_dir(&library).unwrap();
+        let mut bytes = b"{}".to_vec();
+        bytes.resize(crate::claude_config::MAX_FILE_BYTES, b' ');
+        for index in 0..=16 {
+            fs::write(library.join(format!("{index:036x}.json")), &bytes).unwrap();
+        }
+        assert!(claude_native_migration_clear(&root).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_native_migration_bookend_refuses_new_migration_and_own_files_do_not_change_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        let root = home.join("Library/Application Support/Claude-3p");
+        let library = root.join("configLibrary");
+        fs::create_dir_all(&library).unwrap();
+        let mut receipt = claude_receipt(root.clone());
+        receipt.root_anchors = claude_configuration_root(&root).unwrap();
+        let cache = std::sync::Mutex::new(None);
+        claude_native_migration_clear(&root).unwrap();
+        let path = library.join("00000000-0000-4000-8000-000000000001.json");
+        let result = claude_verify_cached(
+            &cache,
+            receipt.clone(),
+            || {
+                claude_native_migration_clear(&root)?;
+                Ok(receipt.clone())
+            },
+            || {
+                fs::write(&path, br#"{"inferenceGatewayApiKey":"synthetic"}"#).unwrap();
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            fail("claude_native_migration_required")
+        );
+        assert!(cache.lock().unwrap().is_none());
+        fs::write(
+            path,
+            br#"{"inferenceGatewayApiKey":"__sealed__:v1:synthetic"}"#,
+        )
+        .unwrap();
+        claude_native_migration_clear(&root).unwrap();
+        assert_eq!(
+            claude_configuration_root(&root).unwrap(),
+            receipt.root_anchors
+        );
+        receipt.validate_root().unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

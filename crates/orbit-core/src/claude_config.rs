@@ -19,9 +19,9 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
-pub const SUPPORTED_APP_VERSION: &str = "2.19675.0";
+pub const SUPPORTED_APP_VERSION: &str = "4.4212.0";
 pub const SOURCE_MEMBER_SHA256: &str =
-    "0e794998a1ad175f651818913cba690de0724d92d7a946efc58ae0f08c7df226";
+    "926694919e5ff5d05cb804945637ffbe6ae75bdeac5e461f30e7c3d5fa043ccb";
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_ENTRIES: usize = 256;
 const MAX_EGRESS_HOSTS: usize = 500;
@@ -38,6 +38,11 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "allowedPluginMcpServers",
     "allowedWorkspaceFolders",
     "alwaysStartWithDefaultModel",
+    "artifactsDashboardEnabled",
+    "artifactsDesignEnabled",
+    "artifactsEnabled",
+    "artifactsMotionEnabled",
+    "artifactsSlidesEnabled",
     "autoModeEnabled",
     "autoUpdaterEnforcementHours",
     "banner",
@@ -57,6 +62,7 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "chatTabEnabled",
     "claudeAiImport",
     "claudeCodeProcessWrapperEnabled",
+    "claudeCodeSettings",
     "claudeInChromeEnabled",
     "claudeInChromePasswordManagersEnabled",
     "codeAllowedRepositories",
@@ -65,6 +71,7 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "coworkEDRIntegration",
     "coworkEDRIntegrationVendor",
     "coworkEgressAllowedHosts",
+    "coworkFileReadCheck",
     "coworkSessionRetentionDays",
     "coworkTabEnabled",
     "coworkVmIpv6Enabled",
@@ -75,13 +82,16 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "deploymentDisplaySubtitle",
     "deploymentOrganizationUuid",
     "desktopHome",
+    "developerModeEnabled",
     "dictationEnabled",
     "disableAutoUpdates",
     "disableBundledSkills",
     "disableBypassPermissionsMode",
     "disableConfigDeprecationWarnings",
+    "disableConnectorSignInInApp",
     "disableDeepLinkRegistration",
     "disableDeploymentModeChooser",
+    "disableDesktopLocalSessions",
     "disableEssentialTelemetry",
     "disableFeatureDiscovery",
     "disableLocalConfigCache",
@@ -144,6 +154,7 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "inferenceProvider",
     "inferenceSessionLifetimeSec",
     "inferenceStreamIdleTimeoutSec",
+    "inferenceTokenWarningPercent",
     "inferenceTokenWindowHours",
     "inferenceVertexBaseUrl",
     "inferenceVertexCredentialsFile",
@@ -157,6 +168,8 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "inferenceVertexWorkforceAuthFlow",
     "inferenceVertexWorkforceOidc",
     "inferenceVertexWorkforceUserProject",
+    "installedUpdateEnforcementEnabled",
+    "installedUpdateEnforcementHours",
     "isClaudeCodeForDesktopEnabled",
     "isDesktopExtensionDirectoryEnabled",
     "isDesktopExtensionEnabled",
@@ -168,10 +181,12 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "keepAwakeEnabled",
     "loginSsoOrgDomain",
     "managedMcpServers",
+    "mcpAppWidgetsEnabled",
     "mcpPersistentAlwaysAllowEnabled",
     "mcpScheduledTaskApprovalLifetimeDays",
     "mcpToolTimeoutSec",
     "microsoftAuthBroker",
+    "microsoftAuthDefaultAccount",
     "modelCatalogEnabled",
     "modelCatalogUrl",
     "modelDiscoveryEnabled",
@@ -192,7 +207,13 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "otlpProtocol",
     "otlpResourceAttributes",
     "otlpTracesEnabled",
+    "projectsEnabled",
+    "quickEntryDefaultShortcut",
+    "quickEntryFileSharingEnabled",
+    "quickEntryScreenshotsEnabled",
+    "quickWriteEnabled",
     "relaunchEnforcementHours",
+    "releaseChannel",
     "relocateUncUserData",
     "requireCoworkFullVmSandbox",
     "scheduledTasksEnabled",
@@ -200,11 +221,14 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "selfHostedToken",
     "selfHostedUrl",
     "sessionRetentionHold",
+    "sessionStatusLine",
     "sharingEndpoint",
     "skillBundles",
     "skillCreationEnabled",
+    "skillScanningEnabled",
     "skipWebFetchPreflight",
     "sshClientPath",
+    "sshConfigs",
     "sshHostAllowlist",
     "sshTransport",
     "toolSearchEnabled",
@@ -213,11 +237,127 @@ pub const SCHEMA_FLAT_KEYS: &[&str] = &[
     "updateViaUpdatesHost",
     "usageMetricsEnabled",
     "userContentRendererUrl",
+    "userFileUploadsEnabled",
     "userPluginMarketplacesEnabled",
     "userPluginUploadsEnabled",
 ];
 pub const SCHEMA_KEYS_SHA256: &str =
-    "fc96249054edb4e14745674d968c291f8569df7da71c58018685a6e6ff86f77f";
+    "9f29e8cd7f3ae31c8035dbfbe2e12d1fccba0835818efcccb97b927529306b4f";
+
+/// The pinned Desktop's native key-at-rest sweep visits these string leaves.
+/// This inventory is only a read-only migration guard, never a decryption API.
+#[cfg(any(target_os = "macos", test))]
+const NATIVE_SEALED_STRING_KEYS: &[&str] = &[
+    "inferenceAnthropicApiKey",
+    "inferenceBedrockBearerToken",
+    "inferenceFoundryApiKey",
+    "inferenceGatewayApiKey",
+    "selfHostedToken",
+];
+
+/// Inspect only field identity and a borrowed string's emptiness/sealed prefix.
+/// Other values are skipped, so inactive profiles' secrets never become Values
+/// or retained strings. The caller owns and zeroizes the input buffer.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn native_migration_required(bytes: &[u8], main_config: bool) -> Result<bool> {
+    use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
+    use std::fmt;
+
+    enum Key {
+        Enterprise,
+        Secret,
+        Other,
+    }
+    struct FieldKey;
+    impl<'de> DeserializeSeed<'de> for FieldKey {
+        type Value = Key;
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            de: D,
+        ) -> std::result::Result<Key, D::Error> {
+            de.deserialize_identifier(self)
+        }
+    }
+    impl Visitor<'_> for FieldKey {
+        type Value = Key;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a configuration field")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Key, E> {
+            Ok(if value == "enterpriseConfig" {
+                Key::Enterprise
+            } else if NATIVE_SEALED_STRING_KEYS.contains(&value) {
+                Key::Secret
+            } else {
+                Key::Other
+            })
+        }
+    }
+    struct SecretString;
+    impl<'de> DeserializeSeed<'de> for SecretString {
+        type Value = bool;
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            de: D,
+        ) -> std::result::Result<bool, D::Error> {
+            de.deserialize_str(self)
+        }
+    }
+    impl Visitor<'_> for SecretString {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a credential string")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<bool, E> {
+            // Match ECMAScript trimStart exactly, including BOM but excluding
+            // U+0085, which Rust's broader is_whitespace would trim.
+            let trimmed = value.trim_start_matches(|c| {
+                matches!(c,
+                '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' |
+                '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' |
+                '\u{205f}' | '\u{3000}' | '\u{feff}')
+            });
+            Ok(!value.is_empty() && !trimmed.starts_with("__sealed__:v1:"))
+        }
+    }
+    struct Document(bool);
+    impl<'de> DeserializeSeed<'de> for Document {
+        type Value = bool;
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            de: D,
+        ) -> std::result::Result<bool, D::Error> {
+            de.deserialize_map(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Document {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a configuration object")
+        }
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> std::result::Result<bool, M::Error> {
+            let mut required = false;
+            while let Some(key) = map.next_key_seed(FieldKey)? {
+                if self.0 && matches!(key, Key::Enterprise) {
+                    required = true;
+                    map.next_value::<IgnoredAny>()?;
+                } else if !self.0 && matches!(key, Key::Secret) {
+                    required |= map.next_value_seed(SecretString)?;
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(required)
+        }
+    }
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let required = Document(main_config)
+        .deserialize(&mut de)
+        .map_err(|_| fail("claude_configuration_target_unverified"))?;
+    de.end()
+        .map_err(|_| fail("claude_configuration_target_unverified"))?;
+    Ok(required)
+}
 
 // Exact flat leaves in this version's inference provider/credential/model
 // connection schema, including the retired custom-header alias. Their values
@@ -1067,8 +1207,73 @@ mod tests {
     }
 
     #[test]
+    fn native_migration_inspects_only_pinned_string_leaves_without_retaining_values() {
+        for &key in NATIVE_SEALED_STRING_KEYS {
+            assert!(SCHEMA_FLAT_KEYS.contains(&key));
+            for (value, required) in [
+                ("synthetic-old-secret", true),
+                ("", false),
+                (" ", true),
+                ("__sealed__:v1:synthetic-ciphertext", false),
+                ("\u{feff}\t__sealed__:v1:synthetic-ciphertext", false),
+                ("\u{0085}__sealed__:v1:synthetic-ciphertext", true),
+            ] {
+                let bytes = serde_json::to_vec(&json!({key: value})).unwrap();
+                assert_eq!(native_migration_required(&bytes, false).unwrap(), required);
+            }
+        }
+        assert!(
+            native_migration_required(
+                br#"{"inferenceGatewayApi\u004bey":"synthetic-old-secret"}"#,
+                false
+            )
+            .unwrap()
+        );
+        assert!(
+            !native_migration_required(
+                br#"{"inferenceCredentialHelper":"/synthetic/helper","other":{"token":"unobserved"}}"#,
+                false
+            )
+            .unwrap()
+        );
+        for bytes in [
+            br#"{"inferenceGatewayApiKey":null}"#.as_slice(),
+            br#"{"inferenceGatewayApiKey":42}"#,
+            br#"{"inferenceGatewayApiKey":{}}"#,
+            br#"{} trailing"#,
+            br#"[]"#,
+            br#"{"#,
+        ] {
+            assert_eq!(
+                native_migration_required(bytes, false).unwrap_err(),
+                fail("claude_configuration_target_unverified")
+            );
+        }
+    }
+
+    #[test]
+    fn native_migration_main_checks_enterprise_presence_including_null() {
+        for bytes in [
+            br#"{"enterpriseConfig":null}"#.as_slice(),
+            br#"{"enterpriseConfig":{}}"#,
+            br#"{"enterpriseConfig":{"inferenceGatewayApiKey":"unobserved"}}"#,
+        ] {
+            assert!(native_migration_required(bytes, true).unwrap());
+        }
+        assert!(
+            !native_migration_required(
+                br#"{"deploymentMode":"3p","inferenceGatewayApiKey":"not-a-main-migration-leaf"}"#,
+                true
+            )
+            .unwrap()
+        );
+        assert!(!native_migration_required(br#"{"enterpriseConfig":null}"#, false).unwrap());
+    }
+
+    #[test]
     fn fixed_source_inventory_inputs_and_serialized_outputs_are_bounded() {
-        assert_eq!(SCHEMA_FLAT_KEYS.len(), 182);
+        assert_eq!(SUPPORTED_APP_VERSION, "4.4212.0");
+        assert_eq!(SCHEMA_FLAT_KEYS.len(), 207);
         assert_eq!(
             sha256(&serde_json::to_vec(SCHEMA_FLAT_KEYS).unwrap()),
             SCHEMA_KEYS_SHA256
