@@ -34,7 +34,7 @@ impl Fixture {
             .unwrap();
         let profile_id = uuid();
         let active_id = uuid();
-        let active_bytes = br#"{"inferenceProvider":"gateway","inferenceGatewayApiKey":"synthetic-old","keepAwakeEnabled":true}"#;
+        let active_bytes = br#"{"inferenceProvider":"gateway","inferenceGatewayApiKey":"synthetic-old","keepAwakeEnabled":true,"disableDeploymentModeChooser":false,"coworkEgressAllowedHosts":["*"]}"#;
         let metadata = serde_json::to_vec(&serde_json::json!({
             "appliedId": active_id,
             "entries": [{"id": active_id, "name": "Existing"}], "unowned": true

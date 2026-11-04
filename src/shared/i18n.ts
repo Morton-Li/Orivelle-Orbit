@@ -87,6 +87,7 @@ const zh = {
   "access.noModels": "连接账户和节点后取得模型",
   "access.noConnection": "尚无账户连接",
   "access.noNode": "尚无可用节点",
+  "access.selectNode": "选择获准的节点",
   "access.nodeUnavailable": "节点当前不可用",
   "access.readonly":
     "只读账户可查看预算和消费，自动取得接入凭据需现有业务写权限。",
@@ -126,6 +127,8 @@ const zh = {
     "第三方推理配置影响 Claude 整个桌面应用，包括 Chat、Code 与 Cowork。仅变更下列目标文件，保存后需完整重启；保存不证明客户端已载入或连接。",
   "access.claudeConfigurationUnavailable":
     "尚未确认当前 Claude Desktop 版本的配置合同，暂时无法保存或恢复。诊断候选导出不代表配置已生效。",
+  "access.claudeVerificationTimeout":
+    "Claude 应用身份校验超时，操作已停止。请核对状态后重新预览。",
   "access.claudeConfigurationChanged":
     "Claude Desktop 配置目标或本地写入资格已变化，本次确认已失效。请重新预览。",
   "access.claudeRestoreContextUnavailable":
@@ -415,6 +418,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.noModels": "Connect an account and node to obtain models",
   "access.noConnection": "No account connection",
   "access.noNode": "No available nodes",
+  "access.selectNode": "Select an authorized node",
   "access.nodeUnavailable": "Node is currently unavailable",
   "access.readonly":
     "Read-only accounts can view budgets and usage. Automatic credential delivery requires existing business write permissions.",
@@ -457,6 +461,8 @@ const en: Record<keyof typeof zh, string> = {
     "Third-party inference affects the whole Claude desktop app, including Chat, Code and Cowork. Only the listed target files will change. Restart completely after saving; saving does not confirm loading or connection.",
   "access.claudeConfigurationUnavailable":
     "The configuration contract for this Claude Desktop version is unconfirmed. Saving or restoring is unavailable. Exporting a diagnostic candidate does not confirm configuration activation.",
+  "access.claudeVerificationTimeout":
+    "Claude app identity verification timed out. The operation stopped; check its status and preview again.",
   "access.claudeConfigurationChanged":
     "The Claude Desktop configuration target or local write eligibility changed. This confirmation is no longer valid. Create a new preview.",
   "access.claudeRestoreContextUnavailable":

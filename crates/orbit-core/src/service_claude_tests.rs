@@ -1768,6 +1768,97 @@ fn claude_b3a_full_producer_qualifies_local_clear_remote_unknown_and_native_rece
 }
 
 #[test]
+fn claude_qualification_errors_cross_guards_without_promoting_display_hints() {
+    for code in [
+        "claude_signature_verification_timeout",
+        "claude_configuration_target_unverified",
+        "claude_configuration_target_changed",
+    ] {
+        let fixture = tests::policy_fixture(ClientKind::Claude);
+        let context = frozen(&fixture);
+        let observation = fixture
+            .service
+            .observe_configuration(ClientKind::Claude)
+            .unwrap();
+        let mut paths = fixture.service.paths.clone();
+        let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+        paths.fixture_claude_configuration_target = Some(Arc::new(move |client, full| {
+            if full {
+                Err(fail(code))
+            } else {
+                adapter(client, false)
+            }
+        }));
+        let service =
+            Service::new(fixture.service.store.clone(), fixture.vault.clone(), paths).unwrap();
+        fixture.vault.calls.store(0, Ordering::SeqCst);
+        fixture.vault.mutations.store(0, Ordering::SeqCst);
+        assert_eq!(
+            service
+                .client_policy(ClientKind::Claude)
+                .unwrap()
+                .0
+                .configuration_access,
+            ConfigurationAccess::Allowed
+        );
+        assert_eq!(
+            service
+                .configuration_preflight(ClientKind::Claude)
+                .unwrap_err()
+                .code,
+            code
+        );
+        assert_eq!(
+            service
+                .validate_claude_configuration(
+                    &observation.policy,
+                    observation.claude_configuration_target.as_ref()
+                )
+                .unwrap_err()
+                .code,
+            code
+        );
+        for restoring in [false, true] {
+            assert_eq!(
+                service
+                    .validate_claude_context(&context, restoring)
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
+        let blocked = service
+            .preview_client_config(
+                &fixture.record.view.id,
+                fixture.record.view.revision,
+                ClientKind::Claude,
+                &fixture.model,
+            )
+            .unwrap();
+        assert_eq!(blocked.blocking_reason.as_deref(), Some(code));
+        assert!(!blocked.can_apply && !blocked.can_export_import);
+        assert!(blocked.claude_configuration_target.is_none());
+        assert!(
+            service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            service
+                .store
+                .list::<Journal>("journal", None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!service.paths.claude_library.parent().unwrap().exists());
+        assert_eq!(fixture.vault.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.vault.mutations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
 fn claude_b3a_display_hint_never_replaces_full_authority_and_export_consumes_late_failure() {
     let fixture = tests::policy_fixture(ClientKind::Claude);
     let mut paths = fixture.service.paths.clone();

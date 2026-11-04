@@ -24,6 +24,9 @@ pub const SOURCE_MEMBER_SHA256: &str =
     "0e794998a1ad175f651818913cba690de0724d92d7a946efc58ae0f08c7df226";
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_ENTRIES: usize = 256;
+const MAX_EGRESS_HOSTS: usize = 500;
+// DNS name (253), optional "*." (2), and optional ":65535" (6).
+const MAX_EGRESS_HOST_BYTES: usize = 261;
 const PROFILE_NAME: &str = "Orivelle Orbit";
 
 /// Fixed public reader/schema superset, including legacy and internal leaves.
@@ -276,7 +279,8 @@ const REPLACED_CONNECTION_KEYS: &[&str] = &[
 ];
 
 // Deliberately finite migration support. These settings have a non-secret scalar
-// type and do not select a provider, credential, source or model. Other settings
+// type and do not select a provider, credential, source or model. The existing
+// egress list has a separate bounded host-only contract below; other settings
 // require an explicit migration contract before an active profile can be copied.
 const PRESERVED_BOOLEANS: &[&str] = &[
     "disableAutoUpdates",
@@ -396,6 +400,45 @@ fn object(bytes: &[u8]) -> Result<Map<String, Value>> {
     }
 }
 
+// A strict subset of the pinned public egress grammar: DNS labels, localhost,
+// an optional leading wildcard and an optional port. Preserve accepted strings
+// and their order verbatim; never supply a default list or broaden an old list.
+fn valid_egress_host(value: &str) -> bool {
+    if value == "*" {
+        return true;
+    }
+    if value.is_empty() || value.len() > MAX_EGRESS_HOST_BYTES {
+        return false;
+    }
+    let host = if let Some((host, port)) = value.rsplit_once(':') {
+        if port.len() > 5
+            || port.starts_with('0')
+            || !port.bytes().all(|byte| byte.is_ascii_digit())
+            || !port.parse::<u16>().is_ok_and(|port| port > 0)
+        {
+            return false;
+        }
+        host
+    } else {
+        value
+    };
+    if host == "localhost" {
+        return true;
+    }
+    let host = host.strip_prefix("*.").unwrap_or(host);
+    host.len() <= 253
+        && host.contains('.')
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
 fn source_profile(bytes: &[u8]) -> Result<Map<String, Value>> {
     let mut source = object(bytes).map_err(|_| fail("claude_configuration_source_unsupported"))?;
     for (key, value) in &source {
@@ -403,6 +446,13 @@ fn source_profile(bytes: &[u8]) -> Result<Map<String, Value>> {
             value.is_boolean()
         } else if PRESERVED_POSITIVE_INTEGERS.contains(&key.as_str()) {
             value.as_u64().is_some_and(|number| number > 0)
+        } else if key == "coworkEgressAllowedHosts" {
+            value.as_array().is_some_and(|hosts| {
+                hosts.len() <= MAX_EGRESS_HOSTS
+                    && hosts
+                        .iter()
+                        .all(|host| host.as_str().is_some_and(valid_egress_host))
+            })
         } else {
             REPLACED_CONNECTION_KEYS.contains(&key.as_str())
         };
@@ -720,6 +770,7 @@ mod tests {
         }
         source.insert("keepAwakeEnabled".into(), json!(true));
         source.insert("disableDeploymentModeChooser".into(), json!(false));
+        source.insert("coworkEgressAllowedHosts".into(), json!(["*"]));
         source.insert("inferenceMaxTokensPerWindow".into(), json!(4000));
         source.insert("inferenceTokenWindowHours".into(), json!(8));
         let source = bytes(Value::Object(source));
@@ -744,6 +795,7 @@ mod tests {
         let profile = after(&files[0]);
         assert_eq!(profile["keepAwakeEnabled"], true);
         assert_eq!(profile["disableDeploymentModeChooser"], false);
+        assert_eq!(profile["coworkEgressAllowedHosts"], json!(["*"]));
         assert_eq!(profile["inferenceMaxTokensPerWindow"], 4000);
         assert_eq!(profile["inferenceTokenWindowHours"], 8);
         assert!(
@@ -813,6 +865,7 @@ mod tests {
             json!({"modelCatalogUrl": "https://other.example.test/catalog"}),
             json!({"inference": {"provider": "gateway"}}),
             json!({"keepAwakeEnabled": "not-a-boolean"}),
+            json!({"coworkEgressAllowedHosts": ["*"], "unknownEgressSetting": true}),
         ] {
             let source = bytes(source);
             let mut plan = fixture.plan();
@@ -836,6 +889,132 @@ mod tests {
             plan.active_profile = Some(ActiveProfile {
                 id: OLD_ID,
                 bytes: b"{}",
+            });
+            rejected(&plan, "claude_configuration_source_unsupported");
+        }
+    }
+
+    #[test]
+    fn existing_egress_host_patterns_are_preserved_exactly_within_finite_bounds() {
+        let fixture = Fixture::new();
+        let meta = bytes(existing_meta());
+        let longest_host = [
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61),
+        ]
+        .join(".");
+        assert_eq!(longest_host.len(), 253);
+        for hosts in [
+            json!([]),
+            json!(["*"]),
+            json!([
+                "API.Example.test",
+                "*.corp.example.test:8443",
+                "localhost:1",
+                "192.0.2.1:65535",
+                "API.Example.test"
+            ]),
+            json!([format!("*.{longest_host}:65535")]),
+            json!(vec!["*"; MAX_EGRESS_HOSTS]),
+        ] {
+            let source = bytes(json!({
+                "coworkEgressAllowedHosts": hosts,
+                "disableDeploymentModeChooser": false,
+                "keepAwakeEnabled": true
+            }));
+            let unchanged = source.clone();
+            let mut plan = fixture.plan();
+            plan.metadata_before = Some(&meta);
+            plan.active_profile = Some(ActiveProfile {
+                id: OLD_ID,
+                bytes: &source,
+            });
+            let compiled = compile(&plan).unwrap();
+            let profile = after(&compiled.files()[0]);
+            assert_eq!(profile["coworkEgressAllowedHosts"], hosts);
+            assert_eq!(profile["disableDeploymentModeChooser"], false);
+            assert_eq!(profile["keepAwakeEnabled"], true);
+            assert_eq!(source, unchanged);
+            assert_eq!(
+                compiled.active_profile_sha256(),
+                Some(sha256(&source).as_str())
+            );
+            assert!(
+                compiled
+                    .files()
+                    .iter()
+                    .all(|file| !file.path.ends_with(&format!("{OLD_ID}.json")))
+            );
+        }
+        let profile = after(&compile(&fixture.plan()).unwrap().files()[0]);
+        assert!(profile.get("coworkEgressAllowedHosts").is_none());
+        assert!(profile.get("disableDeploymentModeChooser").is_none());
+    }
+
+    #[test]
+    fn malformed_or_unbounded_existing_egress_lists_fail_closed() {
+        let fixture = Fixture::new();
+        let meta = bytes(existing_meta());
+        let mut invalid = vec![
+            Value::Null,
+            json!("*"),
+            json!(true),
+            json!(1),
+            json!({"host": "*"}),
+            json!([null]),
+            json!(["*", true]),
+            json!(vec!["*"; MAX_EGRESS_HOSTS + 1]),
+            json!(["a".repeat(MAX_EGRESS_HOST_BYTES + 1)]),
+            json!([format!("{}.example.test", "a".repeat(64))]),
+        ];
+        for host in [
+            "",
+            "https://example.test",
+            "user@example.test",
+            "user:secret@example.test",
+            "example.test/path",
+            "example.test?token=secret",
+            "example.test#secret",
+            "example.test\\secret",
+            "example.test%40secret",
+            "example.test\n",
+            "example.test\u{0}",
+            "example.test\u{7f}",
+            " example.test",
+            "example.test ",
+            "éxample.test",
+            "**",
+            "*.*.example.test",
+            "api.*.example.test",
+            "*.localhost",
+            "example",
+            "example..test",
+            ".example.test",
+            "example.test.",
+            "-host.example.test",
+            "host-.example.test",
+            "host_name.example.test",
+            "*:443",
+            "example.test:0",
+            "example.test:01",
+            "example.test:65536",
+            "example.test:999999",
+            "example.test:",
+            "example.test:443:80",
+            "[2001:db8::1]",
+            "[2001:db8::1]:443",
+        ] {
+            invalid.push(json!(["safe.example.test", host]));
+        }
+        for hosts in invalid {
+            let source = bytes(json!({"coworkEgressAllowedHosts": hosts}));
+            let mut plan = fixture.plan();
+            plan.metadata_before = Some(&meta);
+            plan.active_profile = Some(ActiveProfile {
+                id: OLD_ID,
+                bytes: &source,
             });
             rejected(&plan, "claude_configuration_source_unsupported");
         }
