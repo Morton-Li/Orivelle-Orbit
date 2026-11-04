@@ -7,6 +7,8 @@ import type {
 import { locale, t } from "./i18n";
 
 export function configPolicyMessage(code: string): string | null {
+  if (code === "claude_signature_verification_timeout")
+    return t("access.claudeVerificationTimeout");
   if (code === "managed_policy_unverified") return t("access.policyUnverified");
   if (code === "managed_policy_changed") return t("access.policyChanged");
   if (

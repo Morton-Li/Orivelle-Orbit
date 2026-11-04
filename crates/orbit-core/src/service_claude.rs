@@ -644,7 +644,12 @@ impl Service {
         let target = observation
             .claude_configuration_target
             .as_ref()
-            .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
+            .ok_or_else(|| {
+                observation
+                    .claude_configuration_error
+                    .clone()
+                    .unwrap_or_else(|| fail("claude_configuration_target_unverified"))
+            })?;
         target.validate_root()?;
         if observation.target.client != ClientKind::Claude
             || !observation.target.installed

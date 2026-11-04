@@ -5,7 +5,7 @@ use crate::{
         codex_configuration_revision, read_file,
     },
     dto::*,
-    error::{Result, fail},
+    error::{PublicError, Result, fail},
     identity::{
         HelperBinding, InferenceSecret, Installation, authorization_epoch_reference,
         bound_helper_token, canonical_origin, sha256, uuid, validate_uuid,
@@ -111,6 +111,7 @@ struct ConfigObservation {
     policy: crate::policy::Snapshot,
     configuration_target: Option<CodexConfigurationTarget>,
     claude_configuration_target: Option<ClaudeConfigurationTarget>,
+    claude_configuration_error: Option<PublicError>,
     runtime_view: Option<CodexRuntimeView>,
 }
 fn configuration_access_revision(target_revision: &str, local_policy_revision: &str) -> String {
@@ -2245,11 +2246,15 @@ impl Service {
         } else {
             (None, None)
         };
-        let claude_configuration_target = if client == ClientKind::Claude {
-            self.paths.claude_configuration_target(&target).ok()
-        } else {
-            None
-        };
+        let (claude_configuration_target, claude_configuration_error) =
+            if client == ClientKind::Claude {
+                match self.paths.claude_configuration_target(&target) {
+                    Ok(target) => (Some(target), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else {
+                (None, None)
+            };
         if claude_configuration_target.is_some() {
             let (after_target, after_policy) = self.client_policy(client)?;
             if policy.revision != after_policy.revision
@@ -2265,6 +2270,7 @@ impl Service {
             policy,
             configuration_target,
             claude_configuration_target,
+            claude_configuration_error,
             runtime_view,
         })
     }
