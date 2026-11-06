@@ -563,7 +563,7 @@ impl ConfigEngine<'_> {
                 operation.files[index].before.as_deref()
             }
         };
-        let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
+        let plan = crate::claude_config::LibraryPlan {
             app_version: &target.app_version,
             source_member_sha256: &target.source_member_sha256,
             user_root: &target.config_root,
@@ -582,13 +582,20 @@ impl ConfigEngine<'_> {
                     bytes,
                 },
             ),
-        })?;
-        if compiled
-            .files()
-            .iter()
-            .map(ClaudeFileDigest::from_change)
-            .collect::<Result<Vec<_>>>()?
-            != context.files
+        };
+        let matches = |compiled: &crate::claude_config::CompiledLibrary| -> Result<bool> {
+            Ok(compiled
+                .files()
+                .iter()
+                .map(ClaudeFileDigest::from_change)
+                .collect::<Result<Vec<_>>>()?
+                == context.files)
+        };
+        // Persisted operations have already been AEAD-authenticated; trusted
+        // prepare uses Service's fixed current compiler. A historical helper
+        // budget is accepted only when its entire three-file group matches.
+        if !matches(&crate::claude_config::compile(&plan)?)?
+            && !matches(&crate::claude_config::compile_legacy_helper_timeout(&plan)?)?
         {
             return Err(fail("backup_invalid"));
         }

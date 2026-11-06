@@ -286,6 +286,104 @@ fn claude_b2a_v3_context_authenticates_exact_group_and_preview_has_no_side_effec
 }
 
 #[test]
+fn claude_helper_budget_restores_legacy_five_second_encrypted_journal_without_relaxing_digests() {
+    fn freeze_timeout(fixture: &mut Fixture, seconds: u64) {
+        let mut profile: serde_json::Value =
+            serde_json::from_slice(fixture.files[0].after.as_ref().unwrap()).unwrap();
+        profile["inferenceCredentialHelperTimeoutSec"] = serde_json::json!(seconds);
+        let mut bytes = serde_json::to_vec_pretty(&profile).unwrap();
+        bytes.push(b'\n');
+        fixture.files[0].after = Some(bytes);
+        fixture.context.files = fixture
+            .files
+            .iter()
+            .map(ClaudeFileDigest::from_change)
+            .collect::<Result<_>>()
+            .unwrap();
+    }
+
+    let mut fixture = Fixture::new(true);
+    freeze_timeout(&mut fixture, 5);
+    let frozen_context = serde_json::to_vec(&fixture.context).unwrap();
+    let guard = |context: &ClaudeContext, _: bool| {
+        assert!(serde_json::to_vec(context).unwrap() == frozen_context);
+        Ok(())
+    };
+    let engine = fixture.engine(&guard);
+    let journal = fixture.prepare(&engine);
+    assert!(ConfigEngine::aad(&journal).starts_with("orbit-config-v3\n"));
+    assert_eq!(
+        engine.claude_operation(&journal).unwrap(),
+        (fixture.context.clone(), false)
+    );
+    assert_eq!(engine.apply(&journal.id).unwrap().phase, "committed");
+    fixture.assert_prefix(3, false);
+
+    let original_profile = fixture.files[0].after.as_ref().unwrap();
+    let mut changed: serde_json::Value = serde_json::from_slice(original_profile).unwrap();
+    changed["inferenceCredentialHelperTimeoutSec"] = serde_json::json!(6);
+    let changed = serde_json::to_vec_pretty(&changed).unwrap();
+    fs::write(&fixture.files[0].path, &changed).unwrap();
+    assert_eq!(
+        engine.prepare_restore(&journal.id).unwrap_err().code,
+        "configuration_conflict",
+        "legacy compatibility must not overwrite an externally changed profile"
+    );
+    assert!(fs::read(&fixture.files[0].path).unwrap() == changed);
+    assert!(
+        fixture
+            .binding(&fixture.context.binding_id)
+            .unwrap()
+            .enabled
+    );
+    fs::write(&fixture.files[0].path, original_profile).unwrap();
+
+    let restore = engine.prepare_restore(&journal.id).unwrap();
+    assert_eq!(
+        engine.claude_operation(&restore).unwrap(),
+        (fixture.context.clone(), true)
+    );
+    assert_eq!(engine.apply(&restore.id).unwrap().phase, "committed");
+    fixture.assert_prefix(3, true);
+    assert!(
+        !fixture
+            .binding(&fixture.context.binding_id)
+            .unwrap()
+            .enabled
+    );
+    let source: Journal = fixture.store.get("journal", &journal.id).unwrap().unwrap();
+    assert_eq!(source.phase, "restored");
+    assert_eq!(source.nonce, journal.nonce);
+    assert_eq!(source.ciphertext, journal.ciphertext);
+
+    let mut unknown = Fixture::new(false);
+    freeze_timeout(&mut unknown, 6);
+    let guard = |_: &ClaudeContext, _: bool| Ok(());
+    let engine = unknown.engine(&guard);
+    assert_eq!(
+        engine
+            .prepare_claude(
+                "actor",
+                &unknown.installation,
+                unknown.files.clone(),
+                vec![],
+                unknown.context.clone(),
+            )
+            .unwrap_err()
+            .code,
+        "backup_invalid",
+        "only complete current60 or historical5 compiler output is accepted"
+    );
+    assert!(!unknown.context.configuration_target.config_root.exists());
+    assert!(
+        !unknown
+            .binding(&unknown.context.binding_id)
+            .unwrap()
+            .enabled
+    );
+}
+
+#[test]
 fn claude_b2a_null_legacy_mismatched_client_and_unbound_guard_fail_closed() {
     let fixture = Fixture::new(true);
     let guard = |_: &ClaudeContext, _: bool| Ok(());
