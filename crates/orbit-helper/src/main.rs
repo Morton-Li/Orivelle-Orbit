@@ -9,7 +9,7 @@ compile_error!("Orbit credential helper is delivered only on macOS arm64 and Win
 use orbit_core::{
     dto::ClientKind,
     error::{Result, fail},
-    identity::{HelperBinding, bound_helper_token, validate_uuid},
+    identity::{HelperBinding, validate_uuid},
     store::Store,
     vault::{DeniedVault, NativeVault, Vault},
 };
@@ -21,14 +21,16 @@ fn arguments(args: impl IntoIterator<Item = String>) -> Result<(ClientKind, Stri
     }
     let client = match values[0].as_str() {
         "codex" => ClientKind::Codex,
-        "claude" => ClientKind::Claude,
+        "claude" | "claude-map" => ClientKind::Claude,
         _ => return Err(fail("invalid_helper_arguments")),
     };
     validate_uuid(&values[1])?;
     Ok((client, values[1].clone()))
 }
 fn run() -> Result<()> {
-    let (client, id) = arguments(std::env::args().skip(1))?;
+    let values = std::env::args().skip(1).collect::<Vec<_>>();
+    let mapped = values.first().is_some_and(|mode| mode == "claude-map");
+    let (client, id) = arguments(values)?;
     // No path/origin/account/token argument is accepted. The fixed deployed helper
     // resides in <private application-data>/bin, independent of app bundle versions.
     let exe = std::env::current_exe()
@@ -65,7 +67,18 @@ fn run() -> Result<()> {
     } else {
         Box::new(DeniedVault)
     };
-    let token = bound_helper_token(&binding, client, &id, &store, vault.as_ref(), chrono_now())?;
+    let token = if mapped {
+        orbit_core::claude_mapping::mapped_helper_token(&id, &store, vault.as_ref(), chrono_now())?
+    } else {
+        orbit_core::claude_mapping::unmapped_helper_token(
+            &binding,
+            client,
+            &id,
+            &store,
+            vault.as_ref(),
+            chrono_now(),
+        )?
+    };
     orbit_core::update_recovery::ensure_ready(&root)?;
     let mut stdout = std::io::stdout().lock();
     stdout
@@ -90,6 +103,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_mapping_helper_accepts_only_opaque_binding_arguments() {
+        let id = orbit_core::identity::uuid();
+        assert_eq!(
+            arguments(["claude-map".into(), id.clone()]).unwrap(),
+            (ClientKind::Claude, id)
+        );
+        assert!(arguments(["claude-map".into(), "not-a-binding".into()]).is_err());
+        assert!(
+            arguments([
+                "claude-map".into(),
+                orbit_core::identity::uuid(),
+                "https://elsewhere.test".into()
+            ])
+            .is_err()
+        );
+    }
     #[test]
     fn accepts_only_client_and_opaque_binding() {
         let id = orbit_core::identity::uuid();

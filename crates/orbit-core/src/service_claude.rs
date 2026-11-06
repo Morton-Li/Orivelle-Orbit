@@ -195,6 +195,7 @@ impl Service {
                 helper: &self.paths.helper,
                 binding_id: &binding_id,
                 model_id,
+                mapping: None,
                 profile_before: read_file(
                     &self.paths.claude_library.join(format!("{profile_id}.json")),
                 )?
@@ -912,6 +913,7 @@ impl Service {
                 .map(ClaudeFileDigest::from_change)
                 .collect::<Result<_>>()?,
             active_source,
+            mapping: compiled.mapping().cloned(),
         };
         context.scope_revision = scope_revision(&context)?;
         self.validate_claude_context(&context, false)?;

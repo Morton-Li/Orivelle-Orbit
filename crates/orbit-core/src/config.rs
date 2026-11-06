@@ -156,6 +156,8 @@ pub struct ClaudeContext {
     /// Original apply order: new profile, metadata, then main deployment mode.
     pub files: Vec<ClaudeFileDigest>,
     pub active_source: Option<ClaudeActiveSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<crate::claude_mapping::MappingPlan>,
 }
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct FileChange {
@@ -570,6 +572,7 @@ impl ConfigEngine<'_> {
             helper: Path::new(&context.helper_path),
             binding_id: &context.binding_id,
             model_id: &context.selected_model_id,
+            mapping: context.mapping.as_ref(),
             profile_before: original_before(0),
             metadata_before: original_before(1),
             main_before: original_before(2),

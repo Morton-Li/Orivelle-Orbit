@@ -61,6 +61,7 @@ impl Fixture {
             helper: Path::new("/synthetic/orbit-credential-helper"),
             binding_id: &binding.id,
             model_id: "claude-test-model",
+            mapping: None,
             profile_before: None,
             metadata_before: existing.then_some(metadata.as_slice()),
             main_before: existing.then_some(main.as_slice()),
@@ -121,6 +122,7 @@ impl Fixture {
                 sha256: sha256(active_bytes),
                 size: active_bytes.len() as u64,
             }),
+            mapping: None,
         };
         Self {
             _directory: directory,

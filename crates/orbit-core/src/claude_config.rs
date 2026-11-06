@@ -458,6 +458,7 @@ pub struct LibraryPlan<'a> {
     pub helper: &'a Path,
     pub binding_id: &'a str,
     pub model_id: &'a str,
+    pub mapping: Option<&'a crate::claude_mapping::MappingPlan>,
     pub profile_before: Option<&'a [u8]>,
     pub metadata_before: Option<&'a [u8]>,
     pub main_before: Option<&'a [u8]>,
@@ -468,9 +469,13 @@ pub struct CompiledLibrary {
     files: Vec<FileChange>,
     active_profile_id: Option<String>,
     active_profile_sha256: Option<String>,
+    mapping: Option<crate::claude_mapping::MappingPlan>,
 }
 
 impl CompiledLibrary {
+    pub fn mapping(&self) -> Option<&crate::claude_mapping::MappingPlan> {
+        self.mapping.as_ref()
+    }
     /// Activation order is profile, metadata, then deployment mode. A restoring
     /// transaction must reverse this order before deleting a newly added profile.
     pub fn files(&self) -> &[FileChange] {
@@ -704,6 +709,15 @@ pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
     if plan.profile_before.is_some() {
         return Err(fail("configuration_conflict"));
     }
+    if let Some(mapping) = plan.mapping {
+        mapping.validate()?;
+        if mapping.binding_id != plan.binding_id
+            || mapping.profile_id != plan.profile_id
+            || mapping.upstream_model_id != plan.model_id
+        {
+            return Err(fail("invalid_configuration"));
+        }
+    }
     let (mut meta, mut profile) = metadata(plan)?;
     let mut main = plan
         .main_before
@@ -720,13 +734,24 @@ pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
         ("inferenceProvider".into(), json!("gateway")),
         (
             "inferenceGatewayBaseUrl".into(),
-            json!(plan.gateway_base_url),
+            json!(
+                plan.mapping
+                    .map(|mapping| mapping.base_url())
+                    .unwrap_or_else(|| plan.gateway_base_url.into())
+            ),
         ),
         ("inferenceCredentialKind".into(), json!("helper-script")),
         ("inferenceCredentialHelper".into(), json!(plan.helper)),
         (
             "inferenceCredentialHelperArgs".into(),
-            json!(["claude", plan.binding_id]),
+            json!([
+                if plan.mapping.is_some() {
+                    "claude-map"
+                } else {
+                    "claude"
+                },
+                plan.binding_id
+            ]),
         ),
         ("inferenceCredentialHelperTtlSec".into(), json!(3600)),
         ("inferenceCredentialHelperTimeoutSec".into(), json!(5)),
@@ -736,7 +761,12 @@ pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
         ),
         ("inferenceGatewayAuthScheme".into(), json!("bearer")),
         ("modelDiscoveryEnabled".into(), json!(false)),
-        ("inferenceModels".into(), json!([{ "name": plan.model_id }])),
+        (
+            "inferenceModels".into(),
+            plan.mapping
+                .map(|mapping| json!(mapping.aliases))
+                .unwrap_or_else(|| json!([{ "name": plan.model_id }])),
+        ),
     ]));
     meta.get_mut("entries")
         .and_then(Value::as_array_mut)
@@ -771,6 +801,7 @@ pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
     }
     Ok(CompiledLibrary {
         files,
+        mapping: plan.mapping.cloned(),
         active_profile_id: plan.active_profile.as_ref().map(|source| source.id.into()),
         active_profile_sha256: plan
             .active_profile
@@ -813,6 +844,7 @@ mod tests {
                 helper: &self.helper,
                 binding_id: BINDING,
                 model_id: "orbit-sonnet",
+                mapping: None,
                 profile_before: None,
                 metadata_before: None,
                 main_before: None,
@@ -823,6 +855,53 @@ mod tests {
 
     fn bytes(value: Value) -> Vec<u8> {
         serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn claude_mapping_compiler_is_explicit_and_preserves_https_authority() {
+        let fixture = Fixture::new();
+        let manager = crate::claude_mapping::MappingManager::default();
+        let mapping = manager.reserve(BINDING, NEW_ID, "gpt-6-luna").unwrap();
+        let mut plan = fixture.plan();
+        plan.model_id = "gpt-6-luna";
+        plan.mapping = Some(&mapping);
+        let compiled = compile(&plan).unwrap();
+        let profile = after(&compiled.files()[0]);
+        assert_eq!(profile["inferenceGatewayBaseUrl"], mapping.base_url());
+        assert_eq!(
+            profile["inferenceCredentialHelperArgs"],
+            json!(["claude-map", BINDING])
+        );
+        assert_eq!(profile["inferenceModels"], json!(mapping.aliases));
+        assert!(profile.get("inferenceGatewayApiKey").is_none());
+        assert_eq!(compiled.mapping(), Some(&mapping));
+        assert!(
+            profile["inferenceModels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|model| {
+                    model["name"].as_str().unwrap().starts_with("claude-")
+                        && model["labelOverride"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("gpt-6-luna")
+                        && model.get("supports1m").is_none()
+                })
+        );
+        plan.gateway_base_url = "http://127.0.0.1:1234";
+        assert_eq!(compile(&plan).err().unwrap().code, "invalid_configuration");
+        plan.gateway_base_url = "https://edge.example.test/anthropic";
+        plan.mapping = None;
+        let direct = compile(&plan).unwrap();
+        assert_eq!(
+            after(&direct.files()[0])["inferenceGatewayBaseUrl"],
+            plan.gateway_base_url
+        );
+        assert_eq!(
+            after(&direct.files()[0])["inferenceCredentialHelperArgs"],
+            json!(["claude", BINDING])
+        );
     }
 
     fn after(change: &FileChange) -> Value {

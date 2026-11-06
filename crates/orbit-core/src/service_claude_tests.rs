@@ -282,6 +282,268 @@ fn automatic_preview(service: &Service, fixture: &tests::PolicyFixture) -> Confi
 }
 
 #[test]
+fn claude_mapping_none_keeps_legacy_scope_bytes_and_backup_restoration() {
+    let mut f = tests::policy_fixture(ClientKind::Claude);
+    let mut cache = f.service.account_cache(&f.record).unwrap();
+    cache.models[0].id = "claude-sonnet-5".into();
+    f.model = cache.models[0].id.clone();
+    f.service
+        .store
+        .put(
+            "account-cache",
+            &f.record.view.id,
+            &f.record.view.account_id,
+            &cache,
+        )
+        .unwrap();
+    let preview = automatic_preview(&f.service, &f);
+    let context = f
+        .service
+        .previews
+        .lock()
+        .unwrap()
+        .get(&preview.id)
+        .unwrap()
+        .claude_context
+        .clone()
+        .unwrap();
+    let old_wire = serde_json::to_vec(&context).unwrap();
+    assert!(
+        !serde_json::from_slice::<Value>(&old_wire)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("mapping")
+    );
+    let mut restored: ClaudeContext = serde_json::from_slice(&old_wire).unwrap();
+    assert!(restored.mapping.is_none());
+    assert_eq!(serde_json::to_vec(&restored).unwrap(), old_wire);
+    let old_revision = restored.scope_revision.clone();
+    restored.scope_revision.clear();
+    assert_eq!(
+        sha256(&serde_json::to_vec(&restored).unwrap()),
+        old_revision,
+        "a missing mapping field must not add null or change the historical scope digest"
+    );
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let restore = f
+        .service
+        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    assert_eq!(
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap()
+            .state,
+        "restored"
+    );
+    assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
+}
+
+#[test]
+fn claude_mapping_helper_modes_and_late_epoch_never_expose_the_upstream_key() {
+    use crate::claude_mapping::{
+        MappingManager, MappingRecord, ensure_local_secret, mapped_helper_token,
+        unmapped_helper_token,
+    };
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let observation = f.service.observe_configuration(ClientKind::Claude).unwrap();
+    let target = observation.claude_configuration_target.as_ref().unwrap();
+    let mut context = frozen(&f);
+    let manager = MappingManager::default();
+    let mapping = manager
+        .reserve(&context.binding_id, &context.profile_id, &f.model)
+        .unwrap();
+    let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
+        app_version: &target.app_version,
+        source_member_sha256: &target.source_member_sha256,
+        user_root: &target.config_root,
+        profile_id: &context.profile_id,
+        gateway_base_url: &context.claude_base_url,
+        helper: &f.service.paths.helper,
+        binding_id: &context.binding_id,
+        model_id: &f.model,
+        mapping: Some(&mapping),
+        profile_before: None,
+        metadata_before: None,
+        main_before: None,
+        active_profile: None,
+    })
+    .unwrap();
+    context.mapping = Some(mapping);
+    context.files = compiled
+        .files()
+        .iter()
+        .map(crate::config::ClaudeFileDigest::from_change)
+        .collect::<Result<_>>()
+        .unwrap();
+    context.scope_revision.clear();
+    context.scope_revision = sha256(&serde_json::to_vec(&context).unwrap());
+    let binding = HelperBinding {
+        id: context.binding_id.clone(),
+        client: ClientKind::Claude,
+        origin: context.panel_origin.clone(),
+        account_id: context.account_id.clone(),
+        installation_id: context.installation_id.clone(),
+        provider_id: context.provider_id.clone(),
+        credential_revision: context.credential_revision.clone(),
+        secret_reference: context.credential_reference.clone(),
+        enabled: false,
+        expires_at: context.credential_expires_at,
+        authorization_epoch: context.authorization_epoch,
+    };
+    f.service
+        .store
+        .put("binding", &binding.id, &binding.account_id, &binding)
+        .unwrap();
+    let policy = || {
+        f.service
+            .validate_claude_configuration(&observation.policy, Some(target))
+    };
+    let scope = |current: &ClaudeContext, restoring: bool| {
+        assert_eq!(current, &context);
+        f.service.validate_claude_context(current, restoring)
+    };
+    let engine = ConfigEngine {
+        store: &f.service.store,
+        vault: f.vault.as_ref(),
+        allowed_roots: f.service.paths.configuration_roots.clone(),
+        policy_guard: Some(&policy),
+        context_guard: None,
+        claude_context_guard: Some(&scope),
+    };
+    let install = f.service.installation(&f.record).unwrap();
+    let journal = engine
+        .prepare_claude(
+            &context.account_id,
+            &install,
+            compiled.into_files(),
+            vec![],
+            context.clone(),
+        )
+        .unwrap();
+    let mut record = MappingRecord {
+        journal_id: journal.id.clone(),
+        context: context.clone(),
+        committed: false,
+    };
+    f.service
+        .store
+        .put("claude-mapping", &binding.id, &binding.account_id, &record)
+        .unwrap();
+    ensure_local_secret(&record, &binding, f.vault.as_ref()).unwrap();
+    assert_eq!(
+        mapped_helper_token(
+            &binding.id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp()
+        )
+        .unwrap_err()
+        .code,
+        "binding_disabled"
+    );
+    engine.apply(&journal.id).unwrap();
+    record.committed = true;
+    f.service
+        .store
+        .put("claude-mapping", &binding.id, &binding.account_id, &record)
+        .unwrap();
+    let binding: HelperBinding = f
+        .service
+        .store
+        .get("binding", &binding.id)
+        .unwrap()
+        .unwrap();
+    let local = mapped_helper_token(
+        &binding.id,
+        &f.service.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    assert!(local.starts_with("orbt_map_"));
+    let upstream = bound_helper_token(
+        &binding,
+        ClientKind::Claude,
+        &binding.id,
+        &f.service.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    assert!(upstream.starts_with("orv_sk_") && upstream.as_str() != local.as_str());
+    assert_eq!(
+        unmapped_helper_token(
+            &binding,
+            ClientKind::Claude,
+            &binding.id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp()
+        )
+        .unwrap_err()
+        .code,
+        "binding_disabled",
+        "changing executable helper mode must not reveal a mapped binding's real key"
+    );
+    let mut direct = binding.clone();
+    direct.id = uuid();
+    f.service
+        .store
+        .put("binding", &direct.id, &direct.account_id, &direct)
+        .unwrap();
+    let legacy = unmapped_helper_token(
+        &direct,
+        ClientKind::Claude,
+        &direct.id,
+        &f.service.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    assert!(
+        legacy.as_str() == upstream.as_str(),
+        "an unrelated original direct binding keeps its old helper contract"
+    );
+    assert!(
+        mapped_helper_token(
+            &direct.id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp()
+        )
+        .is_err()
+    );
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    *f.vault.pause.lock().unwrap() = Some((entered, released));
+    let store = f.service.store.clone();
+    let vault = f.vault.clone();
+    let id = binding.id.clone();
+    let worker = std::thread::spawn(move || {
+        mapped_helper_token(&id, &store, vault.as_ref(), chrono::Utc::now().timestamp())
+    });
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    f.service
+        .store
+        .set_meta(
+            &authorization_epoch_reference(
+                &binding.origin,
+                &binding.installation_id,
+                &binding.account_id,
+            ),
+            "999",
+        )
+        .unwrap();
+    resume.send(()).unwrap();
+    assert_eq!(worker.join().unwrap().unwrap_err().code, "binding_disabled");
+}
+
+#[test]
 fn claude_engine_full_verification_budget_preserves_three_file_roundtrip() {
     for existing in [false, true] {
         let f = tests::policy_fixture(ClientKind::Claude);
@@ -1900,6 +2162,7 @@ fn frozen(fixture: &tests::PolicyFixture) -> ClaudeContext {
         helper: &fixture.service.paths.helper,
         binding_id: &binding,
         model_id: &fixture.model,
+        mapping: None,
         profile_before: None,
         metadata_before: None,
         main_before: None,

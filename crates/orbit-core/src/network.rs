@@ -1,4 +1,5 @@
 use crate::{
+    claude_mapping::{ForwardPermit, ProtocolHeaders},
     error::{Result, fail},
     identity::{Installation, ProofInput, canonical_origin, sign_proof, uuid},
     vault::Vault,
@@ -14,9 +15,12 @@ pub const PRODUCTION_PANEL_ORIGIN: &str = "https://orivelle.powerbyte.io";
 #[derive(Clone)]
 pub struct Http {
     client: Client,
+    mapping_client: Client,
     allow_loopback: bool,
     #[cfg(test)]
     fixture: std::sync::Arc<std::sync::Mutex<Option<FixtureHandler>>>,
+    #[cfg(test)]
+    mapping_fixture: std::sync::Arc<std::sync::Mutex<Option<MappingFixtureHandler>>>,
     #[cfg(test)]
     local_acceptance_origin: Option<String>,
     #[cfg(test)]
@@ -38,6 +42,22 @@ pub type FixtureHandler = std::sync::Arc<
         + Send
         + Sync,
 >;
+pub(crate) type MappingStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<hyper::body::Bytes>> + Send>>;
+pub(crate) struct MappingResponse {
+    pub status: u16,
+    pub headers: reqwest::header::HeaderMap,
+    pub stream: MappingStream,
+}
+#[cfg(test)]
+pub(crate) type MappingFixtureHandler = std::sync::Arc<
+    dyn Fn(
+            FixtureRequest,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<MappingResponse>> + Send>>
+        + Send
+        + Sync,
+>;
 impl Http {
     pub fn new() -> Result<Self> {
         Self::build(false)
@@ -50,11 +70,25 @@ impl Http {
             .user_agent("Orivelle-Orbit/0.1.0")
             .build()
             .map_err(|_| fail("network_unavailable"))?;
+        // The mapping is an explicit native-only HTTPS route. It does not use
+        // environment proxy settings or permit caller-selected redirects.
+        let mapping_client = Client::builder()
+            .https_only(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_secs(10))
+            .user_agent("Orivelle-Orbit/0.1.0")
+            .build()
+            .map_err(|_| fail("network_unavailable"))?;
         Ok(Self {
             client,
+            mapping_client,
             allow_loopback,
             #[cfg(test)]
             fixture: Default::default(),
+            #[cfg(test)]
+            mapping_fixture: Default::default(),
             #[cfg(test)]
             local_acceptance_origin: None,
             #[cfg(test)]
@@ -89,9 +123,11 @@ impl Http {
             .build()
             .map_err(|_| fail("local_tls_client_unavailable"))?;
         Ok(Self {
+            mapping_client: client.clone(),
             client,
             allow_loopback: false,
             fixture: Default::default(),
+            mapping_fixture: Default::default(),
             local_acceptance_origin: Some(origin),
             local_acceptance_callback: Default::default(),
         })
@@ -156,6 +192,98 @@ impl Http {
     #[cfg(test)]
     pub fn scripted(&self, handler: FixtureHandler) {
         *self.fixture.lock().unwrap() = Some(handler);
+    }
+    #[cfg(test)]
+    pub(crate) fn scripted_mapping(&self, handler: MappingFixtureHandler) {
+        *self.mapping_fixture.lock().unwrap() = Some(handler);
+    }
+
+    /// A single Claude mapping attempt, authorized by an opaque native permit.
+    /// Unlike `request`, this returns the body stream without collecting it.
+    /// The caller owns the permit and its lease until that stream terminates.
+    pub(crate) async fn claude_mapping_messages(
+        &self,
+        permit: &mut ForwardPermit,
+        body: Vec<u8>,
+        protocol: ProtocolHeaders,
+        beta: bool,
+    ) -> Result<MappingResponse> {
+        let mut url = self.validate_url(permit.messages_url.as_str())?;
+        if url.scheme() != "https" || url.query().is_some() || !url.path().ends_with("/v1/messages")
+        {
+            return Err(fail("claude_mapping_destination_invalid"));
+        }
+        if beta {
+            url.set_query(Some("beta=true"));
+        }
+        let authorization_text =
+            zeroize::Zeroizing::new(format!("Bearer {}", permit.api_key.as_str()));
+        let mut authorization = reqwest::header::HeaderValue::from_str(&authorization_text)
+            .map_err(|_| fail("credential_missing"))?;
+        authorization.set_sensitive(true);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::AUTHORIZATION, authorization);
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/json, text/event-stream"),
+        );
+        for (name, value) in [
+            ("anthropic-version", protocol.anthropic_version),
+            ("anthropic-beta", protocol.anthropic_beta),
+        ] {
+            if let Some(value) = value {
+                let value = reqwest::header::HeaderValue::from_str(&value)
+                    .map_err(|_| fail("claude_mapping_headers_invalid"))?;
+                headers.insert(name, value);
+            }
+        }
+        #[cfg(test)]
+        {
+            let fixture = self.mapping_fixture.lock().unwrap().clone();
+            if self.local_acceptance_origin.is_some() && fixture.is_some() {
+                return Err(fail("local_tls_scripted_transport_forbidden"));
+            }
+            if let Some(handler) = fixture {
+                return handler(FixtureRequest {
+                    method: Method::POST,
+                    url: url.to_string(),
+                    body,
+                    headers: headers
+                        .iter()
+                        .map(|(name, value)| {
+                            (name.as_str().to_owned(), value.to_str().unwrap().to_owned())
+                        })
+                        .collect(),
+                })
+                .await;
+            }
+        }
+        let request = self
+            .mapping_client
+            .post(url)
+            .headers(headers)
+            .timeout(Duration::from_secs(15 * 60))
+            .body(body);
+        // Waiting for inference response headers includes provider TTFT. Keep
+        // it aligned with stream idle time, separate from the 10s connect and
+        // local request-header limits.
+        let response = tokio::time::timeout(Duration::from_secs(120), request.send())
+            .await
+            .map_err(|_| fail("result_unconfirmed"))?
+            .map_err(|_| fail("result_unconfirmed"))?;
+        Ok(MappingResponse {
+            status: response.status().as_u16(),
+            headers: response.headers().clone(),
+            stream: Box::pin(
+                response
+                    .bytes_stream()
+                    .map(|chunk| chunk.map_err(|_| fail("result_unconfirmed"))),
+            ),
+        })
     }
     pub(crate) fn require_panel_origin(&self, origin: &str) -> Result<()> {
         // Alternate issuers exist only in explicit, compile-time test clients.
