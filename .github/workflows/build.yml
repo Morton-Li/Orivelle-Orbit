@@ -16,21 +16,13 @@ concurrency:
 
 jobs:
   package:
-    name: Package ${{ matrix.name }}
+    name: Package ${{ matrix.runner == 'macos-15' && 'macOS arm64' || 'Windows x64' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: macOS arm64
-            runner: macos-15
-            artifact: orbit-macos-arm64
-            package: runtime/candidates/*-candidate.zip
-          - name: Windows x64
-            runner: windows-2025
-            artifact: orbit-windows-x64
-            package: runtime/github-release/*-setup.exe
+        runner: ${{ fromJSON(vars.ORBIT_WINDOWS_PACKAGING == 'true' && '["macos-15", "windows-2025"]' || '["macos-15"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,9 +35,9 @@ jobs:
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ matrix.runner == 'macos-15' && 'orbit-macos-arm64' || 'orbit-windows-x64' }}
           path: |
-            ${{ matrix.package }}
+            ${{ matrix.runner == 'macos-15' && 'runtime/candidates/*-candidate.zip' || 'runtime/github-release/*-setup.exe' }}
             runtime/logs/candidate-manifest.json
           if-no-files-found: error
           compression-level: 0

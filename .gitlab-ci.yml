@@ -124,8 +124,10 @@ candidate:windows-x64:
 bundle:windows-x64:
   extends: .windows-native
   stage: candidate
-  when: manual
-  allow_failure: false
+  rules:
+    - if: '$ORBIT_WINDOWS_PACKAGING == "true"'
+      when: manual
+      allow_failure: false
   timeout: 60 minutes
   needs:
     - validate:windows-x64
