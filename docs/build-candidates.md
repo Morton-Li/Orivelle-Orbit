@@ -1,62 +1,70 @@
-# 原生检查与候选打包
+# 开发、检查与候选打包
 
-当前脚本用于项目内编译和候选产物审查，不启动原生应用、不运行真实客户端或系统安全存储测试。候选的正式签名与更新渠道关闭。真实运行、客户端配置、安全存储、正式签名和分发另行授权。
+## 前端开发
 
-## 已准备的工具
+在 Orbit 仓库根目录使用 `.node-version` 指定的 Node 24.18.0 和 `package.json` 指定的 npm 11.16.0。运行 `npm ci` 按锁文件安装项目依赖，`.npmrc` 配置了 npm 镜像与项目内缓存。
 
-只接受当前宿主匹配的 `aarch64-apple-darwin` 或 `x86_64-pc-windows-msvc`，不交叉编译。Node 24.18.0、npm 11.16.0、Rust 1.97.1、Tauri CLI 2.12.2 及目标标准库、rustfmt 应由环境负责人预先准备。脚本没有安装工具的步骤。
+```sh
+npm ci
+npm run check
+npm run test:e2e
+```
 
-`ORBIT_RUST_BIN` 可以指向已准备工具链的 bin；默认读取用户已有的 `.rustup/toolchains/1.97.1-<宿主>/bin`，直接执行锁定 cargo/rustc，避免调用 rustup 自动下载。macOS 默认使用现有 CommandLineTools clang 与 MacOSX15.4 SDK；如准备路径不同，通过单次命令的 `ORBIT_DEVELOPER_DIR`、`ORBIT_MAC_SDK` 指定。不会执行 xcode-select、接受 Xcode 许可证或修改全局环境。Windows 需已有 MSVC、Windows SDK 和已配置的构建终端。
+`npm run check` 检查格式、Lint、类型、单测及前端产物。`npm run test:e2e` 使用已安装的 Chrome，在空闲的回环端口 1420 启动 Vite，并注入合成 IPC 数据覆盖界面流程。手动预览前端可用 `npm run dev`，浏览器里的原生操作需要桌面 IPC。独立协议测试见[桌面协议隔离网关](desktop-fake-gateway.md)。
 
-依赖使用项目 npmmirror/rsproxy 源和锁文件完整性校验。Cargo、npm、临时目录、编译结果及日志均留在项目 `.cache/`、`runtime/`。镜像缺少锁定版本时停止报告，不降级、不自动换官方源。
+## 原生工具链
 
-候选构建清除继承的 `VITE*` 和 `NODE_ENV`，npm 用户配置使用系统空设备，全局配置指向项目内明确不存在的路径；若该路径出现文件则拒绝启动工具。项目 `.npmrc` 仍决定镜像源。隔离构建前还须确认项目没有真实 dotenv 文件，Cargo 可用 `CARGO_NET_OFFLINE=true` 复用已准备的项目缓存。
+| 构建宿主 | Rust 目标 | 平台前置 |
+| --- | --- | --- |
+| macOS Apple Silicon | `aarch64-apple-darwin` | 默认使用 Command Line Tools 的 clang 和 macOS 15.4 SDK。可用 `ORBIT_DEVELOPER_DIR` 与 `ORBIT_MAC_SDK` 指向已准备的工具目录和 SDK。候选配置的最低系统版本为 macOS 15.0。 |
+| Windows x64 | `x86_64-pc-windows-msvc` | 使用已配置 MSVC x64 与 Windows SDK 的终端。运行桌面程序需要 WebView2。 |
 
-## 分阶段命令
+原生脚本要求宿主架构和 Rust 目标一致。准备 `rust-toolchain.toml` 固定的 Rust 1.97.1、对应目标标准库和 rustfmt。脚本从 `ORBIT_RUST_BIN` 或用户已有的 `.rustup/toolchains/1.97.1-<目标>/bin` 调用实际二进制。Tauri CLI 2.12.2 随 `npm ci` 安装。Cargo 使用项目配置的 rsproxy sparse 镜像和 `Cargo.lock`。[原生工作流脚本](../scripts/native-workflow.mjs)
+
+前端和原生检查请使用没有本地 dotenv 文件的 checkout，避免 Vite 将本地配置带入产物。原生脚本为子进程隔离 npm 配置和缓存，清除继承的 Vite、签名和发布变量，并将 Cargo 缓存、构建输出和临时文件写入 `runtime/`。依赖缓存齐全时可设置 `CARGO_NET_OFFLINE=true`。
 
 ```sh
 node scripts/native-workflow.mjs preflight
-npm run check
 node scripts/native-workflow.mjs check
+node --test tests/build/updater-signer-probe.test.mjs
+```
+
+`preflight` 核对宿主与锁定工具版本，准备项目目录。`check` 执行 rustfmt、core/helper 常规测试和默认特性的 Tauri `cargo check`。默认特性的应用使用项目内数据目录、隔离客户端路径和拒绝访问的 Vault。
+
+## 生成候选产物
+
+在已提交且无跟踪文件改动的 checkout 中运行签名探针，再按所需产物选择 `candidate` 或 `bundle`。
+
+```sh
 node scripts/native-workflow.mjs signer-probe
 node scripts/native-workflow.mjs candidate
 node scripts/native-workflow.mjs bundle
 ```
 
-`preflight` 只核工具、宿主和项目路径。`check` 执行 rustfmt、core/helper 的隔离测试以及默认 Tauri cargo check；此构建拒绝真实 vault。
+- `signer-probe` 单独执行常规测试中标为 `ignored` 的更新签名互通测试。锁定的 Tauri CLI 用临时合成密钥签署小型产物，Rust verifier 核对产物字节和签名版本，并运行拒绝用例。私钥在测试后清理，成功摘要写入 `runtime/logs/synthetic-updater-signer-probe.json`。
+- `candidate` 构建带 `system-integration` 的原生程序，向主程序嵌入同目标的项目内 helper 和它的 SHA-256。编译产物位于 `runtime/target/<Rust 目标>/release/`。运行这类候选会使用系统应用数据目录及原生集成。
+- `bundle` 在同一次构建中执行平台打包。macOS 在目标目录下的 `bundle/macos/` 生成 `Orivelle Orbit.app`，并在 `runtime/candidates/` 生成 `Orivelle-Orbit-<版本>-macos-arm64-candidate.zip`。Windows 在 `bundle/nsis/` 生成当前用户范围的 NSIS 安装候选。
 
-`signer-probe` 要求已提交、干净的 tracked 源码，实际调用锁定 CLI 2.12.2：在项目私有临时目录生成两对合成密钥，签署小型假产物（分别带 `--app-version` 和不带版本），随后显式运行 `updater_cli` 的 Rust verifier 测试。正例使用原签名、版本和相同字节；负例包括字节、公钥、版本、无版本签名、trusted comment、编码和空产物，CLI 另须拒绝 TAB/CR/LF 版本。普通 `cargo test` 将该入口标为 ignored；两个 CI native validate job 显式运行 probe，不能把 ignored 当作已执行。
+Windows 执行 `bundle` 前，需在 `runtime/target/.tauri/NSIS/` 预置完整的 NSIS 3.11 和 `Plugins/x86-unicode/additional/nsis_tauri_utils.dll` 0.5.3。脚本校验必需文件与插件 SHA-1，缺项会在调用打包器前失败。请按锁定版本源码中的资源地址与校验和，从可用镜像准备工具。NSIS 候选设置 `webviewInstallMode=skip`，安装环境须预装 WebView2。[Tauri 2.12.2 的 NSIS 工具定义](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.2/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs#L33-L69)
 
-所有 signer stdout/stderr 在内存中有界捕获，不写日志；合成私钥不放 argv，不读取用户签名密钥，不使用系统证书。临时目录在成功和失败后删除，测试编译使用独立 `runtime/target-signer-probe/`；候选仍无 release trust。成功摘要 `runtime/logs/synthetic-updater-signer-probe.json` 仅包含版本、公开 hash、状态和源码前后一致检查。失败的新尝试先移除旧成功摘要，不能用旧记录代表新运行。
+构建成功后，`runtime/logs/candidate-manifest.json` 记录前后核对的 Git 提交和树、宿主与工具版本，以及 helper 和主程序的大小与 SHA-256。macOS 打包还核对 bundle 标识、版本、最低系统版本、完整文件清单和 ZIP 解包一致性。`.app` 与 ZIP 中的固定 Codex `LICENSE`、`NOTICE`、`PROVENANCE.json` 都须通过路径和内容校验。可用 `node --test tests/build/macos-candidate.test.mjs` 运行打包检查的夹具测试。[候选证据实现](../scripts/candidate-evidence.mjs) · [Codex 目录来源](codex-catalog.md)
 
-专用 target 复用项目目录门禁，已有 symlink/junction 会在启动工具前被拒绝。超时或输出超量后停止保留输出，只终止本次 owned process group，强制结束后仍以有限 settle 进入清理，不无限等待继承 pipe。2026-10-14 Mac 故障夹具4/4通过：符号链接、不退出的 signer、父进程退出后子进程仍持 pipe、输出超量；并验证临时密钥和旧成功摘要被删除、既有 sibling 保留。命令 `node --test tests/build/updater-signer-probe.test.mjs`，证据 `runtime/logs/signer-probe-failure-tests.log`。Windows 仅按 owned PID 调用系统 [taskkill /T /F](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill)，环境名规范化；进程树及故障行为仍需实际 Windows 验证。
+候选通过 `--no-sign` 构建，更新端点为空。发布准备包括平台签名与 macOS 公证。启用自动更新还需配置更新签名和可信渠道。真实平台、客户端和系统安全存储的验收范围见[验证指南](validation.md)。
 
-2026-10-14 已在办公 Mac 实际通过该 probe，首轮源码 `cdb6f2d50dd2b67329604cb948a72b4108f14231` 前后一致；软件签名的合成产物为96字节、版本0.2.0，Rust显式测试通过，临时目录残留0。首轮摘要与日志单独保存在 `.cache/evidence/synthetic-updater-signer-probe-cdb6{.json,-run.log}`；阶段收尾重新执行后，最新源码和结果以 `runtime/logs/synthetic-updater-signer-probe.json` 为准。这证明锁定 CLI 与版本/字节 verifier 的互通，未验证正式签名、目标架构、安装或更新。CLI 的写钥与签名格式依据固定源码：[generate](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-cli/src/signer/generate.rs)、[版本签名](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-cli/src/helpers/updater_signature.rs)。
+## macOS 安全存储专项
 
-`candidate` 先构建带 `system-integration` 的固定 helper，再通过 `ORBIT_BUNDLED_HELPER_PATH` 把同一二进制及 SHA-256 嵌入 GUI。构建脚本检查项目内普通文件、大小和目标架构；运行时部署使用独占 helper 锁、私有稳定路径、原子写入和读回校验。helper 与桌面程序都只在构建时生成；脚本不会启动它们。
+`native_keychain_roundtrip` 是默认忽略的真实 Keychain 测试。确认当前环境允许写入一条合成条目后，在 Orbit 根目录执行。直接调用 Cargo 时请使用上述已准备的 Rust 和 SDK，并使用已填充的项目 Cargo 缓存。
 
-`bundle` 在 macOS 生成 `.app`，不挂载 DMG、不放入 Applications。Windows 生成当前用户 NSIS 安装候选，需先从获准镜像准备完整 NSIS 3.11 和固定 0.5.3 plugin 到项目的 `runtime/target/.tauri/NSIS/`；缺文件或 plugin 校验和不符即停止，避免 Tauri 自行从 GitHub补下载。候选 NSIS 使用 `webviewInstallMode=skip`，要求测试环境已有 WebView2；正式安装的运行时交付另做审查，不能把这个候选当成可分发安装包。
+```sh
+export CARGO_HOME="$PWD/runtime/cargo-home"
+export CARGO_TARGET_DIR="$PWD/runtime/target"
+mkdir -p .cache/evidence/macos-native-preflight-20261021
+cargo test --locked --offline -p orbit-core --test macos_native_preflight \
+  native_keychain_roundtrip -- --ignored --exact --test-threads=1
+```
 
-macOS 同时生成 `runtime/candidates/Orivelle-Orbit-0.1.0-macos-arm64-candidate.zip`（名称随版本变化）。归档只包含 `.app`，排除扩展属性、资源 fork 和 ACL；在项目临时目录解包，再核对全部文件、目录、权限和内容摘要，验证后清理该临时副本。原 `.app` 和 ZIP 保留在项目内，未执行或安装。
+测试会先在代码指定的目录记录新条目的引用，再尝试写入、回读、更新和删除。若进程被强制结束，按当次 journal 核对该条目的清理状态。此测试覆盖适配器往返，GUI 和 helper 的系统身份、升级连续性需分别验收。[测试实现](../crates/orbit-core/tests/macos_native_preflight.rs)
 
-`bundle.resources` 显式将固定 Codex `0.163.0-alpha.10.2` 的 `LICENSE`、完整 `NOTICE` 和 `PROVENANCE.json` 放到 `.app/Contents/Resources/licenses/codex/0.163.0-alpha.10.2/`。原件位于 `crates/orbit-core/resources/codex/0.163.0-alpha.10.2/`；主程序是否保留模板由其编译结果决定，许可证文件仍须独立随包交付。固定来源和完整模板合同见[Codex 目录](codex-catalog.md)。
+## 现有 CI
 
-`inspectMacApp` 无条件要求这三个固定路径是普通文件，大小及 SHA-256 与固定来源一致；缺文件、同长度篡改、错误目录或用目录替代文件均使候选失败，调用方不能用空的资源声明绕过。原 `.app`、ZIP 解包副本及归档完成后的原包均执行同一检查；公开 `codex_source_materials` 摘要与原全包清单并存。来源升级必须同时复核原始材料、固定 hash 和目录合同，不能动态追踪 latest。
-
-Tauri `useLocalToolsDir` 将工具缓存限定到项目 target，行为以锁定 CLI 源码为据：[配置](https://v2.tauri.app/reference/config/#bundleconfig)、[2.12.2 NSIS 实现](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.2/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs)。当前没有 Windows 打包或系统运行证据。
-
-产物摘要位于 `runtime/logs/candidate-manifest.json`。构建前要求已提交、干净的 tracked 树，记录 HEAD/tree；完成包检查后再次核对，变化时拒绝生成有效摘要。文件负责人在构建期间保持源码冻结；任务记录和测试缓存不入 Git。
-
-摘要包含宿主/工具版本、helper/主程序大小与 SHA-256；macOS 增加 bundle identifier、版本、最低系统、完整包清单/摘要、ZIP 摘要及解包一致性结果。包清单按路径排序，包含文件/目录类型、POSIX 权限、文件大小与内容 hash；整体 hash 为该清单 JSON 的 SHA-256，不包含时间戳或系统额外属性。它证明本次候选的内容与构建提交对应，正式发布信任仍需签名与渠道流程。
-
-锁定 CLI 2.12.2 的 `--no-sign` 会跳过 macOS 的 keychain、证书签名和公证分支，也跳过 updater 签名：[固定实现](https://github.com/tauri-apps/tauri/blob/5b23c82ea5ba6b9aec420dd71f60493edc486aa9/crates/tauri-bundler/src/bundle/macos/app.rs#L115)。实际 Mach-O 仍有编译链接器产生的 ad-hoc 签名，未设置 TeamIdentifier，Info.plist/资源未封印；这不能证明发布者身份或安全存储的升级连续性。正式证书、公钥与更新渠道未启用。
-
-Mac 证据模块的专项回归命令为 `node --test tests/build/macos-candidate.test.mjs`。覆盖资源/权限变化、可执行文件替换、标识/版本/最低系统不符、路径与 symlink、构建前 dirty、中途提交变化及上述必需来源材料的反例；Mac CI 运行这些检查并保留 ZIP。实际 `.app`、架构、helper 嵌入和归档回读另行静态核实，均不会启动 Orbit 或 helper。
-
-2026-10-21 的来源材料阶段只改候选配置、证据脚本和专项夹具，最少检查为受影响脚本质量、候选专项及一次提交后 Mac `.app`/ZIP 构建和回读；不重复无变更的应用 Rust/前端、浏览器、协议网关或 signer 探针。实际 argv、源码前后摘要、日志、产物和本地合并以忽略目录 `.cache/evidence/codex-candidate-resources-20261021/` 内交付清单为准。旧 `42900ddd` 的 ZIP 和原 manifest 独立保留，不能被新构建覆盖后继续用作当前源码证据。
-
-## CI 与验收
-
-GitLab 配置要求准备好的 `orbit-macos-arm64`、`orbit-windows-x64` 原生 runner，以及已安装的 Chrome。这些 tag 是环境需求，尚未核实 runner 实际存在；没有推送或触发远端 pipeline。CI 只做编译、FakeVault/fixture 和隔离浏览器检查，Windows NSIS 是准备好专用缓存后的手动候选 job。
-
-按 2026-11-06 用户最新确认，本目标只验收当前办公 Mac（macOS 26.7.1 arm64），不再等待 Windows 11 25H2、macOS 15 最低版本或其他环境。上述 CI 与 Windows 候选配置保留，不据此宣称对应平台通过。当前 Mac 的原生安全存储、配置载入、Claude 工具/流式/辅助模型、图片及候选更新恢复仍需各自的实际证据；Codex 按用户要求跳过验证。构建或浏览器通过不能替代这些本机验收。正式签名、证书安装、分发和发布沿用原需求的另行授权边界，不作为本目标完成门槛。
+GitLab 的 validate 作业使用预置工具和 Chrome 的 `orbit-macos-arm64`、`orbit-windows-x64` 原生 runner，运行前端、浏览器、协议、Rust 和合成签名检查。通过后分别打包 macOS 应用和构建 Windows 可执行文件，Windows NSIS 是单独的手动作业。[GitLab CI 配置](../.gitlab-ci.yml)
