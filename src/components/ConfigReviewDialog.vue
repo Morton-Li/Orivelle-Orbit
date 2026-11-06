@@ -174,7 +174,10 @@ async function confirm() {
           preview_id: preview.id,
           confirmed: true,
         });
-  if (!result) rejectedPreviewIds.value.add(preview.id);
+  if (!result) {
+    rejectedPreviewIds.value.add(preview.id);
+    if (preview.client === "claude") await store.refresh();
+  }
   if (result) {
     await store.refresh();
     store.notify(
