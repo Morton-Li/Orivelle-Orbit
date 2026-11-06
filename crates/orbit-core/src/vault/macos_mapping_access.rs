@@ -39,6 +39,8 @@ const ACCOUNT_ATTRIBUTE: u32 = u32::from_be_bytes(*b"acct");
 const ENCRYPT: &str = "ACLAuthorizationEncrypt";
 const OWNER: &str = "ACLAuthorizationChangeACL";
 const DECRYPT: &str = "ACLAuthorizationDecrypt";
+const INTEGRITY: &str = "ACLAuthorizationIntegrity";
+const PARTITION: &str = "ACLAuthorizationPartitionID";
 const RESTRICTED: [&str; 6] = [
     DECRYPT,
     "ACLAuthorizationDerive",
@@ -252,6 +254,7 @@ struct AclShape {
 struct Acl {
     object: Cf,
     description: Cf,
+    description_text: String,
     shape: AclShape,
 }
 fn acls(access: &Cf) -> Result<Vec<Acl>> {
@@ -270,7 +273,7 @@ fn acls(access: &Cf) -> Result<Vec<Acl>> {
             };
             let applications = (!apps.is_null()).then(|| Cf(apps.cast()));
             let description = Cf::created(result, description.cast())?;
-            string(description.0.cast())?;
+            let description_text = string(description.0.cast())?;
             let apps = applications
                 .as_ref()
                 .map(|list| {
@@ -293,6 +296,7 @@ fn acls(access: &Cf) -> Result<Vec<Acl>> {
             Ok(Acl {
                 object,
                 description,
+                description_text,
                 shape: AclShape {
                     authorizations,
                     apps,
@@ -321,6 +325,48 @@ fn verify_shapes(actual: &[AclShape], expected: &[AclShape]) -> Result<()> {
         return Err(fail("vault_unavailable"));
     }
     Ok(())
+}
+fn verify_persisted_shapes(
+    actual: impl IntoIterator<Item = (AclShape, String)>,
+    expected: &[AclShape],
+) -> Result<()> {
+    let mut permissions = Vec::new();
+    let mut integrity = false;
+    let mut partition = false;
+    for (shape, description) in actual {
+        let singleton = shape
+            .authorizations
+            .first()
+            .filter(|_| shape.authorizations.len() == 1)
+            .map(String::as_str);
+        let length = description.len();
+        let (seen, valid_length) = match singleton {
+            Some(INTEGRITY) => (&mut integrity, length == 64),
+            Some(PARTITION) => (
+                &mut partition,
+                (2..=64 * 1024).contains(&length) && length % 2 == 0,
+            ),
+            _ => {
+                permissions.push(shape);
+                continue;
+            }
+        };
+        // Protected keychains add both records on persistence. They carry system
+        // integrity and partition data, separate from the four app ACLs.
+        if *seen
+            || shape.apps.is_some()
+            || shape.prompt != 0
+            || !valid_length
+            || !description.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(fail("vault_unavailable"));
+        }
+        *seen = true;
+    }
+    if integrity != partition {
+        return Err(fail("vault_unavailable"));
+    }
+    verify_shapes(&permissions, expected)
 }
 struct MappingAccess {
     object: Cf,
@@ -405,6 +451,14 @@ impl MappingAccess {
                 .into_iter()
                 .map(|a| a.shape)
                 .collect::<Vec<_>>(),
+            &self.expected,
+        )
+    }
+    fn verify_persisted(&self, actual: &Cf) -> Result<()> {
+        verify_persisted_shapes(
+            acls(actual)?
+                .into_iter()
+                .map(|acl| (acl.shape, acl.description_text)),
             &self.expected,
         )
     }
@@ -661,7 +715,7 @@ impl NewItemBackend for NativeItems<'_> {
         let mut access = ptr::null_mut();
         let result = unsafe { SecKeychainItemCopyAccess(item.sec(), &mut access) };
         let access = Cf::created(result, access.cast())?;
-        self.access.verify(&access)
+        self.access.verify_persisted(&access)
     }
     fn delete_new(&mut self, item: &Cf) -> Result<()> {
         status(unsafe { SecKeychainItemDelete(item.sec()) })
@@ -835,6 +889,53 @@ mod tests {
                 verify_shapes(&changed, &access.expected).is_err(),
                 "{fault}"
             );
+        }
+    }
+
+    #[test]
+    fn claude_mapping_access_readback_accepts_only_exact_system_metadata_pair() {
+        let writer = Some(vec![b"writer".to_vec()]);
+        let reader = Some(vec![b"reader".to_vec()]);
+        let expected = vec![
+            shape(&[ENCRYPT], writer.clone()),
+            shape(&[OWNER], Some(vec![])),
+            shape(&RESTRICTED, writer),
+            shape(&[DECRYPT], reader),
+        ];
+        let legacy: Vec<_> = expected
+            .iter()
+            .cloned()
+            .map(|shape| (shape, "Orbit mapping token".to_owned()))
+            .collect();
+        verify_persisted_shapes(legacy.clone(), &expected).unwrap();
+        let integrity = (shape(&[INTEGRITY], None), "a5".repeat(32));
+        let partition = (shape(&[PARTITION], None), "a5".repeat(297));
+        let mut protected = legacy.clone();
+        protected.extend([integrity.clone(), partition.clone()]);
+        verify_persisted_shapes(protected.clone(), &expected).unwrap();
+        assert!(verify_persisted_shapes(protected[..5].to_vec(), &expected).is_err());
+        let mut changed_reader = protected.clone();
+        changed_reader[3].0.apps = None;
+        assert!(verify_persisted_shapes(changed_reader, &expected).is_err());
+
+        for extra in [
+            integrity,
+            partition,
+            (shape(&["ACLAuthorizationAny"], None), "00".into()),
+        ] {
+            let mut changed = protected.clone();
+            changed.push(extra);
+            assert!(verify_persisted_shapes(changed, &expected).is_err());
+        }
+        for invalid in [
+            (shape(&[PARTITION, DECRYPT], None), "00".into()),
+            (shape(&[PARTITION], Some(vec![])), "00".into()),
+            (shape(&[PARTITION], None), "0x".into()),
+            (shape(&[PARTITION], None), "123".into()),
+        ] {
+            let mut changed = protected.clone();
+            changed[5] = invalid;
+            assert!(verify_persisted_shapes(changed, &expected).is_err());
         }
     }
 
