@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, TcpListener},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 use url::Url;
@@ -40,13 +40,19 @@ pub fn requires_mapping(model_id: &str) -> bool {
 }
 
 fn aliases(model_id: &str) -> Vec<ModelAlias> {
-    [(SONNET, "主模型"), (OPUS, "高阶角色"), (HAIKU, "辅助模型")]
-        .into_iter()
-        .map(|(name, role)| ModelAlias {
-            name: name.into(),
-            label_override: format!("{model_id} · {role}"),
-        })
-        .collect()
+    // Version 1 persisted labels are part of frozen encrypted contexts. Keep
+    // this version's rule when adding future locales or plan versions.
+    [
+        (SONNET, "主模型"),
+        (OPUS, "备用主模型"),
+        (HAIKU, "辅助模型"),
+    ]
+    .into_iter()
+    .map(|(name, role)| ModelAlias {
+        name: name.into(),
+        label_override: format!("{model_id} · {role}"),
+    })
+    .collect()
 }
 
 /// Frozen, nonsecret configuration. No arbitrary loopback URL can construct a
@@ -180,6 +186,7 @@ enum Slot {
         plan: MappingPlan,
         listener: TcpListener,
         expires: Instant,
+        confirmed: bool,
     },
     Running {
         plan: MappingPlan,
@@ -189,7 +196,22 @@ enum Slot {
 
 #[derive(Default)]
 pub(crate) struct MappingManager {
-    slots: Mutex<HashMap<String, Slot>>,
+    slots: Arc<Mutex<HashMap<String, Slot>>>,
+}
+
+pub(crate) struct ReservationTicket {
+    slots: Weak<Mutex<HashMap<String, Slot>>>,
+    binding_id: String,
+}
+impl Drop for ReservationTicket {
+    fn drop(&mut self) {
+        if let Some(slots) = self.slots.upgrade()
+            && let Ok(mut slots) = slots.lock()
+            && matches!(slots.get(&self.binding_id), Some(Slot::Reserved { .. }))
+        {
+            slots.remove(&self.binding_id);
+        }
+    }
 }
 
 impl MappingManager {
@@ -198,6 +220,15 @@ impl MappingManager {
         binding_id: &str,
         profile_id: &str,
         model_id: &str,
+    ) -> Result<MappingPlan> {
+        self.reserve_for(binding_id, profile_id, model_id, Duration::from_secs(300))
+    }
+    fn reserve_for(
+        &self,
+        binding_id: &str,
+        profile_id: &str,
+        model_id: &str,
+        ttl: Duration,
     ) -> Result<MappingPlan> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| fail("claude_mapping_unavailable"))?;
@@ -219,7 +250,7 @@ impl MappingManager {
         plan.validate()?;
         let mut slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
         slots.retain(
-            |_, slot| !matches!(slot, Slot::Reserved{expires,..} if *expires <= Instant::now()),
+            |_, slot| !matches!(slot, Slot::Reserved{expires,confirmed:false,..} if *expires <= Instant::now()),
         );
         if slots.len() >= 8 || slots.contains_key(binding_id) {
             return Err(fail("claude_mapping_unavailable"));
@@ -229,10 +260,40 @@ impl MappingManager {
             Slot::Reserved {
                 plan: plan.clone(),
                 listener,
-                expires: Instant::now() + Duration::from_secs(300),
+                expires: Instant::now() + ttl,
+                confirmed: false,
             },
         );
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let weak = Arc::downgrade(&self.slots);
+            runtime.spawn(async move {tokio::time::sleep(ttl).await;
+                if let Some(slots)=weak.upgrade() && let Ok(mut slots)=slots.lock(){
+                    slots.retain(|_,slot|!matches!(slot,Slot::Reserved{expires,confirmed:false,..} if *expires<=Instant::now()));
+                }
+            });
+        }
         Ok(plan)
+    }
+    pub(crate) fn ticket(&self, plan: &MappingPlan) -> ReservationTicket {
+        ReservationTicket {
+            slots: Arc::downgrade(&self.slots),
+            binding_id: plan.binding_id.clone(),
+        }
+    }
+    pub(crate) fn claim(&self, plan: &MappingPlan) -> Result<()> {
+        let mut slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
+        match slots.get_mut(&plan.binding_id) {
+            Some(Slot::Reserved {
+                plan: current,
+                confirmed,
+                expires,
+                ..
+            }) if current == plan && (*confirmed || *expires > Instant::now()) => {
+                *confirmed = true;
+                Ok(())
+            }
+            _ => Err(fail("preview_expired")),
+        }
     }
     pub(crate) fn activate(
         &self,
@@ -323,7 +384,7 @@ impl MappingManager {
 
 impl Drop for MappingManager {
     fn drop(&mut self) {
-        if let Ok(slots) = self.slots.get_mut() {
+        if let Ok(slots) = self.slots.lock() {
             for slot in slots.values() {
                 if let Slot::Running { server, .. } = slot {
                     server.stop();
@@ -339,6 +400,8 @@ pub(crate) struct MappingRecord {
     pub journal_id: String,
     pub context: ClaudeContext,
     pub committed: bool,
+    #[serde(default)]
+    pub retained_until: String,
 }
 
 impl MappingRecord {
@@ -442,6 +505,14 @@ fn check_binding(
     Ok(())
 }
 
+pub(crate) fn mapping_binding(record: &MappingRecord, store: &Store) -> Result<HelperBinding> {
+    let binding = store
+        .get::<HelperBinding>("binding", &record.context.binding_id)?
+        .ok_or_else(|| fail("binding_disabled"))?;
+    check_binding(&binding, record, store, chrono::Utc::now().timestamp())?;
+    Ok(binding)
+}
+
 pub(crate) fn ensure_local_secret(
     record: &MappingRecord,
     binding: &HelperBinding,
@@ -449,11 +520,11 @@ pub(crate) fn ensure_local_secret(
 ) -> Result<()> {
     let plan = record.plan()?;
     let reference = plan.token_reference();
-    let secret = match vault.get(&reference) {
-        Ok(bytes) => {
+    let secret = match vault.get_optional(&reference)? {
+        Some(bytes) => {
             serde_json::from_slice::<LocalSecret>(&bytes).map_err(|_| fail("credential_missing"))?
         }
-        Err(error) if error.code == "credential_missing" => {
+        None => {
             let mut random = Zeroizing::new([0u8; 32]);
             OsRng.fill_bytes(&mut *random);
             let secret = LocalSecret {
@@ -469,9 +540,40 @@ pub(crate) fn ensure_local_secret(
             vault.put(&reference, &bytes)?;
             secret
         }
-        Err(error) => return Err(error),
     };
     validate_secret(&secret, record, binding)
+}
+
+pub(crate) enum LocalSecretPresence {
+    Absent,
+    Authenticated,
+}
+
+pub(crate) fn verify_context_secret(
+    record: &MappingRecord,
+    vault: &dyn Vault,
+) -> Result<LocalSecretPresence> {
+    let context = &record.context;
+    let binding = HelperBinding {
+        id: context.binding_id.clone(),
+        client: ClientKind::Claude,
+        origin: context.panel_origin.clone(),
+        account_id: context.account_id.clone(),
+        installation_id: context.installation_id.clone(),
+        provider_id: context.provider_id.clone(),
+        credential_revision: context.credential_revision.clone(),
+        secret_reference: context.credential_reference.clone(),
+        enabled: true,
+        expires_at: context.credential_expires_at,
+        authorization_epoch: context.authorization_epoch,
+    };
+    let Some(bytes) = vault.get_optional(&record.plan()?.token_reference())? else {
+        return Ok(LocalSecretPresence::Absent);
+    };
+    let secret: LocalSecret =
+        serde_json::from_slice(&bytes).map_err(|_| fail("credential_missing"))?;
+    validate_secret(&secret, record, &binding)?;
+    Ok(LocalSecretPresence::Authenticated)
 }
 
 fn validate_secret(
@@ -575,6 +677,66 @@ pub(crate) fn authenticate_local(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mapping_reservations_expire_without_another_preview_and_drop_on_discard() {
+        let manager = MappingManager::default();
+        let plan = manager
+            .reserve_for(
+                &crate::identity::uuid(),
+                &crate::identity::uuid(),
+                "gpt-6-luna",
+                Duration::from_millis(20),
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_ok());
+        let confirmed = manager
+            .reserve_for(
+                &crate::identity::uuid(),
+                &crate::identity::uuid(),
+                "gpt-6-luna",
+                Duration::from_millis(20),
+            )
+            .unwrap();
+        let ticket = manager.ticket(&confirmed);
+        manager.claim(&confirmed).unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, confirmed.port)).is_err(),
+            "accepted confirmation preserves its reservation across slow qualification"
+        );
+        drop(ticket);
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, confirmed.port)).is_ok());
+        let plan = manager
+            .reserve(
+                &crate::identity::uuid(),
+                &crate::identity::uuid(),
+                "gpt-6-luna",
+            )
+            .unwrap();
+        let ticket = manager.ticket(&plan);
+        drop(ticket);
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_ok());
+        for _ in 0..8 {
+            manager
+                .reserve(
+                    &crate::identity::uuid(),
+                    &crate::identity::uuid(),
+                    "gpt-6-luna",
+                )
+                .unwrap();
+        }
+        assert!(
+            manager
+                .reserve(
+                    &crate::identity::uuid(),
+                    &crate::identity::uuid(),
+                    "gpt-6-luna"
+                )
+                .is_err()
+        );
+    }
 
     #[test]
     fn mapping_plan_reserves_exact_local_endpoint_and_bounded_role_whitelist() {

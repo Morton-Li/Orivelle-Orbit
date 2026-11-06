@@ -105,6 +105,7 @@ struct PreviewEntry {
     claude_diagnostic_scope: Option<String>,
     claude_context: Option<crate::config::ClaudeContext>,
     catalog_context: Option<CodexContext>,
+    _mapping_reservation: Option<crate::claude_mapping::ReservationTicket>,
 }
 struct ConfigObservation {
     target: ClientView,
@@ -262,6 +263,8 @@ pub struct Service {
     pub vault: Arc<dyn Vault>,
     pub http: Http,
     pub paths: SystemPaths,
+    self_reference: std::sync::Weak<Self>,
+    claude_mappings: crate::claude_mapping::MappingManager,
     state_revision: AtomicU64,
     login_epoch: AtomicU64,
     maintenance_active: AtomicBool,
@@ -341,11 +344,13 @@ impl Service {
         } else {
             http
         };
-        let service = Arc::new(Self {
+        let service = Arc::new_cyclic(|self_reference| Self {
             store,
             vault,
             http,
             paths,
+            self_reference: self_reference.clone(),
+            claude_mappings: Default::default(),
             state_revision: AtomicU64::new(1),
             login_epoch: AtomicU64::new(0),
             maintenance_active: AtomicBool::new(false),
@@ -1331,6 +1336,7 @@ impl Service {
             .retain(|r| r != &record.session_reference);
         self.store
             .disable_bindings(&account_id, &installation.origin)?;
+        self.stop_claude_mappings_for(&account_id, &installation.origin)?;
         self.store.put("connection", &id, &account_id, &record)?;
         let _ = self.cleanup_pending(&mut record)?;
         if let Some(pending) = self
@@ -1684,6 +1690,7 @@ impl Service {
         )?;
         self.store
             .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
+        self.stop_claude_mappings_for(&record.view.account_id, &record.view.panel_origin)?;
         let _ = self.cleanup_pending(record)?;
         self.invalidate_evidence()
     }
@@ -1873,7 +1880,8 @@ impl Service {
         Ok(bytes)
     }
     pub fn active_tasks(&self) -> Result<bool> {
-        if self.image_workers.available_permits() != 2
+        if self.claude_mappings.inflight() != 0
+            || self.image_workers.available_permits() != 2
             || self.image_memory_workers.available_permits() != 2
             || !self
                 .received_memory
@@ -2004,6 +2012,7 @@ impl Service {
             .put("connection", id, &record.view.account_id, &record)?;
         self.store
             .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
+        self.stop_claude_mappings_for(&record.view.account_id, &record.view.panel_origin)?;
         let secret_failure = self.cleanup_pending(&mut record)?;
         self.invalidate_evidence()?;
         if secret_failure {
@@ -3016,6 +3025,7 @@ impl Service {
                     claude_diagnostic_scope,
                     claude_context: None,
                     catalog_context,
+                    _mapping_reservation: None,
                 },
             );
         Ok(preview)
@@ -3496,6 +3506,7 @@ impl Service {
                     claude_diagnostic_scope: None,
                     claude_context: None,
                     catalog_context,
+                    _mapping_reservation: None,
                 },
             );
         Ok(preview)
@@ -4508,6 +4519,28 @@ impl Service {
                 self.vault.delete(&binding.secret_reference)?;
             }
         }
+        for mapping in self
+            .store
+            .list::<crate::claude_mapping::MappingRecord>("claude-mapping", None)?
+        {
+            if mapping.context.installation_id == installation.id
+                && mapping.context.panel_origin == installation.origin
+            {
+                let plan = mapping.plan()?;
+                self.claude_mappings.stop(&plan.binding_id);
+                if matches!(
+                    crate::claude_mapping::verify_context_secret(&mapping, self.vault.as_ref())?,
+                    crate::claude_mapping::LocalSecretPresence::Authenticated
+                ) {
+                    self.vault.delete(&plan.token_reference())?;
+                }
+                self.store.delete("claude-mapping", &plan.binding_id)?;
+                self.store
+                    .delete("claude-mapping-outcome", &plan.binding_id)?;
+            }
+        }
+        // Keep recovery identity intact if a mapped secret cannot be read or
+        // authenticated. All matching inference grants are already disabled.
         self.vault.delete(&installation.signing_reference)?;
         self.vault.delete(&installation.backup_reference)?;
         for kind in ["backup", "journal"] {
@@ -4965,6 +4998,17 @@ mod tests {
             }
             self.inner.get(reference)
         }
+        fn get_optional(&self, reference: &str) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let pause = self.pause.lock().unwrap().take();
+            if let Some((entered, resume)) = pause {
+                entered.send(()).map_err(|_| fail("synthetic_barrier"))?;
+                resume
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|_| fail("synthetic_barrier"))?;
+            }
+            self.inner.get_optional(reference)
+        }
         fn put(&self, reference: &str, bytes: &[u8]) -> Result<()> {
             self.mutations.fetch_add(1, Ordering::SeqCst);
             self.inner.put(reference, bytes)
@@ -5098,6 +5142,11 @@ mod tests {
         cache.models[0]
             .capabilities
             .extend(["openai.responses".into(), "anthropic.messages".into()]);
+        if client == ClientKind::Claude {
+            // Existing transaction tests exercise the direct Claude-shaped
+            // contract. Mapping tests explicitly choose a non-Claude model.
+            cache.models[0].id = "claude-sonnet-5".into();
+        }
         // The immutable old wire is still a compatibility input. Only this
         // positive synthetic factory adds the newly required declarations.
         cache.models[0].codex_catalog_binding = Some(CodexCatalogBindingView::Declared {
@@ -6295,7 +6344,14 @@ mod tests {
             sent.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err(fail("unexpected_transport")) })
         }));
-        Arc::get_mut(&mut fixture.service).unwrap().http = http;
+        // Weak mapper ownership must not change this production-origin fixture.
+        let mut service = Arc::try_unwrap(fixture.service)
+            .unwrap_or_else(|_| panic!("fixture service must be uniquely owned"));
+        service.http = http;
+        fixture.service = Arc::new_cyclic(|self_reference| {
+            service.self_reference = self_reference.clone();
+            service
+        });
         fixture.vault.calls.store(0, Ordering::SeqCst);
         fixture.vault.mutations.store(0, Ordering::SeqCst);
         let revision = fixture.service.store.snapshot().unwrap().revision;

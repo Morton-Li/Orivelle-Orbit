@@ -281,6 +281,989 @@ fn automatic_preview(service: &Service, fixture: &tests::PolicyFixture) -> Confi
         .unwrap()
 }
 
+fn mapping_fixture() -> tests::PolicyFixture {
+    let mut f = tests::policy_fixture(ClientKind::Claude);
+    let mut cache = f.service.account_cache(&f.record).unwrap();
+    cache.models[0].id = "gpt-6-luna".into();
+    f.model = cache.models[0].id.clone();
+    f.service
+        .store
+        .put(
+            "account-cache",
+            &f.record.view.id,
+            &f.record.view.account_id,
+            &cache,
+        )
+        .unwrap();
+    f.service.http.scripted_mapping(Arc::new(|_| {
+        Box::pin(async { Err(fail("synthetic_unexpected_upstream_send")) })
+    }));
+    f
+}
+
+struct MappingReadFailureVault {
+    inner: Arc<tests::PolicyVault>,
+    reference: String,
+    error: &'static str,
+    puts: AtomicU64,
+    deleted: Mutex<Vec<String>>,
+}
+impl Vault for MappingReadFailureVault {
+    fn get(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>> {
+        if reference == self.reference {
+            return Err(fail(self.error));
+        }
+        self.inner.get(reference)
+    }
+    // Deliberately use the conservative default get_optional: an adapter's
+    // generic read error, including credential_missing, never proves absence.
+    fn put(&self, reference: &str, bytes: &[u8]) -> Result<()> {
+        self.puts.fetch_add(1, Ordering::SeqCst);
+        self.inner.put(reference, bytes)
+    }
+    fn delete(&self, reference: &str) -> Result<()> {
+        self.deleted.lock().unwrap().push(reference.into());
+        self.inner.delete(reference)
+    }
+}
+
+fn mapping_context(service: &Service, preview: &ConfigPreview) -> ClaudeContext {
+    service
+        .previews
+        .lock()
+        .unwrap()
+        .get(&preview.id)
+        .unwrap()
+        .claude_context
+        .clone()
+        .unwrap()
+}
+
+async fn take_stopped_mapping_port(port: u16) -> std::net::TcpListener {
+    for _ in 0..100 {
+        if let Ok(listener) = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+            return listener;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("owned mapping port did not stop within one second");
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_exact_scope() {
+    let f = mapping_fixture();
+    let calls = Arc::new(AtomicU64::new(0));
+    let count = calls.clone();
+    f.service.http.scripted_mapping(Arc::new(move |request| {
+        count.fetch_add(1, Ordering::SeqCst);
+        assert!(request.url.ends_with("/v1/messages?beta=true"));
+        assert!(request.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization")
+                && value.starts_with("Bearer orv_sk_")
+                && !value.contains("orbt_map_")
+        }));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap()["model"],
+            "gpt-6-luna"
+        );
+        Box::pin(async {
+            Ok(crate::network::MappingResponse {
+                status: 200,
+                headers: Default::default(),
+                stream: Box::pin(futures_util::stream::iter([Ok(
+                    hyper::body::Bytes::from_static(b"data: {\"type\":\"message_stop\"}\n\n"),
+                )])),
+            })
+        })
+    }));
+    let preview = automatic_preview(&f.service, &f);
+    let context = mapping_context(&f.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    assert!(
+        preview
+            .impact
+            .iter()
+            .any(|line| line.contains("同一个获准模型"))
+    );
+    assert_eq!(f.service.claude_mappings.inflight(), 0);
+    assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
+    assert!(f.vault.get(&plan.token_reference()).is_err());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(
+        client
+            .get(format!("{}/v1/models", plan.base_url()))
+            .timeout(Duration::from_millis(30))
+            .send()
+            .await
+            .is_err()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.service
+            .apply_client_config(&preview.id, false, false)
+            .unwrap_err()
+            .code,
+        "confirmation_required"
+    );
+    assert!(f.vault.get(&plan.token_reference()).is_err());
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    assert_eq!(saved.state, "saved");
+    let local = crate::claude_mapping::mapped_helper_token(
+        &plan.binding_id,
+        &f.service.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    let models = client
+        .get(format!("{}/v1/models", plan.base_url()))
+        .bearer_auth(local.as_str())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(models.status(), 200);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let response=client.post(format!("{}/v1/messages?beta=true",plan.base_url()))
+        .bearer_auth(local.as_str()).header("anthropic-beta","synthetic-beta")
+        .header("content-type","application/json")
+        .body(r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"synthetic"}],"max_tokens":1}"#)
+        .send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await.unwrap().contains("message_stop"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_unobserved(&f.service, "saved");
+    f.service.stop_claude_mappings();
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_restart_reuses_only_original_port_and_preserves_files_on_conflict()
+ {
+    let f = mapping_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let context = mapping_context(&f.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let main_path = Path::new(&preview.paths[2]);
+    let mut main: Value = serde_json::from_slice(&read_file(main_path).unwrap().unwrap()).unwrap();
+    main["preferences"] = json!({"syntheticDesktopNoticeDismissed":true});
+    std::fs::write(main_path, serde_json::to_vec(&main).unwrap()).unwrap();
+    let before: Vec<_> = preview
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect();
+    f.service.stop_claude_mappings();
+    let collider = take_stopped_mapping_port(plan.port).await;
+    let reopened = Service::new(
+        f.service.store.clone(),
+        f.vault.clone(),
+        f.service.paths.clone(),
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let count = calls.clone();
+    reopened.http.scripted_mapping(Arc::new(move |_| {
+        count.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(crate::network::MappingResponse {
+                status: 200,
+                headers: Default::default(),
+                stream: Box::pin(futures_util::stream::iter([Ok(
+                    hyper::body::Bytes::from_static(b"synthetic completed response"),
+                )])),
+            })
+        })
+    }));
+    let changes = Arc::new(AtomicU64::new(0));
+    let changed = changes.clone();
+    reopened
+        .observe(Arc::new(move |_| {
+            changed.fetch_add(1, Ordering::SeqCst);
+        }))
+        .unwrap();
+    assert_eq!(
+        reopened.reconcile_claude_mappings().unwrap_err().code,
+        "claude_mapping_unavailable"
+    );
+    assert!(
+        reopened
+            .bootstrap()
+            .unwrap()
+            .clients
+            .iter()
+            .find(|client| client.client == ClientKind::Claude)
+            .unwrap()
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("本机模型映射未就绪"))
+    );
+    for (path, bytes) in preview.paths.iter().zip(&before) {
+        assert_eq!(&read_file(Path::new(path)).unwrap(), bytes);
+    }
+    drop(collider);
+    let before_change = changes.load(Ordering::SeqCst);
+    reopened.reconcile_claude_mappings().unwrap();
+    assert!(changes.load(Ordering::SeqCst) > before_change);
+    let persisted: ClientView = reopened
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    assert!(
+        !persisted
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("本机模型映射未就绪"))
+    );
+    assert!(
+        !reopened
+            .bootstrap()
+            .unwrap()
+            .clients
+            .iter()
+            .find(|client| client.client == ClientKind::Claude)
+            .unwrap()
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("本机模型映射未就绪"))
+    );
+    let record: crate::claude_mapping::MappingRecord = reopened
+        .store
+        .get("claude-mapping", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.plan().unwrap().port, plan.port);
+    let token = crate::claude_mapping::mapped_helper_token(
+        &plan.binding_id,
+        &reopened.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    assert_eq!(
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("{}/v1/models", plan.base_url()))
+            .bearer_auth(token.as_str())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("{}/v1/messages", plan.base_url()))
+        .bearer_auth(token.as_str())
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-sonnet-5","messages":[],"max_tokens":1}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let _ = response.bytes().await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "unowned Desktop preferences must not break the original authenticated route"
+    );
+    assert_eq!(
+        reopened
+            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .unwrap_err()
+            .code,
+        "configuration_conflict",
+        "runtime preference tolerance must not relax Engine original-byte restore conflicts"
+    );
+    reopened.stop_claude_mappings();
+    let closed = take_stopped_mapping_port(plan.port).await;
+    drop(closed);
+    for fault in ["mode", "profile", "pointer"] {
+        let index = match fault {
+            "profile" => 0,
+            "pointer" => 1,
+            _ => 2,
+        };
+        let mut value: Value = serde_json::from_slice(before[index].as_ref().unwrap()).unwrap();
+        match fault {
+            "profile" => {
+                value["inferenceGatewayBaseUrl"] = json!("https://unapproved.example.test")
+            }
+            "pointer" => value["hybridPointer"] = json!({"synthetic":true}),
+            _ => value["deploymentMode"] = json!("1p"),
+        };
+        std::fs::write(&preview.paths[index], serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(reopened.reconcile_claude_mappings().is_err(), "{fault}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "owned selection changes cannot issue an additional upstream request"
+        );
+        assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, plan.port)).is_ok());
+        std::fs::write(&preview.paths[index], before[index].as_ref().unwrap()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_restore_old_mapping_preserves_valid_grant_and_never_revives_logout()
+ {
+    for logout in [false, true] {
+        let f = mapping_fixture();
+        let first = automatic_preview(&f.service, &f);
+        let old = mapping_context(&f.service, &first);
+        let old_plan = old.mapping.as_ref().unwrap();
+        f.service
+            .apply_client_config(&first.id, true, false)
+            .unwrap();
+        let original: Vec<_> = first
+            .paths
+            .iter()
+            .map(|path| read_file(Path::new(path)).unwrap())
+            .collect();
+        let second = automatic_preview(&f.service, &f);
+        let new = mapping_context(&f.service, &second);
+        let new_plan = new.mapping.as_ref().unwrap();
+        let saved = f
+            .service
+            .apply_client_config(&second.id, true, false)
+            .unwrap();
+        assert_ne!(old_plan.port, new_plan.port);
+        if logout {
+            f.service.commit_logout(&f.record.view.id).unwrap();
+        }
+        // Match the real native restore commands: synchronous file/Vault work
+        // runs in spawn_blocking, allowing the listener runtime to honor stop.
+        let service = f.service.clone();
+        let source = saved.backup_group_id.clone().unwrap();
+        let restore = tokio::task::spawn_blocking(move || service.preview_restore(&source))
+            .await
+            .unwrap()
+            .unwrap();
+        let service = f.service.clone();
+        let id = restore.id.clone();
+        let result =
+            tokio::task::spawn_blocking(move || service.apply_client_config(&id, true, true))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(result.state, "restored");
+        for (path, bytes) in first.paths.iter().zip(original) {
+            assert_eq!(read_file(Path::new(path)).unwrap(), bytes);
+        }
+        let token = crate::claude_mapping::mapped_helper_token(
+            &old_plan.binding_id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp(),
+        );
+        if logout {
+            assert!(token.is_err());
+            assert!(
+                f.service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+                    .iter()
+                    .all(|binding| !binding.enabled)
+            );
+        } else {
+            let token = token.unwrap();
+            assert_eq!(
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .unwrap()
+                    .get(format!("{}/v1/models", old_plan.base_url()))
+                    .bearer_auth(token.as_str())
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                200
+            );
+        }
+        assert!(
+            crate::claude_mapping::mapped_helper_token(
+                &new_plan.binding_id,
+                &f.service.store,
+                f.vault.as_ref(),
+                chrono::Utc::now().timestamp()
+            )
+            .is_err()
+        );
+        f.service.stop_claude_mappings();
+    }
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_vault_return_rechecks_epoch_target_node_model_and_actor() {
+    for fault in ["epoch", "target", "node", "model", "actor"] {
+        let f = mapping_fixture();
+        let preview = automatic_preview(&f.service, &f);
+        let context = mapping_context(&f.service, &preview);
+        let plan = context.mapping.as_ref().unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let record = f
+            .service
+            .store
+            .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
+            .unwrap()
+            .unwrap();
+        let authority = f.service.claude_mapping_authority(record);
+        let local = crate::claude_mapping::mapped_helper_token(
+            &plan.binding_id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        let access = authority.authenticate(local.as_bytes()).unwrap();
+        assert_eq!(
+            f.service.begin_maintenance().err().unwrap().code,
+            "update_busy"
+        );
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (resume, released) = std::sync::mpsc::channel();
+        *f.vault.pause.lock().unwrap() = Some((entered, released));
+        let worker = std::thread::spawn(move || authority.authorize_messages(access));
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        match fault {
+            "epoch" => f
+                .service
+                .store
+                .set_meta(
+                    &authorization_epoch_reference(
+                        &context.panel_origin,
+                        &context.installation_id,
+                        &context.account_id,
+                    ),
+                    "999",
+                )
+                .unwrap(),
+            "target" => f.target.store(1, Ordering::SeqCst),
+            "actor" => {
+                let mut record = f.record.clone();
+                record.view.account_id = "synthetic-other-actor".into();
+                f.service
+                    .store
+                    .put(
+                        "connection",
+                        &record.view.id,
+                        &record.view.account_id,
+                        &record,
+                    )
+                    .unwrap();
+            }
+            _ => {
+                let mut cache = f.service.account_cache(&f.record).unwrap();
+                if fault == "node" {
+                    cache.nodes[0].available = false;
+                } else {
+                    cache.models[0].revision = sha256(b"late mapping model");
+                }
+                f.service
+                    .store
+                    .put(
+                        "account-cache",
+                        &f.record.view.id,
+                        &f.record.view.account_id,
+                        &cache,
+                    )
+                    .unwrap();
+            }
+        }
+        resume.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err(), "{fault}");
+        f.service.stop_claude_mappings();
+    }
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_restore_success_is_independent_of_old_listener_live_scope() {
+    let f = mapping_fixture();
+    let first = automatic_preview(&f.service, &f);
+    let old = mapping_context(&f.service, &first);
+    let plan = old.mapping.as_ref().unwrap();
+    f.service
+        .apply_client_config(&first.id, true, false)
+        .unwrap();
+    let originals: Vec<_> = first
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect();
+    let second = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&second.id, true, false)
+        .unwrap();
+    let mut cache = f.service.account_cache(&f.record).unwrap();
+    cache.models[0].revision = sha256(b"new model permission revision");
+    f.service
+        .store
+        .put(
+            "account-cache",
+            &f.record.view.id,
+            &f.record.view.account_id,
+            &cache,
+        )
+        .unwrap();
+    let service = f.service.clone();
+    let source = saved.backup_group_id.clone().unwrap();
+    let restore = tokio::task::spawn_blocking(move || service.preview_restore(&source))
+        .await
+        .unwrap()
+        .unwrap();
+    let service = f.service.clone();
+    let id = restore.id.clone();
+    let result = tokio::task::spawn_blocking(move || service.apply_client_config(&id, true, true))
+        .await
+        .unwrap();
+    for (path, original) in first.paths.iter().zip(originals) {
+        assert_eq!(read_file(Path::new(path)).unwrap(), original);
+    }
+    assert_eq!(
+        f.service
+            .store
+            .get::<Journal>("journal", saved.backup_group_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap()
+            .phase,
+        "restored"
+    );
+    assert_eq!(
+        result.unwrap().state,
+        "restored",
+        "optional listener qualification is not a prerequisite for restoring original bytes"
+    );
+    let _closed_port = take_stopped_mapping_port(plan.port).await;
+    assert!(
+        f.service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .iter()
+            .find(|client| client.client == ClientKind::Claude)
+            .unwrap()
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("本机模型映射未就绪"))
+    );
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_recomputed_plain_row_hash_cannot_authorize_a_file_path() {
+    let f = mapping_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let context = mapping_context(&f.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    f.service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    f.service.stop_claude_mappings();
+    let _closed = take_stopped_mapping_port(plan.port).await;
+    drop(_closed);
+    let mut row: crate::claude_mapping::MappingRecord = f
+        .service
+        .store
+        .get("claude-mapping", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    let outside = f
+        .service
+        .store
+        .root
+        .join("synthetic-unqualified-config-must-not-be-followed.json");
+    assert!(!outside.exists());
+    row.context.files[0].path = outside.display().to_string();
+    row.context.scope_revision.clear();
+    row.context.scope_revision = sha256(&serde_json::to_vec(&row.context).unwrap());
+    f.service
+        .store
+        .put(
+            "claude-mapping",
+            &plan.binding_id,
+            &row.context.account_id,
+            &row,
+        )
+        .unwrap();
+    assert_eq!(
+        f.service.reconcile_claude_mappings().unwrap_err().code,
+        "credential_missing",
+        "the Keychain context pin must reject before a path-read could report missing/conflict"
+    );
+    assert!(!outside.exists());
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_stream_permit_blocks_updates_until_observation_finishes() {
+    let f = mapping_fixture();
+    let calls = Arc::new(AtomicU64::new(0));
+    let count = calls.clone();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let receiver = Arc::new(Mutex::new(Some(receiver)));
+    f.service.http.scripted_mapping(Arc::new(move|_|{
+        assert_eq!(count.fetch_add(1,Ordering::SeqCst),0,"mapping must not resend");
+        let receiver=receiver.lock().unwrap().take().unwrap();
+        Box::pin(async move{Ok(crate::network::MappingResponse{status:200,headers:Default::default(),stream:Box::pin(futures_util::stream::unfold(receiver,|mut receiver|async move{receiver.recv().await.map(|chunk|(chunk,receiver))}))})})
+    }));
+    let preview = automatic_preview(&f.service, &f);
+    let context = mapping_context(&f.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    f.service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let token = crate::claude_mapping::mapped_helper_token(
+        &plan.binding_id,
+        &f.service.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    sender
+        .send(Ok(hyper::body::Bytes::from_static(b"data: {}\n\n")))
+        .await
+        .unwrap();
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("{}/v1/messages", plan.base_url()))
+        .bearer_auth(token.as_str())
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-sonnet-5","messages":[],"max_tokens":1,"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(f.service.active_tasks().unwrap());
+    assert_eq!(
+        f.service.begin_maintenance().err().unwrap().code,
+        "update_busy"
+    );
+    drop(response);
+    drop(sender);
+    for _ in 0..100 {
+        if !f.service.active_tasks().unwrap()
+            && f.service.mutation_count.load(Ordering::SeqCst) == 0
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!f.service.active_tasks().unwrap());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let maintenance = f.service.begin_maintenance().unwrap();
+    let row = f
+        .service
+        .store
+        .get("claude-mapping", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    let authority = f.service.claude_mapping_authority(row);
+    assert_eq!(
+        authority.authenticate(token.as_bytes()).err().unwrap().code,
+        "update_busy"
+    );
+    drop(maintenance);
+    f.service.stop_claude_mappings();
+}
+
+#[tokio::test]
+async fn claude_mapping_activation_active_token_outlives_backup_prune_and_cleanup_keeps_mode_guard_closed()
+ {
+    let f = mapping_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let context = mapping_context(&f.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let mut row: crate::claude_mapping::MappingRecord = f
+        .service
+        .store
+        .get("claude-mapping", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    row.retained_until = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    f.service
+        .store
+        .put(
+            "claude-mapping",
+            &plan.binding_id,
+            &row.context.account_id,
+            &row,
+        )
+        .unwrap();
+    f.service
+        .store
+        .delete("backup", saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    f.service
+        .store
+        .delete("journal", saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    f.service.reconcile_claude_mappings().unwrap();
+    assert!(
+        crate::claude_mapping::mapped_helper_token(
+            &plan.binding_id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp()
+        )
+        .is_ok(),
+        "active service token is not a backup to prune"
+    );
+    f.service.commit_logout(&f.record.view.id).unwrap();
+    f.service.reconcile_claude_mappings().unwrap();
+    assert!(
+        f.service
+            .store
+            .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(f.vault.get(&plan.token_reference()).is_err());
+    let binding: HelperBinding = f
+        .service
+        .store
+        .get("binding", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    assert!(!binding.enabled);
+    assert_eq!(
+        crate::claude_mapping::unmapped_helper_token(
+            &binding,
+            ClientKind::Claude,
+            &plan.binding_id,
+            &f.service.store,
+            f.vault.as_ref(),
+            chrono::Utc::now().timestamp()
+        )
+        .unwrap_err()
+        .code,
+        "binding_disabled"
+    );
+
+    let unconfirmed = mapping_fixture();
+    let preview = automatic_preview(&unconfirmed.service, &unconfirmed);
+    let context = mapping_context(&unconfirmed.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    assert!(
+        unconfirmed
+            .vault
+            .get_optional(&plan.token_reference())
+            .unwrap()
+            .is_none()
+    );
+    let mut row: crate::claude_mapping::MappingRecord = unconfirmed
+        .service
+        .store
+        .get("claude-mapping", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    row.retained_until = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    unconfirmed
+        .service
+        .store
+        .put(
+            "claude-mapping",
+            &plan.binding_id,
+            &row.context.account_id,
+            &row,
+        )
+        .unwrap();
+    unconfirmed
+        .service
+        .previews
+        .lock()
+        .unwrap()
+        .remove(&preview.id);
+    let mutations = unconfirmed.vault.mutations.load(Ordering::SeqCst);
+    unconfirmed.service.reconcile_claude_mappings().unwrap();
+    assert!(
+        unconfirmed
+            .service
+            .store
+            .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
+            .unwrap()
+            .is_none(),
+        "an expired unconfirmed preview has no secret to retain"
+    );
+    assert_eq!(
+        unconfirmed.vault.mutations.load(Ordering::SeqCst),
+        mutations,
+        "known absence needs no Vault put or delete"
+    );
+    assert_eq!(
+        unconfirmed
+            .service
+            .store
+            .meta("claude_mapping_cleanup_pending")
+            .unwrap()
+            .as_deref(),
+        Some("0")
+    );
+    let binding: HelperBinding = unconfirmed
+        .service
+        .store
+        .get("binding", &plan.binding_id)
+        .unwrap()
+        .unwrap();
+    assert!(!binding.enabled);
+
+    // A present malformed item is not absence and cannot remove the mode guard.
+    unconfirmed
+        .service
+        .store
+        .put(
+            "claude-mapping",
+            &plan.binding_id,
+            &row.context.account_id,
+            &row,
+        )
+        .unwrap();
+    unconfirmed
+        .vault
+        .put(&plan.token_reference(), b"{}")
+        .unwrap();
+    let mutations = unconfirmed.vault.mutations.load(Ordering::SeqCst);
+    unconfirmed.service.reconcile_claude_mappings().unwrap();
+    assert!(
+        unconfirmed
+            .service
+            .store
+            .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        unconfirmed.vault.mutations.load(Ordering::SeqCst),
+        mutations
+    );
+    assert_eq!(
+        unconfirmed
+            .service
+            .store
+            .meta("claude_mapping_cleanup_pending")
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+
+    for denied in [false, true] {
+        let pending = mapping_fixture();
+        let preview = automatic_preview(&pending.service, &pending);
+        let context = mapping_context(&pending.service, &preview);
+        let plan = context.mapping.as_ref().unwrap();
+        let install = pending.service.installation(&pending.record).unwrap();
+        let signing = pending.vault.get(&install.signing_reference).unwrap();
+        let backup = pending.vault.get(&install.backup_reference).unwrap();
+        let denied_vault = Arc::new(MappingReadFailureVault {
+            inner: pending.vault.clone(),
+            reference: plan.token_reference(),
+            error: "vault_unavailable",
+            puts: AtomicU64::new(0),
+            deleted: Mutex::new(Vec::new()),
+        });
+        let vault: Arc<dyn Vault> = if denied {
+            denied_vault.clone()
+        } else {
+            pending.vault.clone()
+        };
+        let service = Service::new(
+            pending.service.store.clone(),
+            vault,
+            pending.service.paths.clone(),
+        )
+        .unwrap();
+        // Synthetic logout prevents even a scripted remote-revocation attempt.
+        service.commit_logout(&pending.record.view.id).unwrap();
+        let requests = Arc::new(AtomicU64::new(0));
+        let calls = requests.clone();
+        service.http.scripted(Arc::new(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(fail("synthetic_unexpected_upstream_send")) })
+        }));
+        let preview = service.preview_forget_installation(&install.id).unwrap();
+        let result = service.forget_installation(&preview.id, true, true).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        assert_eq!(denied_vault.puts.load(Ordering::SeqCst), 0);
+        if denied {
+            assert_eq!(result.unwrap_err().code, "vault_unavailable");
+            assert!(
+                pending
+                    .vault
+                    .get(&install.signing_reference)
+                    .unwrap()
+                    .as_slice()
+                    == signing.as_slice()
+            );
+            assert!(
+                pending
+                    .vault
+                    .get(&install.backup_reference)
+                    .unwrap()
+                    .as_slice()
+                    == backup.as_slice()
+            );
+            assert!(
+                !denied_vault
+                    .deleted
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|reference| [
+                        install.signing_reference.as_str(),
+                        install.backup_reference.as_str(),
+                        plan.token_reference().as_str()
+                    ]
+                    .contains(&reference.as_str()))
+            );
+            assert!(
+                service
+                    .store
+                    .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                !service
+                    .store
+                    .get::<HelperBinding>("binding", &plan.binding_id)
+                    .unwrap()
+                    .unwrap()
+                    .enabled
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "a never-confirmed preview cannot block forgetting its synthetic installation"
+            );
+            assert!(
+                service
+                    .store
+                    .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
 #[test]
 fn claude_mapping_none_keeps_legacy_scope_bytes_and_backup_restoration() {
     let mut f = tests::policy_fixture(ClientKind::Claude);
@@ -429,12 +1412,55 @@ fn claude_mapping_helper_modes_and_late_epoch_never_expose_the_upstream_key() {
         journal_id: journal.id.clone(),
         context: context.clone(),
         committed: false,
+        retained_until: journal.expires_at.clone(),
     };
     f.service
         .store
         .put("claude-mapping", &binding.id, &binding.account_id, &record)
         .unwrap();
+    for error in ["credential_missing", "vault_unavailable"] {
+        let denied = MappingReadFailureVault {
+            inner: f.vault.clone(),
+            reference: record.plan().unwrap().token_reference(),
+            error,
+            puts: AtomicU64::new(0),
+            deleted: Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            ensure_local_secret(&record, &binding, &denied)
+                .unwrap_err()
+                .code,
+            error
+        );
+        assert!(crate::claude_mapping::verify_context_secret(&record, &denied).is_err());
+        assert_eq!(
+            denied.puts.load(Ordering::SeqCst),
+            0,
+            "an ambiguous read failure cannot replace an existing secret"
+        );
+        assert!(denied.deleted.lock().unwrap().is_empty());
+    }
     ensure_local_secret(&record, &binding, f.vault.as_ref()).unwrap();
+    let reference = record.plan().unwrap().token_reference();
+    let original_secret = f.vault.get(&reference).unwrap();
+    for corrupt in [b"{}".to_vec(), {
+        let mut value: Value = serde_json::from_slice(&original_secret).unwrap();
+        value["context_revision"] = json!(sha256(b"wrong context pin"));
+        serde_json::to_vec(&value).unwrap()
+    }] {
+        f.vault.put(&reference, &corrupt).unwrap();
+        let mutations = f.vault.mutations.load(Ordering::SeqCst);
+        assert_eq!(
+            ensure_local_secret(&record, &binding, f.vault.as_ref())
+                .unwrap_err()
+                .code,
+            "credential_missing"
+        );
+        assert!(crate::claude_mapping::verify_context_secret(&record, f.vault.as_ref()).is_err());
+        assert_eq!(f.vault.mutations.load(Ordering::SeqCst), mutations);
+        assert!(f.vault.get(&reference).unwrap().as_slice() == corrupt.as_slice());
+    }
+    f.vault.put(&reference, &original_secret).unwrap();
     assert_eq!(
         mapped_helper_token(
             &binding.id,
@@ -789,7 +1815,15 @@ fn production_panel_origin_preserves_legacy_offline_claude_backup_restore() {
         sent.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Err(fail("unexpected_transport")) })
     }));
-    Arc::get_mut(&mut fixture.service).unwrap().http = http;
+    // The mapper owns a weak self-reference. Rebuild this uniquely owned
+    // direct fixture to keep the strict production-origin Http unchanged.
+    let mut service = Arc::try_unwrap(fixture.service)
+        .unwrap_or_else(|_| panic!("fixture service must be uniquely owned"));
+    service.http = http;
+    fixture.service = Arc::new_cyclic(|self_reference| {
+        service.self_reference = self_reference.clone();
+        service
+    });
     let restore = fixture
         .service
         .preview_restore(saved.backup_group_id.as_ref().unwrap())
@@ -834,10 +1868,28 @@ fn assert_unobserved(service: &Service, state: &str) {
 
 #[tokio::test]
 async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_revisions() {
-    let fixture = tests::policy_fixture(ClientKind::Claude);
+    let mut fixture = mapping_fixture();
     let wire: Value =
         serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
     let bootstrap = wire["bootstrap_reply"].clone();
+    // The immutable wire exposes a non-Claude route. Keep this command-level
+    // regression on that real shape rather than inheriting the direct fixture.
+    let mut cache = fixture.service.account_cache(&fixture.record).unwrap();
+    fixture.model = bootstrap["data"]["models"][0]["id"]
+        .as_str()
+        .unwrap()
+        .into();
+    cache.models[0].id = fixture.model.clone();
+    fixture
+        .service
+        .store
+        .put(
+            "account-cache",
+            &fixture.record.view.id,
+            &fixture.record.view.account_id,
+            &cache,
+        )
+        .unwrap();
     let models_revision = sha256(b"synthetic independent models endpoint revision");
     assert_ne!(
         bootstrap["data"]["meta"]["catalog_revision"],
@@ -1296,7 +2348,10 @@ async fn claude_b3c_refresh_rejects_late_endpoint_and_final_model_scope_without_
         let f = tests::policy_fixture(ClientKind::Claude);
         let wire: Value =
             serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
-        let bootstrap = wire["bootstrap_reply"].clone();
+        let mut bootstrap = wire["bootstrap_reply"].clone();
+        // Keep the valid baseline aligned with this direct Claude fixture so
+        // each late response below is rejected for its intended scope change.
+        bootstrap["data"]["models"][0]["id"] = json!(f.model);
         let models_revision = sha256(b"independent models revision");
         let stage = Arc::new(AtomicU64::new(0));
         let late = stage.clone();
