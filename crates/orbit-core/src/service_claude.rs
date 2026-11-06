@@ -2,6 +2,11 @@ use super::*;
 use crate::config::{ClaudeActiveSource, ClaudeContext, ClaudeFileDigest, ClaudeModelInput};
 
 const MAPPING_UNAVAILABLE_NOTE: &str = "本机模型映射未就绪；请保持 Orbit 运行，检查账户、系统安全存储及原端口占用后重新应用接入。保存状态不代表 Claude 已载入或连接通过。";
+pub(super) const PREFERENCES_RESTORED_NOTE: &str = "上次协调恢复已还原接入配置并保留后续偏好；当前载入与连接仍待确认，失效的旧 helper 授权不会复活。";
+const EXACT_RESTORED_NOTE: &str =
+    "配置原字节已恢复；已退出、撤销、删除或失效的旧 helper 授权不会复活。";
+const SAVED_NOTE: &str = "三文件配置已保存；需重启，尚未证明客户端加载或连通。";
+const PENDING_NOTE: &str = "整组配置操作尚待恢复；请先协调外部修改，同客户端新应用已阻止。";
 
 pub(super) struct Plan<'a> {
     pub record: &'a ConnectionRecord,
@@ -579,7 +584,7 @@ impl Service {
         let mut view = ConfigPreview {
             id: uuid(), client: ClientKind::Claude, operation: "apply".into(),
             target_version: observation.target.version.clone(), paths: Vec::new(),
-            model_id: Some(model_id.into()), context: Some(self.context(&record, &cache, model)?), restore_owner: None, restore_source: None,
+            model_id: Some(model_id.into()), context: Some(self.context(&record, &cache, model)?), restore_owner: None, restore_source: None, restore_coordination: None,
             impact: vec![
                 "创建新的 Orivelle 配置，依次保存 profile、配置库索引和第三方模式；影响 Claude 的 Chat、Code 与 Cowork。".into(),
                 "保留原配置与未知索引字段；保存后需重启，尚未证明客户端加载或连通。".into(),
@@ -856,13 +861,16 @@ impl Service {
             self.validate_claude_context(frozen, false)?;
             guard()?;
         }
-        let journal = self.claude_engine(&guard, &context_guard).apply(
-            entry
-                .journal_id
-                .as_deref()
-                .ok_or_else(|| fail("preview_expired"))?,
-        )?;
-        self.project_claude_operation(restore, true)?;
+        let (journal, preserved_preferences) = self
+            .claude_engine(&guard, &context_guard)
+            .apply_claude_with_restore_mode(
+                entry
+                    .journal_id
+                    .as_deref()
+                    .ok_or_else(|| fail("preview_expired"))?,
+                entry.view.restore_coordination.is_some(),
+            )?;
+        self.project_claude_operation(restore, true, preserved_preferences)?;
         if !restore && frozen.mapping.is_some() {
             let mut record = self
                 .store
@@ -892,7 +900,12 @@ impl Service {
         })
     }
 
-    fn project_claude_operation(&self, restoring: bool, recovered: bool) -> Result<()> {
+    fn project_claude_operation(
+        &self,
+        restoring: bool,
+        recovered: bool,
+        preserved_preferences: bool,
+    ) -> Result<()> {
         let revision = if recovered {
             self.claude_revision()?
         } else {
@@ -925,13 +938,24 @@ impl Service {
             client.loaded_evidence = None;
             client.connection_evidence = None;
             client.connection_state = "not_tested".into();
+            client.manual_steps.retain(|note| {
+                ![
+                    PENDING_NOTE,
+                    EXACT_RESTORED_NOTE,
+                    PREFERENCES_RESTORED_NOTE,
+                    SAVED_NOTE,
+                ]
+                .contains(&note.as_str())
+            });
             client.manual_steps.push(
                 if !recovered {
-                    "整组配置操作尚待恢复；请先协调外部修改，同客户端新应用已阻止。"
+                    PENDING_NOTE
+                } else if restoring && preserved_preferences {
+                    PREFERENCES_RESTORED_NOTE
                 } else if restoring {
-                    "配置原字节已恢复；已退出、撤销、删除或失效的旧 helper 授权不会复活。"
+                    EXACT_RESTORED_NOTE
                 } else {
-                    "三文件配置已保存；需重启，尚未证明客户端加载或连通。"
+                    SAVED_NOTE
                 }
                 .into(),
             );
@@ -945,6 +969,7 @@ impl Service {
         &self,
         backup_id: &str,
         backup: Journal,
+        coordination: Option<ClaudeRestoreCoordination>,
     ) -> Result<ConfigPreview> {
         let observation = self.observe_configuration(ClientKind::Claude)?;
         let blocked = self
@@ -970,14 +995,22 @@ impl Service {
             .min(source_expiry.with_timezone(&chrono::Utc))
             .to_rfc3339();
         let mut frozen = None;
+        let mut original_mode = None;
         let mut paths = backup.paths.clone();
         paths.reverse();
         let journal_id = if blocked.is_none() {
-            let (context, restoring) = engine.claude_operation(&backup)?;
-            if restoring {
-                return Err(fail("backup_invalid"));
-            }
-            let journal = engine.prepare_restore(backup_id)?;
+            let (journal, context) = if coordination.is_some() {
+                let (journal, context, mode) =
+                    engine.prepare_claude_preferences_restore_details(backup_id)?;
+                original_mode = Some(mode);
+                (journal, context)
+            } else {
+                let (context, restoring) = engine.claude_operation(&backup)?;
+                if restoring {
+                    return Err(fail("backup_invalid"));
+                }
+                (engine.prepare_restore(backup_id)?, context)
+            };
             // Preparing the encrypted journal can prompt for its backup key.
             // A display hint cannot authorize returning an applicable preview.
             self.validate_claude_context(&context, true)?;
@@ -988,18 +1021,47 @@ impl Service {
             None
         };
         let view = ConfigPreview {
-            id: uuid(), client: ClientKind::Claude, operation: "restore".into(),
-            target_version: observation.target.version.clone(), paths, model_id: None, context: None,
-            restore_source: Some(RestoreSource { backup_group_id: backup_id.into(), expires_at: backup.expires_at.clone() }),
-            restore_owner: Some(RestoreOwner { account_id: backup.account_id.clone(),
-                account_label: if backup.account_label.is_empty() { backup.account_id } else { backup.account_label },
-                panel_origin: backup.installation.origin, installation_id: backup.installation.id }),
-            impact: vec!["依次恢复主配置、配置库索引和新 profile 的原字节；客户端仍需重启。".into(),
-                "恢复不依赖当前账户会话、key、节点或 helper；外部修改时整组停止，失效授权不会复活。".into()],
-            redacted_diff: "Restore encrypted original configuration; original secrets stay redacted.".into(),
+            id: uuid(),
+            client: ClientKind::Claude,
+            operation: "restore".into(),
+            target_version: observation.target.version.clone(),
+            paths,
+            model_id: None,
+            context: None,
+            restore_source: Some(RestoreSource {
+                backup_group_id: backup_id.into(),
+                expires_at: backup.expires_at.clone(),
+            }),
+            restore_coordination: coordination,
+            restore_owner: Some(RestoreOwner {
+                account_id: backup.account_id.clone(),
+                account_label: if backup.account_label.is_empty() {
+                    backup.account_id
+                } else {
+                    backup.account_label
+                },
+                panel_origin: backup.installation.origin,
+                installation_id: backup.installation.id,
+            }),
+            impact: if coordination.is_some() {
+                vec!["显式保留当前主配置 preferences 的完整原始内容；仅还原备份中的 deploymentMode，并恢复原索引与 profile。".into(),
+                    "确认后任何文件或源备份变化都会停止；不依赖当前账户会话、key、节点或 helper，失效授权不会复活。客户端仍需重启。".into()]
+            } else {
+                vec!["依次恢复主配置、配置库索引和新 profile 的原字节；客户端仍需重启。".into(),
+                    "恢复不依赖当前账户会话、key、节点或 helper；外部修改时整组停止，失效授权不会复活。".into()]
+            },
+            redacted_diff: if coordination.is_some() {
+                serde_json::to_string_pretty(&json!({"coordination":"claude_main_preferences_v1","claude_desktop_config.json":{"deploymentMode":{"from":"3p","to":original_mode.map(|mode| mode.unwrap_or("absent".into())).unwrap_or("unverified".into())},"preferences":"preserve current raw object or absence"},"configLibrary":"restore authenticated original profile and metadata bytes","secrets":"redacted"})).map_err(|_| fail("serialization_failed"))?
+            } else {
+                "Restore encrypted original configuration; original secrets stay redacted.".into()
+            },
             expires_at,
-            can_apply: blocked.is_none(), can_export_import: false, blocking_reason: blocked,
-            codex_catalog: None, codex_runtime: None, codex_configuration_target: None,
+            can_apply: blocked.is_none(),
+            can_export_import: false,
+            blocking_reason: blocked,
+            codex_catalog: None,
+            codex_runtime: None,
+            codex_configuration_target: None,
             claude_configuration_target: target_view(&observation),
         };
         self.previews
@@ -1067,11 +1129,14 @@ impl Service {
         };
         let engine = self.claude_engine(&guard, &context_guard);
         let operation = if qualified {
-            engine.claude_operation(journal).ok()
+            engine.claude_operation_details(journal).ok()
         } else {
             None
         };
-        let restored = operation.as_ref().is_some_and(|(_, restored)| *restored);
+        let restored = operation.as_ref().is_some_and(|(_, restored, _)| *restored);
+        let preserved_preferences = operation
+            .as_ref()
+            .is_some_and(|(_, _, preserved)| *preserved);
         let recovered = operation.is_some()
             && journal.phase != "conflict"
             && engine.recover(&journal.id).is_ok();
@@ -1079,7 +1144,7 @@ impl Service {
             &observation.policy,
             observation.claude_configuration_target.as_ref(),
         )?;
-        self.project_claude_operation(restored, recovered)
+        self.project_claude_operation(restored, recovered, preserved_preferences)
     }
 
     /// Diagnostic export has its own destination fence. Resolve the existing

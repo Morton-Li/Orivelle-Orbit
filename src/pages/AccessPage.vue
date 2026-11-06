@@ -2,7 +2,11 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import { t } from "../shared/i18n";
-import type { ClientKind, ConfigPreview } from "../shared/contracts";
+import type {
+  ClaudeRestoreCoordination,
+  ClientKind,
+  ConfigPreview,
+} from "../shared/contracts";
 import { CAPABILITIES } from "../shared/contracts";
 import ClientRow from "../components/ClientRow.vue";
 import ConfigReviewDialog from "../components/ConfigReviewDialog.vue";
@@ -174,10 +178,11 @@ async function requestPreview(client: ClientKind) {
     previewing.value[client] = false;
   }
 }
-async function restore(id: string) {
+async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   const backup = store.state.backups.find((item) => item.id === id);
   if (
     !backup ||
+    (coordination && backup.client !== "claude") ||
     !configurationAllowed(backup.client) ||
     store.busy.has("preview-restore")
   )
@@ -186,10 +191,12 @@ async function restore(id: string) {
   const generation = ++previewGeneration;
   const result = await store.perform("preview-restore", "preview_restore", {
     backup_group_id: id,
+    ...(coordination ? { coordination } : {}),
   });
   if (!result || generation !== previewGeneration) return;
   if (
     result.operation !== "restore" ||
+    (result.restore_coordination ?? undefined) !== coordination ||
     result.restore_source?.backup_group_id !== id ||
     result.client !== expected.client ||
     result.restore_owner.account_id !== expected.account_id ||
@@ -444,6 +451,18 @@ function changeNode(event: Event) {
         @click="restore(backup.id)"
       >
         {{ t("action.restore") }}
+      </button>
+      <button
+        v-if="backup.client === 'claude' && backup.state !== 'unavailable'"
+        class="button secondary"
+        :disabled="
+          !configurationAllowed(backup.client) ||
+          store.busy.has('preview-restore')
+        "
+        :title="t('access.preferencesRestoreHint')"
+        @click="restore(backup.id, 'claude_main_preferences_v1')"
+      >
+        {{ t("access.preserveClaudePreferences") }}
       </button>
     </div>
   </section>

@@ -10,9 +10,14 @@ use crate::{
     error::{Result, fail},
     identity::sha256,
 };
-use serde_json::{Map, Value, json};
+use serde::{
+    Deserialize,
+    de::{MapAccess, Visitor},
+};
+use serde_json::{Map, Value, json, value::RawValue};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    fmt,
     io::{self, Write},
     path::{Component, Path},
 };
@@ -680,6 +685,102 @@ fn encode(value: Map<String, Value>) -> Result<Vec<u8>> {
     Ok(writer.0)
 }
 
+struct RawMainObject<'a>(BTreeMap<String, &'a RawValue>);
+impl<'de> Deserialize<'de> for RawMainObject<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct MainVisitor;
+        impl<'de> Visitor<'de> for MainVisitor {
+            type Value = RawMainObject<'de>;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a main configuration object with unique decoded keys")
+            }
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut entries: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut values = BTreeMap::new();
+                while let Some(key) = entries.next_key::<String>()? {
+                    let value = entries.next_value::<&RawValue>()?;
+                    if values.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("duplicate main configuration key"));
+                    }
+                }
+                Ok(RawMainObject(values))
+            }
+        }
+        deserializer.deserialize_map(MainVisitor)
+    }
+}
+
+fn raw_main(bytes: &[u8]) -> Result<RawMainObject<'_>> {
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(fail("configuration_conflict"));
+    }
+    let object: RawMainObject<'_> =
+        serde_json::from_slice(bytes).map_err(|_| fail("configuration_conflict"))?;
+    if object
+        .0
+        .get("preferences")
+        .is_some_and(|value| !value.get().starts_with('{'))
+    {
+        return Err(fail("configuration_conflict"));
+    }
+    Ok(object)
+}
+
+/// Fixed, explicitly selected restoration of Claude's deployment mode. Every
+/// current raw value, including the complete optional preferences object, is
+/// retained. This is not a general JSON merge or a write authorization.
+pub(crate) fn restore_main_preserving_preferences<'a>(
+    original_before: &'a [u8],
+    applied: &'a [u8],
+    current: &'a [u8],
+) -> Result<Vec<u8>> {
+    let original = raw_main(original_before)?;
+    let applied = raw_main(applied)?;
+    let mut current = raw_main(current)?;
+    let original_mode = original.0.get("deploymentMode").copied();
+    if original_mode.is_some_and(|value| {
+        !serde_json::from_str::<String>(value.get())
+            .is_ok_and(|value| value == "1p" || value == "3p")
+    }) || !applied.0.get("deploymentMode").is_some_and(|value| {
+        serde_json::from_str::<String>(value.get()).is_ok_and(|value| value == "3p")
+    }) {
+        return Err(fail("configuration_conflict"));
+    }
+    let applied_keys = applied
+        .0
+        .keys()
+        .filter(|key| key.as_str() != "preferences")
+        .collect::<Vec<_>>();
+    let current_keys = current
+        .0
+        .keys()
+        .filter(|key| key.as_str() != "preferences")
+        .collect::<Vec<_>>();
+    if applied_keys != current_keys
+        || applied_keys
+            .iter()
+            .any(|key| applied.0.get(*key).unwrap().get() != current.0.get(*key).unwrap().get())
+    {
+        return Err(fail("configuration_conflict"));
+    }
+    if let Some(mode) = original_mode {
+        current.0.insert("deploymentMode".into(), mode);
+    } else {
+        current.0.remove("deploymentMode");
+    }
+    let mut writer = BoundedWriter(Vec::new());
+    serde_json::to_writer_pretty(&mut writer, &current.0)
+        .map_err(|_| fail("configuration_conflict"))?;
+    writer
+        .write_all(b"\n")
+        .map_err(|_| fail("configuration_conflict"))?;
+    Ok(writer.0)
+}
+
 /// Preserve the supported active local settings and plan exactly three changes.
 /// Unknown versions/sources and active profile semantics fail closed. Only an
 /// absent metadata file permits an empty starting profile. Existing profiles are
@@ -876,6 +977,74 @@ mod tests {
 
     fn bytes(value: Value) -> Vec<u8> {
         serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn claude_main_preferences_v1_preserves_raw_values_and_rejects_other_changes() {
+        let original = br#"{"deploymentMode":"1p","keep":42,"preferences":{"original":true}}"#;
+        let applied = br#"{"deploymentMode":"3p","keep":42,"preferences":{"original":true}}"#;
+        let preferences = r#"{"huge":184467440737095516170000,"fraction":1.000000000000000000000001,"escaped":"a\u0062","unknown":[true,null,{"x":1}]}"#;
+        let current = format!(r#"{{"deploymentMode":"3p","keep":42,"preferences":{preferences}}}"#);
+        let result =
+            restore_main_preserving_preferences(original, applied, current.as_bytes()).unwrap();
+        let result = raw_main(&result).unwrap();
+        assert_eq!(result.0["deploymentMode"].get(), r#""1p""#);
+        assert_eq!(result.0["preferences"].get(), preferences);
+        assert_eq!(result.0["keep"].get(), "42");
+        let absent = restore_main_preserving_preferences(
+            br#"{"keep":42}"#,
+            applied,
+            br#"{"deploymentMode":"3p","keep":42}"#,
+        )
+        .unwrap();
+        let absent = raw_main(&absent).unwrap();
+        assert!(!absent.0.contains_key("deploymentMode") && !absent.0.contains_key("preferences"));
+        let already_3p =
+            restore_main_preserving_preferences(applied, applied, current.as_bytes()).unwrap();
+        assert_eq!(
+            raw_main(&already_3p).unwrap().0["deploymentMode"].get(),
+            r#""3p""#
+        );
+        for invalid in [
+            r#"{"deploymentMode":"3p","keep":42,"extra":true}"#,
+            r#"{"deploymentMode":"3p"}"#,
+            r#"{"deploymentMode":"3p","keep":43}"#,
+            r#"{"deploymentMode":"1p","keep":42}"#,
+            r#"{"deploymentMode":"3p","keep":42,"preferences":null}"#,
+            r#"{"deploymentMode":"3p","keep":42,"preferences":[]}"#,
+            r#"{"deploymentMode":"3p","keep":42,"preferences":{},"prefer\u0065nces":{}}"#,
+            r#"{"deploymentMode":"3p","deploym\u0065ntMode":"3p","keep":42}"#,
+            r#"{"deploymentMode":"3p","keep":42} {}"#,
+            "[]",
+        ] {
+            assert_eq!(
+                restore_main_preserving_preferences(original, applied, invalid.as_bytes())
+                    .unwrap_err()
+                    .code,
+                "configuration_conflict"
+            );
+        }
+        assert!(
+            restore_main_preserving_preferences(
+                br#"{"deploymentMode":"unknown"}"#,
+                br#"{"deploymentMode":"3p"}"#,
+                br#"{"deploymentMode":"3p"}"#,
+            )
+            .is_err()
+        );
+        assert!(
+            restore_main_preserving_preferences(
+                br#"{"keep":184467440737095516170000}"#,
+                br#"{"deploymentMode":"3p","keep":184467440737095516170000}"#,
+                br#"{"deploymentMode":"3p","keep":184467440737095516170001}"#,
+            )
+            .is_err(),
+            "different large non-preference numbers must never collapse through f64"
+        );
+        assert!(
+            restore_main_preserving_preferences(original, applied, &vec![b' '; MAX_FILE_BYTES + 1])
+                .is_err()
+        );
     }
 
     #[test]

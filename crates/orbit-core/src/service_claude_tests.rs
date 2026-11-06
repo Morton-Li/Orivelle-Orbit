@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::ClaudeContext;
+use std::fs;
 
 #[test]
 fn claude_core_flow_bootstrap_qualifies_legacy_state_and_replaces_obsolete_guidance() {
@@ -299,6 +300,408 @@ fn mapping_fixture() -> tests::PolicyFixture {
         Box::pin(async { Err(fail("synthetic_unexpected_upstream_send")) })
     }));
     f
+}
+
+fn preferences_restore_fixture() -> tests::PolicyFixture {
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let root = f.service.paths.claude_library.parent().unwrap();
+    fs::create_dir_all(root).unwrap();
+    fs::write(
+        root.join("claude_desktop_config.json"),
+        br#"{"deploymentMode":"1p","preferences":{"theme":"system"},"unowned":"retained"}"#,
+    )
+    .unwrap();
+    f
+}
+
+fn write_service_preferences(service: &Service) -> Vec<u8> {
+    let path = service
+        .paths
+        .claude_library
+        .parent()
+        .unwrap()
+        .join("claude_desktop_config.json");
+    let mut main: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    main.insert("preferences".into(), serde_json::value::RawValue::from_string(
+        r#"{"huge":184467440737095516170000,"fraction":1.00000000000000000000001,"unknown":[true,{"retained":"yes"}]}"#.into()
+    ).unwrap());
+    let mut bytes = serde_json::to_vec_pretty(&main).unwrap();
+    bytes.push(b'\n');
+    fs::write(path, &bytes).unwrap();
+    bytes
+}
+
+#[test]
+fn claude_restore_coordination_service_previews_preserves_preferences_and_persists_historical_note()
+{
+    let f = preferences_restore_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    assert!(preview.restore_coordination.is_none());
+    assert!(
+        !serde_json::to_value(&preview)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("restore_coordination")
+    );
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let current = write_service_preferences(&f.service);
+    let source = saved.backup_group_id.as_ref().unwrap();
+    assert_eq!(
+        f.service.preview_restore(source).unwrap_err().code,
+        "configuration_conflict"
+    );
+    let before = preview
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect::<Vec<_>>();
+    let mutations = f.vault.mutations.load(Ordering::SeqCst);
+    let coordinated = f
+        .service
+        .preview_restore_with_coordination(
+            source,
+            Some(ClaudeRestoreCoordination::MainPreferencesV1),
+        )
+        .unwrap();
+    assert!(coordinated.can_apply);
+    assert_eq!(
+        coordinated.restore_coordination,
+        Some(ClaudeRestoreCoordination::MainPreferencesV1)
+    );
+    assert_eq!(
+        serde_json::to_value(&coordinated).unwrap()["restore_coordination"],
+        "claude_main_preferences_v1"
+    );
+    let diff: Value = serde_json::from_str(&coordinated.redacted_diff).unwrap();
+    assert_eq!(
+        diff["claude_desktop_config.json"]["deploymentMode"]["to"],
+        "1p"
+    );
+    assert!(
+        !coordinated
+            .redacted_diff
+            .contains("184467440737095516170000")
+    );
+    for (path, bytes) in preview.paths.iter().zip(&before) {
+        assert!(read_file(Path::new(path)).unwrap() == *bytes);
+    }
+    assert_eq!(f.vault.mutations.load(Ordering::SeqCst), mutations);
+    assert_eq!(
+        f.service
+            .apply_client_config(&coordinated.id, true, true)
+            .unwrap()
+            .state,
+        "restored"
+    );
+    let main_path = f
+        .service
+        .paths
+        .claude_library
+        .parent()
+        .unwrap()
+        .join("claude_desktop_config.json");
+    let main_bytes = fs::read(&main_path).unwrap();
+    let main: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+        serde_json::from_slice(&main_bytes).unwrap();
+    let current: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+        serde_json::from_slice(&current).unwrap();
+    assert_eq!(main["preferences"].get(), current["preferences"].get());
+    assert_eq!(main["deploymentMode"].get(), r#""1p""#);
+    assert!(!Path::new(&preview.paths[0]).exists() && !Path::new(&preview.paths[1]).exists());
+    let client: ClientView = f
+        .service
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    assert!(
+        client
+            .manual_steps
+            .iter()
+            .any(|note| note == claude::PREFERENCES_RESTORED_NOTE)
+    );
+    assert!(
+        !client
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("配置原字节已恢复"))
+    );
+    assert!(client.loaded_evidence.is_none() && client.connection_evidence.is_none());
+    let restarted = Service::new(
+        f.service.store.clone(),
+        f.vault.clone(),
+        f.service.paths.clone(),
+    )
+    .unwrap();
+    let client = restarted
+        .bootstrap()
+        .unwrap()
+        .clients
+        .into_iter()
+        .find(|client| client.client == ClientKind::Claude)
+        .unwrap();
+    assert!(
+        client
+            .manual_steps
+            .iter()
+            .any(|note| note == claude::PREFERENCES_RESTORED_NOTE)
+    );
+    assert!(client.loaded_evidence.is_none() && client.connection_evidence.is_none());
+    let fresh = automatic_preview(&restarted, &f);
+    let saved = restarted
+        .apply_client_config(&fresh.id, true, false)
+        .unwrap();
+    let client: ClientView = restarted
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    assert!(
+        !client
+            .manual_steps
+            .iter()
+            .any(|note| note == claude::PREFERENCES_RESTORED_NOTE)
+    );
+    let strict = restarted
+        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .unwrap();
+    assert!(strict.restore_coordination.is_none());
+    assert_eq!(
+        restarted
+            .apply_client_config(&strict.id, true, true)
+            .unwrap()
+            .state,
+        "restored"
+    );
+    let client: ClientView = restarted
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    assert!(
+        client
+            .manual_steps
+            .iter()
+            .any(|note| note.contains("配置原字节已恢复"))
+    );
+    assert!(
+        !client
+            .manual_steps
+            .iter()
+            .any(|note| note == claude::PREFERENCES_RESTORED_NOTE)
+    );
+}
+
+#[test]
+fn claude_restore_coordination_rejects_wrong_client_or_phase_before_observation_and_vault() {
+    let f = preferences_restore_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let source_id = saved.backup_group_id.as_ref().unwrap();
+    let backup: Journal = f.service.store.get("backup", source_id).unwrap().unwrap();
+    let source: Journal = f.service.store.get("journal", source_id).unwrap().unwrap();
+    let mut paths = f.service.paths.clone();
+    let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+    let observed = Arc::new(AtomicU64::new(0));
+    let count = observed.clone();
+    paths.fixture_claude_configuration_target = Some(Arc::new(move |client, full| {
+        count.fetch_add(1, Ordering::SeqCst);
+        adapter(client, full)
+    }));
+    let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+    for fault in ["wrong_client", "uncommitted", "source_uncommitted"] {
+        let mut changed_backup = backup.clone();
+        let mut changed_source = source.clone();
+        match fault {
+            "wrong_client" => changed_backup.client = ClientKind::Codex,
+            "uncommitted" => changed_backup.phase = "publishing".into(),
+            _ => changed_source.phase = "conflict".into(),
+        }
+        service
+            .store
+            .put("backup", source_id, &backup.account_id, &changed_backup)
+            .unwrap();
+        service
+            .store
+            .put("journal", source_id, &source.account_id, &changed_source)
+            .unwrap();
+        observed.store(0, Ordering::SeqCst);
+        f.vault.calls.store(0, Ordering::SeqCst);
+        f.vault.mutations.store(0, Ordering::SeqCst);
+        let revision = service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            service
+                .preview_restore_with_coordination(
+                    source_id,
+                    Some(ClaudeRestoreCoordination::MainPreferencesV1)
+                )
+                .unwrap_err()
+                .code,
+            "configuration_conflict",
+            "{fault}"
+        );
+        assert_eq!(observed.load(Ordering::SeqCst), 0, "{fault}");
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0, "{fault}");
+        assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0, "{fault}");
+        assert_eq!(
+            service.store.snapshot().unwrap().revision,
+            revision,
+            "{fault}"
+        );
+    }
+}
+
+#[test]
+fn claude_restore_coordination_preview_mode_must_match_authenticated_operation() {
+    for coordinated in [false, true] {
+        let f = preferences_restore_fixture();
+        let preview = automatic_preview(&f.service, &f);
+        let saved = f
+            .service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        if coordinated {
+            write_service_preferences(&f.service);
+        }
+        let restore = f
+            .service
+            .preview_restore_with_coordination(
+                saved.backup_group_id.as_ref().unwrap(),
+                coordinated.then_some(ClaudeRestoreCoordination::MainPreferencesV1),
+            )
+            .unwrap();
+        let before = preview
+            .paths
+            .iter()
+            .map(|path| read_file(Path::new(path)).unwrap())
+            .collect::<Vec<_>>();
+        f.service
+            .previews
+            .lock()
+            .unwrap()
+            .get_mut(&restore.id)
+            .unwrap()
+            .view
+            .restore_coordination =
+            (!coordinated).then_some(ClaudeRestoreCoordination::MainPreferencesV1);
+        assert_eq!(
+            f.service
+                .apply_client_config(&restore.id, true, true)
+                .unwrap_err()
+                .code,
+            "backup_invalid"
+        );
+        for (path, bytes) in preview.paths.iter().zip(before) {
+            assert!(read_file(Path::new(path)).unwrap() == bytes);
+        }
+        assert_eq!(
+            f.service
+                .apply_client_config(&restore.id, true, true)
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+    }
+}
+
+#[test]
+fn claude_restore_coordination_vault_return_rechecks_target_and_late_epoch_never_revives_old_grants()
+ {
+    let f = preferences_restore_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    write_service_preferences(&f.service);
+    let before = preview
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect::<Vec<_>>();
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    *f.vault.pause.lock().unwrap() = Some((entered, released));
+    let service = f.service.clone();
+    let source = saved.backup_group_id.clone().unwrap();
+    let worker = std::thread::spawn(move || {
+        service.preview_restore_with_coordination(
+            &source,
+            Some(ClaudeRestoreCoordination::MainPreferencesV1),
+        )
+    });
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    f.target.store(1, Ordering::SeqCst);
+    resume.send(()).unwrap();
+    assert!(worker.join().unwrap().is_err());
+    assert!(f.service.previews.lock().unwrap().is_empty());
+    for (path, bytes) in preview.paths.iter().zip(before) {
+        assert!(read_file(Path::new(path)).unwrap() == bytes);
+    }
+
+    let f = preferences_restore_fixture();
+    let first = automatic_preview(&f.service, &f);
+    let old = mapping_context(&f.service, &first).binding_id;
+    f.service
+        .apply_client_config(&first.id, true, false)
+        .unwrap();
+    let second = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&second.id, true, false)
+        .unwrap();
+    write_service_preferences(&f.service);
+    let restore = f
+        .service
+        .preview_restore_with_coordination(
+            saved.backup_group_id.as_ref().unwrap(),
+            Some(ClaudeRestoreCoordination::MainPreferencesV1),
+        )
+        .unwrap();
+    let installation = f.service.installation(&f.record).unwrap();
+    f.service
+        .store
+        .set_meta(
+            &authorization_epoch_reference(
+                &installation.origin,
+                &installation.id,
+                &f.record.view.account_id,
+            ),
+            "999",
+        )
+        .unwrap();
+    assert_eq!(
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap()
+            .state,
+        "restored"
+    );
+    assert!(Path::new(&first.paths[0]).exists() && !Path::new(&second.paths[0]).exists());
+    assert!(
+        !f.service
+            .store
+            .get::<HelperBinding>("binding", &old)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        f.service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .iter()
+            .all(|binding| !binding.enabled)
+    );
 }
 
 struct MappingReadFailureVault {

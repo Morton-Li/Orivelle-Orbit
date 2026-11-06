@@ -91,6 +91,16 @@ pub struct Confirmation {
 #[serde(deny_unknown_fields)]
 pub struct Backup {
     backup_group_id: String,
+    #[serde(default, deserialize_with = "restore_coordination_selection")]
+    coordination: Option<ClaudeRestoreCoordination>,
+}
+fn restore_coordination_selection<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ClaudeRestoreCoordination>, D::Error> {
+    match String::deserialize(deserializer)?.as_str() {
+        "claude_main_preferences_v1" => Ok(Some(ClaudeRestoreCoordination::MainPreferencesV1)),
+        _ => Err(serde::de::Error::custom("unsupported restore coordination")),
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -325,9 +335,11 @@ pub async fn export_claude_import(
 #[tauri::command]
 pub async fn preview_restore(native: State<'_, Native>, request: Backup) -> Result<ConfigPreview> {
     let service = native.service.clone();
-    tauri::async_runtime::spawn_blocking(move || service.preview_restore(&request.backup_group_id))
-        .await
-        .map_err(|_| fail("state_unavailable"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        service.preview_restore_with_coordination(&request.backup_group_id, request.coordination)
+    })
+    .await
+    .map_err(|_| fail("state_unavailable"))?
 }
 #[tauri::command]
 pub async fn restore_client_config(
@@ -648,6 +660,29 @@ mod tests {
             .is_err()
         );
         assert!(serde_json::from_value::<Confirmation>(serde_json::json!({"preview_id":"synthetic-preview","confirmed":true,"path":"/unexpected"})).is_err());
+        let coordinated = serde_json::from_value::<Backup>(serde_json::json!({
+            "backup_group_id":"synthetic-backup", "coordination":"claude_main_preferences_v1"
+        }))
+        .unwrap();
+        assert_eq!(
+            coordinated.coordination,
+            Some(ClaudeRestoreCoordination::MainPreferencesV1)
+        );
+        for mode in [
+            serde_json::Value::Null,
+            serde_json::json!("automatic"),
+            serde_json::json!(true),
+            serde_json::json!({"path":"/unexpected"}),
+            serde_json::json!({"claude_main_preferences_v1":null}),
+        ] {
+            assert!(
+                serde_json::from_value::<Backup>(
+                    serde_json::json!({"backup_group_id":"synthetic-backup","coordination":mode})
+                )
+                .is_err()
+            );
+        }
+        assert!(serde_json::from_value::<Confirmation>(serde_json::json!({"preview_id":"synthetic-preview","confirmed":true,"coordination":"claude_main_preferences_v1"})).is_err());
     }
 
     #[test]
