@@ -233,6 +233,262 @@ impl Fixture {
     fn binding(&self, id: &str) -> Option<HelperBinding> {
         self.store.get("binding", id).unwrap()
     }
+
+    fn write_current_preferences(&self) -> Vec<u8> {
+        let mut main: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_slice(self.files[2].after.as_ref().unwrap()).unwrap();
+        main.insert("preferences".into(), serde_json::value::RawValue::from_string(
+            r#"{"huge":184467440737095516170000,"decimal":1.000000000000000000001,"unknown":[true,{"retained":"yes"}]}"#.into()
+        ).unwrap());
+        let mut bytes = serde_json::to_vec_pretty(&main).unwrap();
+        bytes.push(b'\n');
+        fs::write(&self.files[2].path, &bytes).unwrap();
+        bytes
+    }
+}
+
+#[test]
+fn claude_preferences_restore_v1_is_explicit_encrypted_and_preserves_exact_current_preferences() {
+    let fixture = Fixture::new(true);
+    let guard = |_: &ClaudeContext, _: bool| Ok(());
+    let engine = fixture.engine(&guard);
+    let original = fixture.prepare(&engine);
+    assert!(
+        !serde_json::to_value(engine.decrypt(&original).unwrap())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("claude_main_preferences_restore_v1")
+    );
+    engine.apply(&original.id).unwrap();
+    let current = fixture.write_current_preferences();
+    assert_eq!(
+        engine.prepare_restore(&original.id).unwrap_err().code,
+        "configuration_conflict"
+    );
+    let before = fixture
+        .files
+        .iter()
+        .map(|file| read_file(Path::new(&file.path)).unwrap())
+        .collect::<Vec<_>>();
+    let preview = engine
+        .prepare_claude_preferences_restore(&original.id)
+        .unwrap();
+    for (file, bytes) in fixture.files.iter().zip(&before) {
+        assert!(read_file(Path::new(&file.path)).unwrap() == *bytes);
+    }
+    let (context, restoring, preserving) = engine.claude_operation_details(&preview).unwrap();
+    assert_eq!(context, fixture.context);
+    assert!(restoring && preserving);
+    let operation = engine.decrypt(&preview).unwrap();
+    assert!(operation.claude_main_preferences_restore_v1.is_some());
+    assert_eq!(operation.source_journal_phase.as_deref(), Some("committed"));
+    assert_eq!(
+        engine
+            .apply_claude_with_restore_mode(&preview.id, false)
+            .unwrap_err()
+            .code,
+        "backup_invalid"
+    );
+    for (file, bytes) in fixture.files.iter().zip(&before) {
+        assert!(read_file(Path::new(&file.path)).unwrap() == *bytes);
+    }
+    let (saved, preserving) = engine
+        .apply_claude_with_restore_mode(&preview.id, true)
+        .unwrap();
+    assert_eq!(saved.phase, "committed");
+    assert!(preserving);
+    for file in &operation.files {
+        assert!(equal_current(file, &file.after).unwrap());
+    }
+    let current: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+        serde_json::from_slice(&current).unwrap();
+    let restored = fs::read(&fixture.files[2].path).unwrap();
+    let restored: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+        serde_json::from_slice(&restored).unwrap();
+    assert_eq!(restored["preferences"].get(), current["preferences"].get());
+    assert_eq!(restored["deploymentMode"].get(), r#""1p""#);
+    assert!(equal_current(&fixture.files[1], &fixture.files[1].before).unwrap());
+    assert!(!Path::new(&fixture.files[0].path).exists());
+    assert!(
+        !fixture
+            .binding(&fixture.context.binding_id)
+            .unwrap()
+            .enabled
+    );
+    let source: Journal = fixture.store.get("journal", &original.id).unwrap().unwrap();
+    assert_eq!(source.phase, "restored");
+    assert_eq!(source.nonce, original.nonce);
+    assert_eq!(source.ciphertext, original.ciphertext);
+}
+
+#[test]
+fn claude_preferences_restore_v1_frozen_files_source_and_vault_changes_stop_before_writes() {
+    for fault in [
+        "preferences",
+        "profile",
+        "metadata",
+        "source_cipher",
+        "source_phase",
+        "source_expiry",
+        "authority",
+        "vault",
+    ] {
+        let fixture = Fixture::new(true);
+        let armed = Cell::new(false);
+        let guard = |_: &ClaudeContext, _: bool| {
+            if fault == "authority" && armed.get() {
+                return Err(fail("synthetic_authority_changed"));
+            }
+            Ok(())
+        };
+        let engine = fixture.engine(&guard);
+        let original = fixture.prepare(&engine);
+        engine.apply(&original.id).unwrap();
+        fixture.write_current_preferences();
+        let preview = engine
+            .prepare_claude_preferences_restore(&original.id)
+            .unwrap();
+        match fault {
+            "preferences" => {
+                let mut changed = fs::read(&fixture.files[2].path).unwrap();
+                changed.push(b' ');
+                fs::write(&fixture.files[2].path, changed).unwrap();
+            }
+            "profile" => fs::write(&fixture.files[0].path, b"{}").unwrap(),
+            "metadata" => fs::write(&fixture.files[1].path, b"{}").unwrap(),
+            "source_cipher" | "source_phase" | "source_expiry" => {
+                let mut source: Journal =
+                    fixture.store.get("journal", &original.id).unwrap().unwrap();
+                match fault {
+                    "source_cipher" => source.ciphertext.push('A'),
+                    "source_phase" => source.phase = "conflict".into(),
+                    _ => {
+                        source.expires_at =
+                            (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339()
+                    }
+                }
+                fixture
+                    .store
+                    .put("journal", &source.id, &source.account_id, &source)
+                    .unwrap();
+            }
+            "authority" => armed.set(true),
+            "vault" => fixture
+                .vault
+                .delete(&fixture.installation.backup_reference)
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        let before = fixture
+            .files
+            .iter()
+            .map(|file| read_file(Path::new(&file.path)).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            engine
+                .apply_claude_with_restore_mode(&preview.id, true)
+                .is_err(),
+            "{fault}"
+        );
+        for (file, bytes) in fixture.files.iter().zip(before) {
+            assert!(
+                read_file(Path::new(&file.path)).unwrap() == bytes,
+                "{fault}"
+            );
+        }
+        assert!(
+            fixture
+                .binding(&fixture.context.binding_id)
+                .unwrap()
+                .enabled,
+            "{fault}"
+        );
+    }
+}
+
+#[test]
+fn claude_preferences_restore_v1_each_publication_cut_recovers_its_frozen_group() {
+    for cut in 0..=3 {
+        let fixture = Fixture::new(true);
+        let armed = Cell::new(false);
+        let current_id = RefCell::new(String::new());
+        let changes = RefCell::new(Vec::<FileChange>::new());
+        let guard = |_: &ClaudeContext, _: bool| {
+            if armed.get()
+                && fixture
+                    .store
+                    .get::<Journal>("journal", &current_id.borrow())?
+                    .is_some_and(|journal| journal.phase == "publishing")
+                && changes
+                    .borrow()
+                    .iter()
+                    .filter(|file| equal_current(file, &file.after).unwrap())
+                    .count()
+                    == cut
+            {
+                return Err(fail("synthetic_restore_cut"));
+            }
+            Ok(())
+        };
+        let engine = fixture.engine(&guard);
+        let original = fixture.prepare(&engine);
+        engine.apply(&original.id).unwrap();
+        fixture.write_current_preferences();
+        let preview = engine
+            .prepare_claude_preferences_restore(&original.id)
+            .unwrap();
+        *changes.borrow_mut() = engine.decrypt(&preview).unwrap().files.clone();
+        *current_id.borrow_mut() = preview.id.clone();
+        armed.set(true);
+        assert_eq!(
+            engine
+                .apply_claude_with_restore_mode(&preview.id, true)
+                .unwrap_err()
+                .code,
+            "synthetic_restore_cut",
+            "{cut}"
+        );
+        for (index, file) in changes.borrow().iter().enumerate() {
+            assert!(
+                equal_current(
+                    file,
+                    if index < cut {
+                        &file.after
+                    } else {
+                        &file.before
+                    }
+                )
+                .unwrap(),
+                "{cut}/{index}"
+            );
+        }
+        let reopened = Store::open(&fixture.store.root).unwrap();
+        let guard = |_: &ClaudeContext, _: bool| Ok(());
+        let restarted = ConfigEngine {
+            store: &reopened,
+            ..fixture.engine(&guard)
+        };
+        assert!(restarted.claude_operation_details(&preview).unwrap().2);
+        assert_eq!(restarted.recover(&preview.id).unwrap().phase, "committed");
+        for file in changes.borrow().iter() {
+            assert!(equal_current(file, &file.after).unwrap());
+        }
+        assert!(
+            !fixture
+                .binding(&fixture.context.binding_id)
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(
+            reopened
+                .get::<Journal>("journal", &original.id)
+                .unwrap()
+                .unwrap()
+                .phase,
+            "restored"
+        );
+    }
 }
 
 #[test]

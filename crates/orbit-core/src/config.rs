@@ -166,6 +166,18 @@ pub struct FileChange {
     pub after: Option<Vec<u8>>,
 }
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+struct ClaudeMainPreferencesRestoreV1 {
+    original_main_before: Vec<u8>,
+}
+
+struct ClaudePreferencesRestoreSeed<'a> {
+    source: &'a Journal,
+    grants_after: Vec<HelperBinding>,
+    proof: ClaudeMainPreferencesRestoreV1,
+}
+
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 struct Operation {
     files: Vec<FileChange>,
     #[zeroize(skip)]
@@ -195,6 +207,8 @@ struct Operation {
     #[zeroize(skip)]
     #[serde(default)]
     claude_context: Option<ClaudeContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_main_preferences_restore_v1: Option<ClaudeMainPreferencesRestoreV1>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Journal {
@@ -290,7 +304,9 @@ impl ConfigEngine<'_> {
         if journal.client == ClientKind::Claude {
             return self.check_claude_context(journal, operation, restoring);
         }
-        if operation.claude_context.is_some() {
+        if operation.claude_context.is_some()
+            || operation.claude_main_preferences_restore_v1.is_some()
+        {
             return Err(fail("backup_invalid"));
         }
         if let Some(context) = &operation.codex_context {
@@ -414,6 +430,10 @@ impl ConfigEngine<'_> {
             .as_ref()
             .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
         let target = &context.configuration_target;
+        let preferences_proof = operation.claude_main_preferences_restore_v1.as_ref();
+        if preferences_proof.is_some() && !operation.restore {
+            return Err(fail("backup_invalid"));
+        }
         let restoring = operation.restore || restoring;
         let digest = |value: &str| {
             value.len() == 64
@@ -527,6 +547,7 @@ impl ConfigEngine<'_> {
         }
         for (index, file) in operation.files.iter().enumerate() {
             let expected = &context.files[if operation.restore { 2 - index } else { index }];
+            let coordinated_main = preferences_proof.filter(|_| index == 0);
             if file.path != expected.path
                 || !digest(&expected.after_sha256)
                 || expected.after_size > MAX_CONFIG_BYTES
@@ -538,7 +559,17 @@ impl ConfigEngine<'_> {
                     .before_size
                     .is_some_and(|size| size > MAX_CONFIG_BYTES)
                 || expected.before_sha256.is_some() != expected.before_size.is_some()
-                || if operation.restore {
+                || if let Some(proof) = coordinated_main {
+                    !expected.matches_before(Some(&proof.original_main_before))
+                        || file
+                            .before
+                            .as_ref()
+                            .is_none_or(|bytes| bytes.len() as u64 > MAX_CONFIG_BYTES)
+                        || file
+                            .after
+                            .as_ref()
+                            .is_none_or(|bytes| bytes.len() as u64 > MAX_CONFIG_BYTES)
+                } else if operation.restore {
                     !expected.matches_before(file.after.as_deref())
                         || (!expected.matches_before(file.before.as_deref())
                             && !expected.matches_after(file.before.as_deref()))
@@ -557,6 +588,11 @@ impl ConfigEngine<'_> {
         guard(context, restoring)?;
         let source = self.check_claude_source(context)?;
         let original_before = |index: usize| -> Option<&[u8]> {
+            if index == 2
+                && let Some(proof) = preferences_proof
+            {
+                return Some(proof.original_main_before.as_slice());
+            }
             if operation.restore {
                 operation.files[2 - index].after.as_deref()
             } else {
@@ -594,10 +630,35 @@ impl ConfigEngine<'_> {
         // Persisted operations have already been AEAD-authenticated; trusted
         // prepare uses Service's fixed current compiler. A historical helper
         // budget is accepted only when its entire three-file group matches.
-        if !matches(&crate::claude_config::compile(&plan)?)?
-            && !matches(&crate::claude_config::compile_legacy_helper_timeout(&plan)?)?
-        {
-            return Err(fail("backup_invalid"));
+        let mut compiled = crate::claude_config::compile(&plan)?;
+        if !matches(&compiled)? {
+            compiled = crate::claude_config::compile_legacy_helper_timeout(&plan)?;
+            if !matches(&compiled)? {
+                return Err(fail("backup_invalid"));
+            }
+        }
+        if let Some(proof) = preferences_proof {
+            let main = &operation.files[0];
+            let applied_main = compiled.files()[2]
+                .after
+                .as_deref()
+                .ok_or_else(|| fail("backup_invalid"))?;
+            let before = main
+                .before
+                .as_deref()
+                .ok_or_else(|| fail("backup_invalid"))?;
+            let derived = crate::claude_config::restore_main_preserving_preferences(
+                &proof.original_main_before,
+                applied_main,
+                before,
+            )
+            .map_err(|_| fail("backup_invalid"))?;
+            if main.after.as_deref() != Some(derived.as_slice())
+                || operation.source_journal_phase.as_deref() != Some("committed")
+            {
+                return Err(fail("backup_invalid"));
+            }
+            self.claude_restore_source(journal, operation)?;
         }
         if !restoring {
             let mut binding = self
@@ -871,6 +932,7 @@ impl ConfigEngine<'_> {
             None,
             None,
             false,
+            None,
         )
     }
     pub(crate) fn prepare_codex(
@@ -892,6 +954,7 @@ impl ConfigEngine<'_> {
             Some(context),
             None,
             false,
+            None,
         )
     }
     pub(crate) fn prepare_claude(
@@ -912,6 +975,7 @@ impl ConfigEngine<'_> {
             None,
             Some(context),
             false,
+            None,
         )
     }
     fn prepare_operation(
@@ -925,6 +989,7 @@ impl ConfigEngine<'_> {
         codex_context: Option<CodexContext>,
         claude_context: Option<ClaudeContext>,
         restore: bool,
+        preferences_restore: Option<ClaudePreferencesRestoreSeed<'_>>,
     ) -> Result<Journal> {
         self.check_policy()?;
         if files.is_empty() || files.len() > 8 {
@@ -994,6 +1059,7 @@ impl ConfigEngine<'_> {
             source_journal_phase: None,
             codex_context,
             claude_context,
+            claude_main_preferences_restore_v1: None,
         };
         let mut operation = operation;
         for id in operation
@@ -1019,6 +1085,24 @@ impl ConfigEngine<'_> {
             after.enabled = operation.enable_binding.as_ref() == Some(id);
             operation.grants_before.push(before);
             operation.grants_after.push(after);
+        }
+        if let Some(seed) = preferences_restore {
+            if client != ClientKind::Claude || !restore || seed.source.phase != "committed" {
+                return Err(fail("backup_invalid"));
+            }
+            operation.source_journal_id = Some(seed.source.id.clone());
+            operation.source_journal_sha256 = Some(Self::source_journal_sha256(seed.source)?);
+            operation.source_journal_phase = Some(seed.source.phase.clone());
+            operation.grants_after = seed.grants_after;
+            operation.grants_before = operation
+                .grants_after
+                .iter()
+                .map(|binding| self.store.get::<HelperBinding>("binding", &binding.id))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            operation.claude_main_preferences_restore_v1 = Some(seed.proof);
         }
         self.check_context(&journal, &operation)?;
         self.persist_operation(&mut journal, &operation)?;
@@ -1074,13 +1158,24 @@ impl ConfigEngine<'_> {
         Ok(self.decrypt(journal)?.codex_context.clone())
     }
     pub(crate) fn claude_operation(&self, journal: &Journal) -> Result<(ClaudeContext, bool)> {
+        let (context, restoring, _) = self.claude_operation_details(journal)?;
+        Ok((context, restoring))
+    }
+    pub(crate) fn claude_operation_details(
+        &self,
+        journal: &Journal,
+    ) -> Result<(ClaudeContext, bool, bool)> {
         let operation = self.decrypt(journal)?;
         self.check_context_for(journal, &operation, true)?;
         let context = operation
             .claude_context
             .clone()
             .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
-        Ok((context, operation.restore))
+        Ok((
+            context,
+            operation.restore,
+            operation.claude_main_preferences_restore_v1.is_some(),
+        ))
     }
     #[cfg(test)]
     pub(crate) fn freeze_codex_context(
@@ -1520,6 +1615,20 @@ impl ConfigEngine<'_> {
         self.prune_backups_locked(ClientKind::Claude)
     }
     pub fn apply(&self, id: &str) -> Result<Journal> {
+        Ok(self.apply_with_claude_mode(id, None)?.0)
+    }
+    pub(crate) fn apply_claude_with_restore_mode(
+        &self,
+        id: &str,
+        preserves_preferences: bool,
+    ) -> Result<(Journal, bool)> {
+        self.apply_with_claude_mode(id, Some(preserves_preferences))
+    }
+    fn apply_with_claude_mode(
+        &self,
+        id: &str,
+        expected_mode: Option<bool>,
+    ) -> Result<(Journal, bool)> {
         self.check_policy()?;
         let mut journal = self
             .store
@@ -1529,6 +1638,12 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         let operation = self.decrypt(&journal)?;
+        let preserves_preferences = operation.claude_main_preferences_restore_v1.is_some();
+        if expected_mode.is_some_and(|expected| {
+            journal.client != ClientKind::Claude || expected != preserves_preferences
+        }) {
+            return Err(fail("backup_invalid"));
+        }
         self.check_context(&journal, &operation)?;
         let _lock = self.lock(journal.client)?;
         for file in &operation.files {
@@ -1537,7 +1652,7 @@ impl ConfigEngine<'_> {
             }
         }
         self.publish(&mut journal, &operation)?;
-        Ok(journal)
+        Ok((journal, preserves_preferences))
     }
     pub fn recover(&self, id: &str) -> Result<Journal> {
         self.check_policy()?;
@@ -1618,6 +1733,7 @@ impl ConfigEngine<'_> {
             original.codex_context.clone(),
             original.claude_context.clone(),
             true,
+            None,
         )?;
         let mut operation = self.decrypt(&restored)?;
         operation.restore = true;
@@ -1660,6 +1776,94 @@ impl ConfigEngine<'_> {
             self.check_context(&restored, &operation)?;
         }
         self.persist_operation(&mut restored, &operation)?;
+        Ok(restored)
+    }
+
+    pub(crate) fn prepare_claude_preferences_restore(&self, id: &str) -> Result<Journal> {
+        self.check_policy()?;
+        let selected = self
+            .store
+            .get::<Journal>("backup", id)?
+            .or(self.store.get::<Journal>("journal", id)?)
+            .ok_or_else(|| fail("backup_invalid"))?;
+        // This fixed mode is never a fallback for other clients or an
+        // incomplete publication, and rejects them before accessing the Vault.
+        if selected.client != ClientKind::Claude || selected.phase != "committed" {
+            return Err(fail("configuration_conflict"));
+        }
+        if chrono::DateTime::parse_from_rfc3339(&selected.expires_at)
+            .map_err(|_| fail("backup_invalid"))?
+            <= chrono::Utc::now()
+        {
+            return Err(fail("backup_expired"));
+        }
+        let source = self
+            .store
+            .get::<Journal>("journal", id)?
+            .ok_or_else(|| fail("configuration_conflict"))?;
+        if source.phase != "committed"
+            || Self::source_journal_sha256(&source)? != Self::source_journal_sha256(&selected)?
+        {
+            return Err(fail("configuration_conflict"));
+        }
+        let original = self.decrypt(&selected)?;
+        self.check_context_for(&selected, &original, true)?;
+        if original.restore || original.claude_main_preferences_restore_v1.is_some() {
+            return Err(fail("backup_invalid"));
+        }
+        let original_main_before = original.files[2]
+            .before
+            .as_ref()
+            .ok_or_else(|| fail("configuration_conflict"))?;
+        let mut files = Vec::new();
+        for (index, file) in original.files.iter().enumerate() {
+            let current = read_file(Path::new(&file.path))?;
+            let after = if index == 2 {
+                Some(crate::claude_config::restore_main_preserving_preferences(
+                    original_main_before,
+                    file.after
+                        .as_deref()
+                        .ok_or_else(|| fail("backup_invalid"))?,
+                    current
+                        .as_deref()
+                        .ok_or_else(|| fail("configuration_conflict"))?,
+                )?)
+            } else {
+                if current != file.after {
+                    return Err(fail("configuration_conflict"));
+                }
+                file.before.clone()
+            };
+            files.push(FileChange {
+                path: file.path.clone(),
+                before: current,
+                after,
+            });
+        }
+        files.reverse();
+        let restored = self.prepare_operation(
+            ClientKind::Claude,
+            &selected.account_id,
+            &selected.installation,
+            files,
+            None,
+            original.enable_binding.clone().into_iter().collect(),
+            None,
+            original.claude_context.clone(),
+            true,
+            Some(ClaudePreferencesRestoreSeed {
+                source: &source,
+                grants_after: original.grants_before.clone(),
+                proof: ClaudeMainPreferencesRestoreV1 {
+                    original_main_before: original_main_before.clone(),
+                },
+            }),
+        )?;
+        // Authenticate the complete newly frozen operation and recheck its
+        // source and current bytes after the final backup-key return.
+        let operation = self.decrypt(&restored)?;
+        self.check_context_for(&restored, &operation, true)?;
+        self.claude_group(&operation, false)?;
         Ok(restored)
     }
     pub fn prune_backups(&self, client: ClientKind) -> Result<()> {
