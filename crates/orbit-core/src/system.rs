@@ -1402,7 +1402,7 @@ fn claude_signature_wait(
     child: &mut std::process::Child,
     #[cfg(test)] timeout_override: Option<Duration>,
 ) -> Result<()> {
-    let timeout = Duration::from_secs(10);
+    let timeout = Duration::from_secs(30);
     // Production has no configurable budget; isolated tests shorten it only.
     #[cfg(test)]
     let timeout = timeout_override.unwrap_or(timeout);

@@ -246,7 +246,7 @@ impl Service {
                 expires_at: context.credential_expires_at,
                 authorization_epoch: context.authorization_epoch,
             };
-            let guard = || self.validate_claude_configuration(&observation.policy, Some(target));
+            let guard = || self.validate_claude_engine_policy(&observation.policy, Some(target));
             let context_guard = |current: &ClaudeContext, restoring: bool| {
                 if current != &context || restoring {
                     return Err(fail("claude_configuration_context_unverified"));
@@ -317,7 +317,7 @@ impl Service {
             .as_ref()
             .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
         let guard = || {
-            self.validate_claude_configuration(
+            self.validate_claude_engine_policy(
                 &entry.policy,
                 entry.claude_configuration_target.as_ref(),
             )?;
@@ -337,6 +337,10 @@ impl Service {
             }
             self.validate_claude_context(current, restoring)
         };
+        self.validate_claude_configuration(
+            &entry.policy,
+            entry.claude_configuration_target.as_ref(),
+        )?;
         guard()?;
         self.validate_claude_context(frozen, restore)?;
         let journal = self.claude_engine(&guard, &context_guard).apply(
@@ -419,7 +423,7 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
         let guard = || {
-            self.validate_claude_configuration(
+            self.validate_claude_engine_policy(
                 &observation.policy,
                 observation.claude_configuration_target.as_ref(),
             )
@@ -441,6 +445,9 @@ impl Service {
                 return Err(fail("backup_invalid"));
             }
             let journal = engine.prepare_restore(backup_id)?;
+            // Preparing the encrypted journal can prompt for its backup key.
+            // A display hint cannot authorize returning an applicable preview.
+            self.validate_claude_context(&context, true)?;
             paths = journal.paths.clone();
             frozen = Some(context);
             Some(journal.id)
@@ -516,7 +523,7 @@ impl Service {
                 .ensure_installation_available(&journal.installation.id)
                 .is_ok();
         let guard = || {
-            self.validate_claude_configuration(
+            self.validate_claude_engine_policy(
                 &observation.policy,
                 observation.claude_configuration_target.as_ref(),
             )
@@ -534,7 +541,10 @@ impl Service {
         let recovered = operation.is_some()
             && journal.phase != "conflict"
             && engine.recover(&journal.id).is_ok();
-        guard()?;
+        self.validate_claude_configuration(
+            &observation.policy,
+            observation.claude_configuration_target.as_ref(),
+        )?;
         self.project_claude_operation(restored, recovered)
     }
 
@@ -683,6 +693,32 @@ impl Service {
             Some(policy),
             target,
         )
+    }
+
+    /// Engine policy checks only reject changes to the frozen local policy and
+    /// target hint. They never produce a full receipt or replace the fresh full
+    /// context qualification at file, grant and post-Vault boundaries.
+    fn validate_claude_engine_policy(
+        &self,
+        expected_policy: &crate::policy::Snapshot,
+        expected_target: Option<&ClaudeConfigurationTarget>,
+    ) -> Result<()> {
+        if !self.paths.writes_authorized {
+            return Err(fail("integration_authorization_required"));
+        }
+        let expected_target =
+            expected_target.ok_or_else(|| fail("claude_configuration_target_unverified"))?;
+        expected_target.validate_root()?;
+        let (current, policy) = self.client_policy(ClientKind::Claude)?;
+        expected_policy.matches_user_config(&policy)?;
+        let expected_revision = access_revision(&expected_target.revision, &policy.local_revision);
+        if current.configuration_access != ConfigurationAccess::Allowed
+            || current.configuration_access_revision.as_deref() != Some(&expected_revision)
+            || self.paths.claude_library != expected_target.config_root.join("configLibrary")
+        {
+            return Err(fail("claude_configuration_target_changed"));
+        }
+        Ok(())
     }
 
     fn claude_inputs(

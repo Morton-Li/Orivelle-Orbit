@@ -282,6 +282,223 @@ fn automatic_preview(service: &Service, fixture: &tests::PolicyFixture) -> Confi
 }
 
 #[test]
+fn claude_engine_full_verification_budget_preserves_three_file_roundtrip() {
+    for existing in [false, true] {
+        let f = tests::policy_fixture(ClientKind::Claude);
+        let mut paths = f.service.paths.clone();
+        let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+        let full = Arc::new(AtomicU64::new(0));
+        let count = full.clone();
+        paths.fixture_claude_configuration_target = Some(Arc::new(move |client, is_full| {
+            if is_full {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+            adapter(client, is_full)
+        }));
+        let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+        let main = service
+            .paths
+            .claude_library
+            .parent()
+            .unwrap()
+            .join("claude_desktop_config.json");
+        let metadata = service.paths.claude_library.join("_meta.json");
+        if existing {
+            std::fs::create_dir_all(&service.paths.claude_library).unwrap();
+            std::fs::write(&main, br#"{"deploymentMode":"1p","unowned":true}"#).unwrap();
+        }
+        let originals = (read_file(&main).unwrap(), read_file(&metadata).unwrap());
+        full.store(0, Ordering::SeqCst);
+        let preview = automatic_preview(&service, &f);
+        let preview_full = full.swap(0, Ordering::SeqCst);
+        assert_eq!(read_file(&main).unwrap(), originals.0);
+        assert_eq!(read_file(&metadata).unwrap(), originals.1);
+        let saved = service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let apply_full = full.swap(0, Ordering::SeqCst);
+        let restore = service
+            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .unwrap();
+        let restore_preview_full = full.swap(0, Ordering::SeqCst);
+        service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        let restore_full = full.load(Ordering::SeqCst);
+        assert_eq!(read_file(&main).unwrap(), originals.0);
+        assert_eq!(read_file(&metadata).unwrap(), originals.1);
+        assert!(!Path::new(&preview.paths[0]).exists());
+        assert!(
+            service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|binding| !binding.enabled)
+        );
+        println!(
+            "existing={existing}: preview={preview_full}, apply={apply_full}, restore_preview={restore_preview_full}, restore={restore_full}"
+        );
+        // These are upper budgets for fresh full producers, not cached receipts.
+        // Both existing and first-run roots must retain full boundary checks.
+        assert!(
+            preview_full <= 20
+                && apply_full <= 40
+                && restore_preview_full <= 15
+                && restore_full <= 40,
+            "full producer budget exceeded for existing={existing}: {preview_full}/{apply_full}/{restore_preview_full}/{restore_full}"
+        );
+    }
+}
+
+#[test]
+fn claude_engine_allowed_hint_cannot_publish_after_full_failure_at_vault_return() {
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let mut paths = f.service.paths.clone();
+    let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+    let fail_full = Arc::new(AtomicU64::new(0));
+    let signal = fail_full.clone();
+    paths.fixture_claude_configuration_target = Some(Arc::new(move |client, full| {
+        if full && signal.load(Ordering::SeqCst) == 1 {
+            return Err(fail("claude_signature_verification_timeout"));
+        }
+        adapter(client, full)
+    }));
+    let service = Arc::new(Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap());
+    let preview = automatic_preview(&service, &f);
+    let journal = preview_journal(&service, &preview);
+    let before_grants = grants(&service);
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    *f.vault.pause.lock().unwrap() = Some((entered, released));
+    f.vault.mutations.store(0, Ordering::SeqCst);
+    let worker = service.clone();
+    let id = preview.id.clone();
+    let thread = std::thread::spawn(move || worker.apply_client_config(&id, true, false));
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    fail_full.store(1, Ordering::SeqCst);
+    assert_eq!(
+        service
+            .client_policy(ClientKind::Claude)
+            .unwrap()
+            .0
+            .configuration_access,
+        ConfigurationAccess::Allowed
+    );
+    resume.send(()).unwrap();
+    assert_eq!(
+        thread.join().unwrap().unwrap_err().code,
+        "claude_signature_verification_timeout"
+    );
+    assert!(!service.paths.claude_library.parent().unwrap().exists());
+    assert_eq!(grants(&service), before_grants);
+    assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        service
+            .store
+            .get::<Journal>("journal", &journal.id)
+            .unwrap()
+            .unwrap()
+            .phase,
+        "prepared"
+    );
+    assert!(
+        service
+            .store
+            .list::<Journal>("backup", None)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn claude_engine_restore_preview_rechecks_full_after_final_backup_key_return() {
+    struct FinalBackupVault {
+        inner: Arc<tests::PolicyVault>,
+        backup_reference: String,
+        backup_reads: AtomicU64,
+        fail_full: Arc<AtomicU64>,
+    }
+    impl Vault for FinalBackupVault {
+        fn get(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>> {
+            let bytes = self.inner.get(reference)?;
+            if reference == self.backup_reference
+                && self.backup_reads.fetch_add(1, Ordering::SeqCst) == 4
+            {
+                self.fail_full.store(1, Ordering::SeqCst);
+            }
+            Ok(bytes)
+        }
+        fn put(&self, reference: &str, bytes: &[u8]) -> Result<()> {
+            self.inner.put(reference, bytes)
+        }
+        fn delete(&self, reference: &str) -> Result<()> {
+            self.inner.delete(reference)
+        }
+    }
+    let f = tests::policy_fixture(ClientKind::Claude);
+    let preview = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let before_files: Vec<_> = preview
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect();
+    let before_grants = grants(&f.service);
+    let fail_full = Arc::new(AtomicU64::new(0));
+    let mut paths = f.service.paths.clone();
+    let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
+    let signal = fail_full.clone();
+    paths.fixture_claude_configuration_target = Some(Arc::new(move |client, full| {
+        if full && signal.load(Ordering::SeqCst) == 1 {
+            return Err(fail("claude_signature_verification_timeout"));
+        }
+        adapter(client, full)
+    }));
+    let vault = Arc::new(FinalBackupVault {
+        inner: f.vault.clone(),
+        backup_reference: f.service.installation(&f.record).unwrap().backup_reference,
+        backup_reads: AtomicU64::new(0),
+        fail_full,
+    });
+    let service = Service::new(f.service.store.clone(), vault.clone(), paths).unwrap();
+    vault.backup_reads.store(0, Ordering::SeqCst);
+    f.vault.mutations.store(0, Ordering::SeqCst);
+    assert_eq!(
+        service
+            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .unwrap_err()
+            .code,
+        "claude_signature_verification_timeout"
+    );
+    assert_eq!(
+        vault.backup_reads.load(Ordering::SeqCst),
+        5,
+        "fault occurs at the final backup-key return, after earlier full checks passed"
+    );
+    assert_eq!(
+        service
+            .client_policy(ClientKind::Claude)
+            .unwrap()
+            .0
+            .configuration_access,
+        ConfigurationAccess::Allowed
+    );
+    assert!(
+        service.previews.lock().unwrap().is_empty(),
+        "a failed final full check cannot yield an applicable preview"
+    );
+    for (path, before) in preview.paths.iter().zip(before_files) {
+        assert_eq!(read_file(Path::new(path)).unwrap(), before);
+    }
+    assert_eq!(grants(&service), before_grants);
+    assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn production_panel_origin_preserves_legacy_offline_claude_backup_restore() {
     let mut fixture = tests::policy_fixture(ClientKind::Claude);
     let first = automatic_preview(&fixture.service, &fixture);
