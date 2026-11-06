@@ -59,4 +59,4 @@ Mac 证据模块的专项回归命令为 `node --test tests/build/macos-candidat
 
 GitLab 配置要求准备好的 `orbit-macos-arm64`、`orbit-windows-x64` 原生 runner，以及已安装的 Chrome。这些 tag 是环境需求，尚未核实 runner 实际存在；没有推送或触发远端 pipeline。CI 只做编译、FakeVault/fixture 和隔离浏览器检查，Windows NSIS 是准备好专用缓存后的手动候选 job。
 
-macOS 15 最低系统、Windows 11 25H2、真正的原生 vault/ACL、配置加载、两个真实桌面应用的工具/流式/辅助模型、安装及更新失败恢复都需要分别记录实际证据。构建或浏览器通过不能替代这些门禁。
+按 2026-11-06 用户最新确认，本目标只验收当前办公 Mac（macOS 26.7.1 arm64），不再等待 Windows 11 25H2、macOS 15 最低版本或其他环境。上述 CI 与 Windows 候选配置保留，不据此宣称对应平台通过。当前 Mac 的原生安全存储、配置载入、Claude 工具/流式/辅助模型、图片及候选更新恢复仍需各自的实际证据；Codex 按用户要求跳过验证。构建或浏览器通过不能替代这些本机验收。正式签名、证书安装、分发和发布沿用原需求的另行授权边界，不作为本目标完成门槛。
