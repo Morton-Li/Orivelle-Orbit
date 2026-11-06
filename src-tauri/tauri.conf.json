@@ -49,6 +49,8 @@
     },
     "useLocalToolsDir": true,
     "resources": {
+      "../LICENSE": "licenses/orbit/LICENSE",
+      "../NOTICE": "licenses/orbit/NOTICE",
       "../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/LICENSE": "licenses/codex/0.163.0-alpha.10.2/LICENSE",
       "../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/NOTICE": "licenses/codex/0.163.0-alpha.10.2/NOTICE",
       "../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json": "licenses/codex/0.163.0-alpha.10.2/PROVENANCE.json"
