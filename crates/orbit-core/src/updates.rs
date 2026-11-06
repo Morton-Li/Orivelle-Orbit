@@ -15,6 +15,7 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
+use url::Url;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_UPDATE_BYTES: u64 = 512 * 1024 * 1024;
@@ -28,6 +29,9 @@ pub struct ReleaseTrust {
     pub mac_certificate_sha256: Option<&'static str>,
 }
 pub fn compiled_trust() -> Option<ReleaseTrust> {
+    if cfg!(target_os = "windows") {
+        return None;
+    }
     match (
         option_env!("ORBIT_RELEASE_UPDATER_PUBLIC_KEY"),
         option_env!("ORBIT_RELEASE_UPDATE_ENDPOINT"),
@@ -58,7 +62,14 @@ pub fn disabled() -> UpdateView {
         status: "disabled".into(),
         current_version: CURRENT_VERSION.into(),
         version: None,
-        reason: Some("正式 HTTPS 更新渠道和固定公钥尚未配置。".into()),
+        reason: Some(
+            if cfg!(target_os = "windows") {
+                "请从 GitHub Releases 下载新版 Windows 安装包。"
+            } else {
+                "正式 HTTPS 更新渠道和固定公钥尚未配置。"
+            }
+            .into(),
+        ),
     }
 }
 fn version_parts(version: &str) -> Result<[u64; 3]> {
@@ -121,20 +132,152 @@ impl VerifiedArtifact {
         self.bytes
     }
 }
+
+struct UpdateChannel {
+    manifest: Url,
+    github_repository: Option<String>,
+}
+
+const GITHUB_MANIFEST_SUFFIX: &str = "/releases/latest/download/latest.json";
+
+impl UpdateChannel {
+    fn new(http: &Http, endpoint: &str) -> Result<Self> {
+        let manifest = http.validate_url(endpoint)?;
+        if manifest.query().is_some() {
+            return Err(fail("invalid_update_channel"));
+        }
+        let github_repository = if manifest.host_str() == Some("github.com") {
+            let repository = manifest
+                .path()
+                .strip_suffix(GITHUB_MANIFEST_SUFFIX)
+                .and_then(|prefix| prefix.strip_prefix('/'))
+                .and_then(|name| name.split_once('/'))
+                .filter(|(owner, repo)| release_segment(owner) && release_segment(repo))
+                .filter(|_| manifest.scheme() == "https" && manifest.port().is_none())
+                .ok_or_else(|| fail("invalid_update_channel"))?;
+            Some(format!("/{}/{}", repository.0, repository.1))
+        } else {
+            None
+        };
+        Ok(Self {
+            manifest,
+            github_repository,
+        })
+    }
+
+    fn artifact_url(&self, http: &Http, raw: &str, version: &str) -> Result<Url> {
+        let url = http.validate_url(raw)?;
+        if url.origin() != self.manifest.origin() || url.query().is_some() {
+            return Err(fail("invalid_update_artifact_url"));
+        }
+        if let Some(repository) = &self.github_repository
+            && !github_release_asset(&url, repository).is_some_and(|(tag, asset)| {
+                tag.strip_prefix('v') == Some(version) && asset.ends_with(".app.tar.gz")
+            })
+        {
+            return Err(fail("invalid_update_artifact_url"));
+        }
+        Ok(url)
+    }
+
+    async fn get(
+        &self,
+        http: &Http,
+        url: &Url,
+        version: Option<&str>,
+        accept: &str,
+        limit: u64,
+        timeout: Duration,
+    ) -> Result<crate::network::RemoteResponse> {
+        if let Some(repository) = &self.github_repository {
+            let asset = url
+                .path_segments()
+                .and_then(Iterator::last)
+                .ok_or_else(|| fail("invalid_update_channel"))?;
+            http.get_update(url.clone(), accept, limit, timeout, |from, to| {
+                github_update_redirect(from, to, repository, asset, version)
+            })
+            .await
+        } else {
+            http.request(
+                reqwest::Method::GET,
+                url.as_str(),
+                vec![],
+                vec![("Accept".into(), accept.into())],
+                limit,
+                timeout,
+            )
+            .await
+        }
+    }
+}
+
+fn release_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.len() <= 200
+        && !matches!(segment, "." | "..")
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn github_release_asset<'a>(url: &'a Url, repository: &str) -> Option<(&'a str, &'a str)> {
+    if url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || url.query().is_some()
+        || !url
+            .path()
+            .get(..repository.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(repository))
+    {
+        return None;
+    }
+    let (tag, asset) = url.path()[repository.len()..]
+        .strip_prefix("/releases/download/")?
+        .split_once('/')?;
+    (version_parts(tag.strip_prefix('v')?).is_ok() && release_segment(asset))
+        .then_some((tag, asset))
+}
+
+fn github_update_redirect(
+    from: &Url,
+    to: &Url,
+    repository: &str,
+    asset: &str,
+    version: Option<&str>,
+) -> bool {
+    if from.host_str() != Some("github.com")
+        || to.scheme() != "https"
+        || to.port().is_some()
+        || !to.username().is_empty()
+        || to.password().is_some()
+        || to.fragment().is_some()
+    {
+        return false;
+    }
+    match to.host_str() {
+        Some("github.com") => github_release_asset(to, repository).is_some_and(|(tag, name)| {
+            name == asset && version.is_none_or(|expected| tag.strip_prefix('v') == Some(expected))
+        }),
+        Some("release-assets.githubusercontent.com" | "objects.githubusercontent.com") => matches!(
+            to.path_segments().and_then(|mut segments| segments.next()),
+            Some("github-production-release-asset" | "github-production-release-asset-2e65be")
+        ),
+        _ => false,
+    }
+}
+
 pub async fn check(http: &Http, store: &Store) -> Result<UpdateView> {
     let Some(trust) = compiled_trust() else {
         return Ok(disabled());
     };
-    let url = http.validate_url(trust.endpoint)?;
-    if url.query().is_some() {
-        return Err(fail("invalid_update_channel"));
-    }
-    let response = http
-        .request(
-            reqwest::Method::GET,
-            url.as_str(),
-            vec![],
-            vec![("Accept".into(), "application/json".into())],
+    let channel = UpdateChannel::new(http, trust.endpoint)?;
+    let response = channel
+        .get(
+            http,
+            &channel.manifest,
+            None,
+            "application/json",
             64 * 1024,
             Duration::from_secs(15),
         )
@@ -168,10 +311,7 @@ pub async fn check(http: &Http, store: &Store) -> Result<UpdateView> {
     let download = platform["url"]
         .as_str()
         .ok_or_else(|| fail("invalid_update_manifest"))?;
-    let download_url = http.validate_url(download)?;
-    if download_url.origin() != url.origin() || download_url.query().is_some() {
-        return Err(fail("invalid_update_artifact_url"));
-    }
+    let download_url = channel.artifact_url(http, download, version)?;
     let signature = platform["signature"]
         .as_str()
         .filter(|v| v.len() <= 16 * 1024)
@@ -181,7 +321,7 @@ pub async fn check(http: &Http, store: &Store) -> Result<UpdateView> {
     let candidate = Candidate {
         version: version.into(),
         target: target.into(),
-        url: download.into(),
+        url: download_url.into(),
         signature: signature.into(),
         file_name: None,
         hash: None,
@@ -245,12 +385,14 @@ pub async fn download(
     {
         return Err(fail("update_target_mismatch"));
     }
-    let response = http
-        .request(
-            reqwest::Method::GET,
-            &candidate.url,
-            vec![],
-            vec![],
+    let channel = UpdateChannel::new(http, trust.endpoint)?;
+    let url = channel.artifact_url(http, &candidate.url, version)?;
+    let response = channel
+        .get(
+            http,
+            &url,
+            Some(version),
+            "application/octet-stream",
             MAX_UPDATE_BYTES,
             Duration::from_secs(120),
         )
@@ -550,6 +692,102 @@ pub fn swap_macos_bundle(current: &Path, staged: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GITHUB_MANIFEST: &str =
+        "https://github.com/Owner/Orbit/releases/latest/download/latest.json";
+    const GITHUB_ASSET: &str =
+        "https://github.com/Owner/Orbit/releases/download/v0.2.0/Orbit-macos.app.tar.gz";
+
+    #[test]
+    fn github_update_artifact_must_match_the_pinned_repository_and_version() {
+        let http = Http::new().unwrap();
+        let channel = UpdateChannel::new(&http, GITHUB_MANIFEST).unwrap();
+        assert!(channel.artifact_url(&http, GITHUB_ASSET, "0.2.0").is_ok());
+        assert!(channel.artifact_url(&http, GITHUB_ASSET, "0.2.1").is_err());
+        for bad_url in [
+            "https://github.com/Other/Orbit/releases/download/v0.2.0/Orbit-macos.app.tar.gz",
+            "https://github.com/Owner/Orbit/releases/download/v0.2.0/Orbit-windows.exe",
+            "https://github.com/Owner/Orbit/releases/download/v0.2.0%2fother/Orbit-macos.app.tar.gz",
+            "https://release-assets.githubusercontent.com/github-production-release-asset/123/file",
+        ] {
+            assert!(channel.artifact_url(&http, bad_url, "0.2.0").is_err());
+        }
+        assert!(
+            UpdateChannel::new(
+                &http,
+                "https://github.com:8443/Owner/Orbit/releases/latest/download/latest.json"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn github_update_redirects_allow_only_matching_assets_and_github_cdn() {
+        let manifest = Url::parse(GITHUB_MANIFEST).unwrap();
+        let tag_manifest =
+            Url::parse("https://github.com/Owner/Orbit/releases/download/v0.2.0/latest.json")
+                .unwrap();
+        let cdn = Url::parse(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/123/file?signature=synthetic",
+        )
+        .unwrap();
+        assert!(github_update_redirect(
+            &manifest,
+            &tag_manifest,
+            "/Owner/Orbit",
+            "latest.json",
+            None,
+        ));
+        assert!(github_update_redirect(
+            &tag_manifest,
+            &cdn,
+            "/Owner/Orbit",
+            "latest.json",
+            None,
+        ));
+        let artifact = Url::parse(GITHUB_ASSET).unwrap();
+        assert!(github_update_redirect(
+            &artifact,
+            &cdn,
+            "/Owner/Orbit",
+            "Orbit-macos.app.tar.gz",
+            Some("0.2.0"),
+        ));
+        assert!(!github_update_redirect(
+            &cdn,
+            &artifact,
+            "/Owner/Orbit",
+            "Orbit-macos.app.tar.gz",
+            Some("0.2.0"),
+        ));
+        for bad_url in [
+            "http://release-assets.githubusercontent.com/github-production-release-asset/123/file",
+            "https://release-assets.githubusercontent.com:8443/github-production-release-asset/123/file",
+            "https://user@release-assets.githubusercontent.com/github-production-release-asset/123/file",
+            "https://release-assets.githubusercontent.com/github-production-release-asset/123/file#fragment",
+            "https://release-assets.githubusercontent.com.evil.test/github-production-release-asset/123/file",
+            "https://release-assets.githubusercontent.com/another-service/file",
+            "https://github.com/Other/Orbit/releases/download/v0.2.0/latest.json",
+            "https://github.com/Owner/Orbit/releases/download/v0.1.0/Orbit-macos.app.tar.gz",
+        ] {
+            let bad = Url::parse(bad_url).unwrap();
+            assert!(!github_update_redirect(
+                &manifest,
+                &bad,
+                "/Owner/Orbit",
+                "latest.json",
+                None,
+            ));
+            assert!(!github_update_redirect(
+                &artifact,
+                &bad,
+                "/Owner/Orbit",
+                "Orbit-macos.app.tar.gz",
+                Some("0.2.0"),
+            ));
+        }
+    }
+
     #[test]
     fn tauri_signature_box_validates_exact_bytes_version_and_global_comment() {
         let wire: serde_json::Value =

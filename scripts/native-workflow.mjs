@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
+  copyFile,
   lstat,
   mkdtemp,
   readFile,
@@ -19,6 +20,11 @@ import {
   verifySource,
 } from "./candidate-evidence.mjs";
 import {
+  releaseNames,
+  updateEndpoint,
+  updaterPublicKey,
+} from "./github-release.mjs";
+import {
   prepareProjectDirectory,
   runSyntheticSignerProbe,
 } from "./updater-signer-probe.mjs";
@@ -26,10 +32,23 @@ import {
 const root = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const mode = process.argv[2] ?? "preflight";
 if (
-  !["preflight", "check", "signer-probe", "candidate", "bundle"].includes(mode)
+  ![
+    "preflight",
+    "check",
+    "signer-probe",
+    "candidate",
+    "bundle",
+    "github-bundle",
+    "github-release",
+  ].includes(mode)
 ) {
-  throw new Error("Use preflight, check, signer-probe, candidate or bundle.");
+  throw new Error(
+    "Use preflight, check, signer-probe, candidate, bundle, github-bundle or github-release.",
+  );
 }
+const githubRelease = mode === "github-release";
+const githubBundle = mode === "github-bundle";
+const bundling = mode === "bundle" || githubBundle || githubRelease;
 const target =
   process.platform === "darwin" && process.arch === "arm64"
     ? "aarch64-apple-darwin"
@@ -38,6 +57,8 @@ const target =
       : null;
 if (!target)
   throw new Error("A native macOS arm64 or Windows x64 host is required.");
+if (githubRelease && process.platform !== "darwin")
+  throw new Error("The signed updater release build requires macOS arm64.");
 const expectedNode = (
   await readFile(path.join(root, ".node-version"), "utf8")
 ).trim();
@@ -169,11 +190,11 @@ for (const directory of [
   const absolute = path.join(root, directory);
   await prepareProjectDirectory(root, absolute);
 }
-async function run(binary, args) {
+async function run(binary, args, stepEnv = env) {
   await new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
       cwd: root,
-      env,
+      env: stepEnv,
       stdio: "inherit",
       shell: false,
     });
@@ -248,6 +269,54 @@ if (mode === "preflight") {
   if (toolPackage.version !== "2.12.2")
     throw new Error("Prepare the locked Tauri CLI 2.12.2.");
   const bundleConfig = { bundle: { active: true, useLocalToolsDir: true } };
+  const config = JSON.parse(
+    await readFile(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
+  );
+  const releaseInputs = {};
+  if (githubRelease) {
+    for (const name of [
+      "ORBIT_RELEASE_UPDATER_PUBLIC_KEY",
+      "ORBIT_RELEASE_MAC_CERTIFICATE_SHA256",
+      "TAURI_SIGNING_PRIVATE_KEY",
+      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+      "APPLE_CERTIFICATE",
+      "APPLE_CERTIFICATE_PASSWORD",
+      "APPLE_SIGNING_IDENTITY",
+      "APPLE_ID",
+      "APPLE_PASSWORD",
+      "APPLE_TEAM_ID",
+    ]) {
+      if (!process.env[name]?.trim())
+        throw new Error("Missing release input " + name);
+      releaseInputs[name] = process.env[name];
+    }
+    updaterPublicKey(releaseInputs.ORBIT_RELEASE_UPDATER_PUBLIC_KEY);
+    if (
+      !/^[a-f\d]{64}$/i.test(releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256)
+    )
+      throw new Error(
+        "Expected the SHA-256 fingerprint of the release signing certificate.",
+      );
+    if (
+      !releaseInputs.APPLE_SIGNING_IDENTITY.startsWith(
+        "Developer ID Application: ",
+      )
+    )
+      throw new Error(
+        "The macOS release requires an Apple Developer ID Application identity.",
+      );
+    releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT = updateEndpoint(
+      process.env.GITHUB_REPOSITORY,
+    );
+    bundleConfig.bundle.createUpdaterArtifacts = true;
+    bundleConfig.plugins = {
+      updater: {
+        pubkey: releaseInputs.ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
+        endpoints: [releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT],
+        requireSignedVersion: true,
+      },
+    };
+  }
   if (process.platform === "win32" && mode === "bundle") {
     // Tauri would otherwise download missing NSIS components from GitHub.
     // Prepare its complete local tool cache from an approved mirror first.
@@ -282,6 +351,12 @@ if (mode === "preflight") {
     }
     bundleConfig.bundle.windows = { webviewInstallMode: { type: "skip" } };
   }
+  if (process.platform === "win32" && githubBundle) {
+    // The hosted runner can fetch the tools verified by the pinned Tauri bundler.
+    bundleConfig.bundle.windows = {
+      webviewInstallMode: { type: "downloadBootstrapper", silent: true },
+    };
+  }
   await run(cargo, [
     "build",
     "--locked",
@@ -300,26 +375,55 @@ if (mode === "preflight") {
     `orbit-credential-helper${suffix}`,
   );
   env.ORBIT_BUNDLED_HELPER_PATH = helper;
-  const args = [
-    cli,
-    "build",
+  const packageFlags = [
     "--target",
     target,
     "--features",
     "system-integration",
     "--ci",
-    "--no-sign",
   ];
-  if (mode === "bundle")
-    args.push(
-      "--bundles",
-      process.platform === "darwin" ? "app" : "nsis",
-      "--config",
-      JSON.stringify(bundleConfig),
+  const bundleOverride = ["--config", JSON.stringify(bundleConfig)];
+  const build = [cli, "build", ...packageFlags, "--no-sign"];
+  if (githubRelease) {
+    const {
+      ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
+      ORBIT_RELEASE_UPDATE_ENDPOINT,
+      ORBIT_RELEASE_MAC_CERTIFICATE_SHA256,
+    } = releaseInputs;
+    // Compile with public trust inputs. Signing credentials are only needed by
+    // the bundler after npm and Cargo have finished building the binaries.
+    await run(
+      process.execPath,
+      [...build, "--no-bundle", ...bundleOverride, "--", "--locked"],
+      {
+        ...env,
+        ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
+        ORBIT_RELEASE_UPDATE_ENDPOINT,
+        ORBIT_RELEASE_MAC_CERTIFICATE_SHA256,
+      },
     );
-  else args.push("--no-bundle");
-  args.push("--", "--locked");
-  await run(process.execPath, args);
+    await run(
+      process.execPath,
+      [
+        cli,
+        "bundle",
+        ...packageFlags,
+        "--bundles",
+        "app,dmg",
+        ...bundleOverride,
+      ],
+      { ...env, ...releaseInputs },
+    );
+  } else {
+    if (bundling)
+      build.push(
+        "--bundles",
+        process.platform === "darwin" ? "app" : "nsis",
+        ...bundleOverride,
+      );
+    else build.push("--no-bundle");
+    await run(process.execPath, [...build, "--", "--locked"]);
+  }
   const executable = path.join(
     env.CARGO_TARGET_DIR,
     target,
@@ -330,10 +434,7 @@ if (mode === "preflight") {
   const executableEvidence = await digest(executable);
   let appEvidence = null;
   let archiveEvidence = null;
-  if (mode === "bundle" && process.platform === "darwin") {
-    const config = JSON.parse(
-      await readFile(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
-    );
+  if (bundling && !githubRelease && process.platform === "darwin") {
     const app = path.join(
       env.CARGO_TARGET_DIR,
       target,
@@ -437,6 +538,56 @@ if (mode === "preflight") {
       await rm(extracted, { recursive: true, force: true });
     }
   }
+  if (githubRelease || (githubBundle && process.platform === "win32")) {
+    const directory = path.join(root, "runtime/github-release");
+    await prepareProjectDirectory(root, directory);
+    const bundle = path.join(path.dirname(executable), "bundle");
+    const names = releaseNames(config.version);
+    if (githubRelease) {
+      const app = path.join(bundle, "macos", config.productName + ".app");
+      await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]);
+      await run("/usr/bin/xcrun", ["stapler", "validate", app]);
+      const certificateDir = await mkdtemp(
+        path.join(env.TMPDIR, "release-certificate-"),
+      );
+      try {
+        const prefix = path.join(certificateDir, "certificate");
+        await run("/usr/bin/codesign", [
+          "--display",
+          "--extract-certificates",
+          prefix,
+          app,
+        ]);
+        const certificate = await fileDigest(prefix + "0");
+        if (
+          certificate.sha256 !==
+          releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256.toLowerCase()
+        )
+          throw new Error(
+            "The signed application uses a different update certificate.",
+          );
+      } finally {
+        await rm(certificateDir, { recursive: true, force: true });
+      }
+      const dmg = path.join(
+        bundle,
+        "dmg",
+        config.productName + "_" + config.version + "_aarch64.dmg",
+      );
+      const update = app + ".tar.gz";
+      await run("/usr/bin/hdiutil", ["verify", dmg]);
+      await copyFile(dmg, path.join(directory, names.macos));
+      await copyFile(update, path.join(directory, names.update));
+      await copyFile(update + ".sig", path.join(directory, names.signature));
+    } else {
+      const installer = path.join(
+        bundle,
+        "nsis",
+        config.productName + "_" + config.version + "_x64-setup.exe",
+      );
+      await copyFile(installer, path.join(directory, names.windows));
+    }
+  }
   verifySource(source, inspect);
   const manifest = {
     ...preflight,
@@ -445,8 +596,8 @@ if (mode === "preflight") {
     source_verified_before_and_after: true,
     tracked_dirty: false,
     mode,
-    release_channel: "disabled",
-    formal_signature: false,
+    release_channel: releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT ?? "disabled",
+    formal_signature: githubRelease,
     helper: helperEvidence,
     executable: executableEvidence,
     app: appEvidence,

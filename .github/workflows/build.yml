@@ -1,0 +1,51 @@
+name: Build Orbit
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            runner: macos-15
+            artifact: orbit-macos-arm64
+            package: runtime/candidates/*-candidate.zip
+          - name: Windows x64
+            runner: windows-2025
+            artifact: orbit-windows-x64
+            package: runtime/github-release/*-setup.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Build unsigned candidate
+        run: node scripts/native-workflow.mjs github-bundle
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.package }}
+            runtime/logs/candidate-manifest.json
+          if-no-files-found: error
+          compression-level: 0
