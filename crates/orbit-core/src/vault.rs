@@ -5,6 +5,11 @@ use zeroize::Zeroizing;
 /// Only native services and the narrowly scoped helper can access this trait.
 pub trait Vault: Send + Sync {
     fn get(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>>;
+    /// Absence must be proven by the provider. Legacy adapters fail closed
+    /// rather than interpreting a generic read error as a missing item.
+    fn get_optional(&self, reference: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        self.get(reference).map(Some)
+    }
     fn put(&self, reference: &str, value: &[u8]) -> Result<()>;
     fn delete(&self, reference: &str) -> Result<()>;
 }
@@ -53,6 +58,23 @@ impl Vault for NativeVault {
                 return Err(fail("credential_missing"));
             }
             Ok(Zeroizing::new(value))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            let _ = reference;
+            Err(fail("vault_unavailable"))
+        }
+    }
+    fn get_optional(&self, reference: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        let _guard = self.lock.lock().map_err(|_| fail("vault_unavailable"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            match Self::entry(reference)?.get_secret() {
+                Ok(value) if value.is_empty() => Err(fail("credential_missing")),
+                Ok(value) => Ok(Some(Zeroizing::new(value))),
+                Err(keyring_core::Error::NoEntry) => Ok(None),
+                Err(_) => Err(fail("vault_unavailable")),
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -120,6 +142,13 @@ impl Vault for FakeVault {
             .get(key)
             .cloned()
             .ok_or_else(|| fail("credential_missing"))
+    }
+    fn get_optional(&self, key: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        let value = self.entries.lock().unwrap().get(key).cloned();
+        if value.as_ref().is_some_and(|bytes| bytes.is_empty()) {
+            return Err(fail("credential_missing"));
+        }
+        Ok(value)
     }
     fn put(&self, key: &str, value: &[u8]) -> Result<()> {
         self.entries

@@ -108,6 +108,19 @@ pub fn run() {
             service.observe_authorization(Arc::new(move |event| {
                 let _ = handle.emit("orbit://authorization", event);
             }))?;
+            let mapping_service = service.clone();
+            tauri::async_runtime::spawn(async move {
+                let observer = mapping_service.clone();
+                let runtime = tokio::runtime::Handle::current();
+                let result = tauri::async_runtime::spawn_blocking(move || {
+                    let _runtime = runtime.enter();
+                    mapping_service.reconcile_claude_mappings()
+                })
+                .await;
+                if !matches!(result, Ok(Ok(()))) {
+                    let _ = observer.note_claude_mapping_unavailable();
+                }
+            });
             app.manage(Native {
                 service,
                 _instance: instance,
@@ -210,6 +223,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Orbit startup failed");
     app.run(|app, event| {
+        if matches!(&event, tauri::RunEvent::Exit)
+            && let Some(native) = app.try_state::<Native>()
+        {
+            native.service.stop_claude_mappings();
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = event {
             if let Some(window) = app.get_webview_window("main") {

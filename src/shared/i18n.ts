@@ -121,6 +121,10 @@ const zh = {
     "尚未确认目标应用的本地配置写入资格或组织管理限制，暂时无法变更或导出配置。请重新检测并预览。",
   "access.policyChanged":
     "目标应用的本地配置写入资格或组织管理策略已变化，本次确认已失效。请重新检测并预览配置。",
+  "access.configurationConflict":
+    "检测到目标配置或操作状态已变化，已停止覆盖。请核对变更后重新预览。",
+  "access.claudeMappingUnavailable":
+    "Claude 本地模型映射不可用。请保持 Orbit 运行，并检查本地端口是否被占用，核对后重新预览。",
   "access.saveLocalConfiguration": "确认保存本地配置",
   "access.claudeConfigurationTarget": "已安装 Claude Desktop 的配置目标",
   "access.claudeDesktopScope":
@@ -456,6 +460,10 @@ const en: Record<keyof typeof zh, string> = {
     "Local configuration write eligibility or organization restrictions are unconfirmed. Configuration cannot be changed or exported. Check again and create a new preview.",
   "access.policyChanged":
     "Local configuration write eligibility or organization policy changed. This confirmation is no longer valid. Check again and create a new preview.",
+  "access.configurationConflict":
+    "The target configuration or operation state changed. Overwriting stopped; review the changes before creating a new preview.",
+  "access.claudeMappingUnavailable":
+    "Claude's local model mapping is unavailable. Keep Orbit running and check whether its local port is in use, then create a new preview.",
   "access.saveLocalConfiguration": "Confirm and save local configuration",
   "access.claudeConfigurationTarget":
     "Installed Claude Desktop configuration target",
