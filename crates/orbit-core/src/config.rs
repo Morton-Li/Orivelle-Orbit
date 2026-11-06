@@ -1779,7 +1779,15 @@ impl ConfigEngine<'_> {
         Ok(restored)
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_claude_preferences_restore(&self, id: &str) -> Result<Journal> {
+        Ok(self.prepare_claude_preferences_restore_details(id)?.0)
+    }
+
+    pub(crate) fn prepare_claude_preferences_restore_details(
+        &self,
+        id: &str,
+    ) -> Result<(Journal, ClaudeContext, Option<String>)> {
         self.check_policy()?;
         let selected = self
             .store
@@ -1864,7 +1872,25 @@ impl ConfigEngine<'_> {
         let operation = self.decrypt(&restored)?;
         self.check_context_for(&restored, &operation, true)?;
         self.claude_group(&operation, false)?;
-        Ok(restored)
+        // Read only this non-secret owned field from the already authenticated
+        // original input. Unknown preference values are skipped, not converted
+        // through floating point, and no additional Vault read is needed.
+        #[derive(Deserialize)]
+        struct OriginalMainMode {
+            #[serde(rename = "deploymentMode")]
+            deployment_mode: Option<String>,
+        }
+        let proof = operation
+            .claude_main_preferences_restore_v1
+            .as_ref()
+            .ok_or_else(|| fail("backup_invalid"))?;
+        let original_mode: OriginalMainMode = serde_json::from_slice(&proof.original_main_before)
+            .map_err(|_| fail("backup_invalid"))?;
+        let context = operation
+            .claude_context
+            .clone()
+            .ok_or_else(|| fail("backup_invalid"))?;
+        Ok((restored, context, original_mode.deployment_mode))
     }
     pub fn prune_backups(&self, client: ClientKind) -> Result<()> {
         let _lock = self.lock(client)?;

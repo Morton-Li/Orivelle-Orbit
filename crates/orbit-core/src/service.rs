@@ -316,6 +316,16 @@ impl Service {
                     "unconfirmed"
                 }
                 .into();
+                if client.client == ClientKind::Claude
+                    && old
+                        .manual_steps
+                        .iter()
+                        .any(|note| note == claude::PREFERENCES_RESTORED_NOTE)
+                {
+                    client
+                        .manual_steps
+                        .push(claude::PREFERENCES_RESTORED_NOTE.into());
+                }
             }
         }
         for mut record in store.list::<ConnectionRecord>("connection", None)? {
@@ -2825,7 +2835,7 @@ impl Service {
         let now = chrono::Utc::now();
         let mut preview = ConfigPreview {
             id: uuid(), client, operation: "apply".into(), target_version: target.version.clone(),
-            paths: target.config_paths.clone(), model_id: Some(model_id.into()), context: Some(context), restore_owner: None, restore_source: None,
+            paths: target.config_paths.clone(), model_id: Some(model_id.into()), context: Some(context), restore_owner: None, restore_source: None, restore_coordination: None,
             impact: match client {
                 ClientKind::Codex => vec![
                     "修改用户默认模型、推理默认值、Orivelle provider 与独立模型目录；Codex、CLI 与 IDE 可能共用此配置。".into(),
@@ -3395,6 +3405,13 @@ impl Service {
         Ok(())
     }
     pub fn preview_restore(&self, backup_id: &str) -> Result<ConfigPreview> {
+        self.preview_restore_with_coordination(backup_id, None)
+    }
+    pub fn preview_restore_with_coordination(
+        &self,
+        backup_id: &str,
+        coordination: Option<ClaudeRestoreCoordination>,
+    ) -> Result<ConfigPreview> {
         let _operation = self.begin_mutation()?;
         validate_uuid(backup_id)?;
         let backup = self
@@ -3405,8 +3422,22 @@ impl Service {
                 .get::<Journal>("journal", backup_id)?
                 .filter(|j| ["publishing", "conflict", "committed"].contains(&j.phase.as_str())))
             .ok_or_else(|| fail("backup_invalid"))?;
+        if coordination.is_some()
+            && (backup.client != ClientKind::Claude
+                || backup.phase != "committed"
+                || !self
+                    .store
+                    .get::<Journal>("journal", backup_id)?
+                    .is_some_and(|source| {
+                        source.client == ClientKind::Claude && source.phase == "committed"
+                    }))
+        {
+            // Client/phase rejection precedes every target observation or
+            // Vault access. This mode never changes Codex restoration.
+            return Err(fail("configuration_conflict"));
+        }
         if backup.client == ClientKind::Claude {
-            return self.preview_claude_restore(backup_id, backup);
+            return self.preview_claude_restore(backup_id, backup, coordination);
         }
         let observation = self.observe_configuration(backup.client)?;
         let mut blocked = self
@@ -3465,6 +3496,7 @@ impl Service {
                 backup_group_id: backup_id.into(),
                 expires_at: backup.expires_at.clone(),
             }),
+            restore_coordination: None,
             restore_owner: Some(RestoreOwner {
                 account_id: backup.account_id.clone(),
                 account_label: if backup.account_label.is_empty() {

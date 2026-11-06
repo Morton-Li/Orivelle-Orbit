@@ -341,6 +341,11 @@ pub struct RestoreSource {
     pub backup_group_id: String,
     pub expires_at: String,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClaudeRestoreCoordination {
+    #[serde(rename = "claude_main_preferences_v1")]
+    MainPreferencesV1,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPreview {
     pub id: String,
@@ -353,6 +358,8 @@ pub struct ConfigPreview {
     pub restore_owner: Option<RestoreOwner>,
     #[serde(default)]
     pub restore_source: Option<RestoreSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_coordination: Option<ClaudeRestoreCoordination>,
     pub impact: Vec<String>,
     pub redacted_diff: String,
     pub expires_at: String,
