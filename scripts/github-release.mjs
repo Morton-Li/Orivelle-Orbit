@@ -155,19 +155,24 @@ export async function verifyUpdaterSignature(
   }
 }
 
-export async function assembleRelease(directory, tag, repository, publicKey) {
+export async function assembleRelease(
+  directory,
+  tag,
+  repository,
+  publicKey,
+  { includeWindows = false } = {},
+) {
   const version = releaseVersion(tag);
   const files = releaseNames(version);
-  const required = Object.values(files);
+  const required = [files.macos, files.update, files.signature];
+  if (includeWindows) required.push(files.windows);
   const permitted = new Set([...required, "latest.json", "SHA256SUMS"]);
   const entries = await readdir(directory);
   if (
     entries.some((entry) => !permitted.has(entry)) ||
     required.some((name) => !entries.includes(name))
   ) {
-    throw new Error(
-      "The macOS and Windows release asset set is incomplete or unexpected.",
-    );
+    throw new Error("The release asset set is incomplete or unexpected.");
   }
   const signatureFile = path.join(directory, files.signature);
   const signatureInfo = await lstat(signatureFile);
@@ -260,9 +265,18 @@ function assetMatches(remote, local) {
   );
 }
 
-async function publishRelease(directory, tag, repository, commit, publicKey) {
+async function publishRelease(
+  directory,
+  tag,
+  repository,
+  commit,
+  publicKey,
+  includeWindows,
+) {
   await validateSourceVersion(tag);
-  const assets = await assembleRelease(directory, tag, repository, publicKey);
+  const assets = await assembleRelease(directory, tag, repository, publicKey, {
+    includeWindows,
+  });
   const repo = "repos/" + repository;
   if (api(repo + "/commits/" + tag).sha !== commit) {
     throw new Error("The release tag changed after the build.");
@@ -386,6 +400,7 @@ if (
       process.env.GITHUB_REPOSITORY,
       process.env.ORBIT_RELEASE_COMMIT,
       process.env.ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
+      process.env.ORBIT_WINDOWS_PACKAGING === "true",
     );
   } else {
     throw new Error("Use validate-tag TAG or publish TAG DIRECTORY.");

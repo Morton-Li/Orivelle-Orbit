@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       commit: ${{ steps.source.outputs.commit }}
+      windows_packaging: ${{ steps.source.outputs.windows_packaging }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,11 +33,14 @@ jobs:
       - name: Check stable tag, versions and main ancestry
         id: source
         shell: bash
+        env:
+          ORBIT_WINDOWS_PACKAGING: ${{ vars.ORBIT_WINDOWS_PACKAGING == 'true' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           node scripts/github-release.mjs validate-tag "$GITHUB_REF_NAME"
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
           printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          printf 'windows_packaging=%s\n' "$ORBIT_WINDOWS_PACKAGING" >> "$GITHUB_OUTPUT"
 
   macos:
     name: Sign and package macOS arm64
@@ -83,6 +87,7 @@ jobs:
   windows:
     name: Package Windows x64
     needs: source
+    if: ${{ needs.source.outputs.windows_packaging == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -106,6 +111,13 @@ jobs:
   publish:
     name: Verify and publish GitHub Release
     needs: [source, macos, windows]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.source.result == 'success' &&
+        needs.macos.result == 'success' &&
+        needs.windows.result == (needs.source.outputs.windows_packaging == 'true' && 'success' || 'skipped')
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -133,4 +145,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ORBIT_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
           ORBIT_RELEASE_UPDATER_PUBLIC_KEY: ${{ needs.macos.outputs.updater_public_key }}
+          ORBIT_WINDOWS_PACKAGING: ${{ needs.source.outputs.windows_packaging }}
         run: node scripts/github-release.mjs publish "$GITHUB_REF_NAME" runtime/release-to-publish
