@@ -106,6 +106,12 @@ const zh = {
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
   "access.restoreLocalConfiguration": "确认恢复配置",
+  "access.preserveClaudePreferences": "保留偏好后预览恢复",
+  "access.preferencesRestoreHint":
+    "仅协调 Claude 主配置中的偏好变化；其他字段或配置库变化仍会阻止恢复。",
+  "access.restorePreservingPreferences": "确认保留偏好并恢复接入",
+  "access.restoredPreservingPreferences":
+    "接入配置已恢复，后续偏好已保留。请完整退出目标应用并重新打开，载入和连接仍待确认。",
   "access.restored":
     "原配置已恢复。请完整退出目标应用并重新打开，载入和连接仍待确认。",
   "access.exportImport": "确认导出 Claude 诊断候选",
@@ -445,6 +451,13 @@ const en: Record<keyof typeof zh, string> = {
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
   "access.restoreLocalConfiguration": "Confirm configuration restore",
+  "access.preserveClaudePreferences": "Preview restore keeping preferences",
+  "access.preferencesRestoreHint":
+    "Only coordinates Claude main-config preference changes. Other fields or configuration-library changes still block restoration.",
+  "access.restorePreservingPreferences":
+    "Keep preferences and restore connection settings",
+  "access.restoredPreservingPreferences":
+    "Connection settings restored and later preferences preserved. Quit and reopen the client; loading and connection remain unconfirmed.",
   "access.restored":
     "Original configuration restored. Quit and reopen the client; loading and connection remain unconfirmed.",
   "access.exportImport": "Confirm and export Claude diagnostic candidate",

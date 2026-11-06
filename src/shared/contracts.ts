@@ -344,6 +344,7 @@ type ConfigPreviewBase = {
     revision: string | null;
   } | null;
 };
+export type ClaudeRestoreCoordination = "claude_main_preferences_v1";
 export type ConfigPreview = ConfigPreviewBase &
   (
     | {
@@ -368,6 +369,7 @@ export type ConfigPreview = ConfigPreviewBase &
         context: null;
         restore_owner: RestoreOwner;
         restore_source: { backup_group_id: string; expires_at: string };
+        restore_coordination?: ClaudeRestoreCoordination | null;
       }
   );
 export type ConfigResult = {
@@ -459,7 +461,13 @@ export interface IpcCommands {
     args: { preview_id: string; confirmed: true };
     result: { saved: boolean };
   };
-  preview_restore: { args: { backup_group_id: string }; result: ConfigPreview };
+  preview_restore: {
+    args: {
+      backup_group_id: string;
+      coordination?: ClaudeRestoreCoordination;
+    };
+    result: ConfigPreview;
+  };
   restore_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;

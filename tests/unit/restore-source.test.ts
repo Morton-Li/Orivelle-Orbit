@@ -302,4 +302,143 @@ describe("Claude restore confirmation binds the selected backup", () => {
     expect(store.notice?.text).toContain("原配置已恢复");
     expect(view.find('[role="dialog"]').exists()).toBe(false);
   });
+
+  it("only previews preference coordination after its separate explicit action", async () => {
+    const selected = backup();
+    useOrbitStore().state.backups = [selected];
+    const result = Object.assign(preview(selected), {
+      restore_coordination: "claude_main_preferences_v1" as const,
+    });
+    bridge.call.mockResolvedValueOnce(result);
+    view = mount(AccessPage, {
+      global: {
+        stubs: { ClientRow: true, ConfigReviewDialog: true, OrbitDialog: true },
+      },
+    });
+    await view
+      .get("#backup-account")
+      .setValue("https://panel.invalid/synthetic-account-a");
+    const action = view
+      .findAll(".backup-row button")
+      .find((button) => button.text() === "保留偏好后预览恢复");
+    expect(
+      action,
+      "separate preference coordination preview action",
+    ).toBeDefined();
+    await action!.trigger("click");
+    await flushPromises();
+    expect(bridge.call.mock.calls).toEqual([
+      [
+        "preview_restore",
+        {
+          backup_group_id: selected.id,
+          coordination: "claude_main_preferences_v1",
+        },
+      ],
+    ]);
+    expect(view.findComponent(ConfigReviewDialog).props("preview")).toEqual(
+      result,
+    );
+  });
+
+  it.each([
+    ["coordinated request", true, undefined],
+    ["strict request", false, "claude_main_preferences_v1"],
+    ["unknown coordination", true, "unknown_coordination"],
+  ] as const)(
+    "rejects a mismatched native mode for %s",
+    async (_description, coordinated, nativeMode) => {
+      const selected = backup();
+      useOrbitStore().state.backups = [selected];
+      bridge.call.mockResolvedValueOnce(
+        Object.assign(preview(selected), { restore_coordination: nativeMode }),
+      );
+      view = mount(AccessPage, {
+        global: {
+          stubs: {
+            ClientRow: true,
+            ConfigReviewDialog: true,
+            OrbitDialog: true,
+          },
+        },
+      });
+      await view
+        .get("#backup-account")
+        .setValue("https://panel.invalid/synthetic-account-a");
+      const action = coordinated
+        ? view
+            .findAll(".backup-row button")
+            .find((button) => button.text() === "保留偏好后预览恢复")
+        : view.get(".backup-row .button.secondary");
+      expect(action).toBeDefined();
+      await action!.trigger("click");
+      await flushPromises();
+      expect(
+        view.findComponent(ConfigReviewDialog).props("preview"),
+      ).toBeNull();
+      expect(useOrbitStore().notice?.text).toContain("所选备份");
+      expect(bridge.call.mock.calls).toHaveLength(1);
+    },
+  );
+
+  it("requires the explicit preserving-preferences confirmation without sending file content", async () => {
+    const selected = backup();
+    const store = useOrbitStore();
+    store.state.backups = [selected];
+    const value = Object.assign(preview(selected), {
+      restore_coordination: "claude_main_preferences_v1" as const,
+      impact: ["保留后续偏好，只恢复原接入模式。"],
+      redacted_diff: "Preference contents stay redacted.",
+    });
+    const refreshed = {
+      ...store.state,
+      state_revision: store.state.state_revision + 1,
+    };
+    bridge.call
+      .mockResolvedValueOnce({
+        client: "claude",
+        state: "restored",
+        loaded_state: "restart_required",
+        backup_group_id: "coordinated-restore",
+      })
+      .mockResolvedValueOnce(refreshed);
+    const button = show(value);
+    expect(button.text()).toBe("确认保留偏好并恢复接入");
+    expect(button.element.disabled).toBe(false);
+    expect(bridge.call).not.toHaveBeenCalled();
+    await button.trigger("click");
+    await flushPromises();
+    expect(bridge.call.mock.calls).toEqual([
+      ["restore_client_config", { preview_id: value.id, confirmed: true }],
+      ["bootstrap", {}],
+    ]);
+    expect(store.notice?.text).toContain("接入配置已恢复");
+  });
+
+  it("disables confirmation for an unknown native coordination mode", () => {
+    const selected = backup();
+    useOrbitStore().state.backups = [selected];
+    const value = Object.assign(preview(selected), {
+      restore_coordination: "unknown_coordination",
+    });
+    const button = show(value);
+    expect(button.element.disabled).toBe(true);
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  it("does not offer preference coordination for another client or an unavailable backup", async () => {
+    const other = { ...backup("other-client"), client: "codex" as const };
+    const unavailable = { ...backup(), state: "unavailable" as const };
+    useOrbitStore().state.backups = [other, unavailable];
+    view = mount(AccessPage, {
+      global: {
+        stubs: { ClientRow: true, ConfigReviewDialog: true, OrbitDialog: true },
+      },
+    });
+    await view
+      .get("#backup-account")
+      .setValue("https://panel.invalid/synthetic-account-a");
+    expect(view.text()).not.toContain("保留偏好后预览恢复");
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
 });

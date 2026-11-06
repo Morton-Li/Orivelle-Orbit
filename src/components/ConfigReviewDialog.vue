@@ -69,6 +69,12 @@ const current = computed(() => {
       return false;
   }
   if (preview.operation === "restore") {
+    if (
+      preview.restore_coordination != null &&
+      (preview.client !== "claude" ||
+        preview.restore_coordination !== "claude_main_preferences_v1")
+    )
+      return false;
     const source = preview.restore_source;
     if (
       !source?.backup_group_id ||
@@ -119,6 +125,12 @@ const allowed = computed(
     (props.preview.operation === "restore" || store.ready) &&
     !configBusy.value,
 );
+const preservingClaudePreferences = computed(
+  () =>
+    props.preview?.operation === "restore" &&
+    props.preview.client === "claude" &&
+    props.preview.restore_coordination === "claude_main_preferences_v1",
+);
 const codexReady = computed(() => {
   const preview = props.preview;
   if (preview?.client !== "codex" || preview.operation !== "apply") return true;
@@ -164,6 +176,10 @@ async function exportImport() {
 async function confirm() {
   const preview = props.preview;
   if (!preview || !allowed.value) return;
+  const preservingPreferences =
+    preview.operation === "restore" &&
+    preview.client === "claude" &&
+    preview.restore_coordination === "claude_main_preferences_v1";
   const result =
     preview.operation === "restore"
       ? await store.perform("config-apply", "restore_client_config", {
@@ -183,7 +199,13 @@ async function confirm() {
     store.notify(
       result.state === "conflict"
         ? t("client.conflict")
-        : t(result.state === "restored" ? "access.restored" : "access.saved"),
+        : t(
+            result.state === "restored"
+              ? preservingPreferences
+                ? "access.restoredPreservingPreferences"
+                : "access.restored"
+              : "access.saved",
+          ),
       result.state === "conflict" ? "error" : "neutral",
     );
     emit("applied");
@@ -383,7 +405,9 @@ async function confirm() {
             t(
               preview.operation === "apply"
                 ? "access.saveLocalConfiguration"
-                : "access.restoreLocalConfiguration",
+                : preservingClaudePreferences
+                  ? "access.restorePreservingPreferences"
+                  : "access.restoreLocalConfiguration",
             )
           }}
         </button>
