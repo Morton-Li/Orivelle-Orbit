@@ -5045,6 +5045,10 @@ mod tests {
             self.mutations.fetch_add(1, Ordering::SeqCst);
             self.inner.put(reference, bytes)
         }
+        fn create_claude_mapping_secret(&self, binding_id: &str, bytes: &[u8]) -> Result<()> {
+            self.mutations.fetch_add(1, Ordering::SeqCst);
+            self.inner.create_claude_mapping_secret(binding_id, bytes)
+        }
         fn delete(&self, reference: &str) -> Result<()> {
             self.mutations.fetch_add(1, Ordering::SeqCst);
             self.inner.delete(reference)

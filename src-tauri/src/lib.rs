@@ -95,7 +95,17 @@ pub fn run() {
                 paths
             };
             let vault: Arc<dyn Vault> = if authorized {
-                Arc::new(NativeVault::default())
+                #[cfg(target_os = "macos")]
+                let native = NativeVault::with_claude_mapping_creator(
+                    root.clone(),
+                    paths
+                        .helper_expected_sha256
+                        .clone()
+                        .ok_or_else(|| fail("helper_artifact_invalid"))?,
+                );
+                #[cfg(not(target_os = "macos"))]
+                let native = NativeVault::default();
+                Arc::new(native)
             } else {
                 Arc::new(DeniedVault)
             };

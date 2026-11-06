@@ -711,6 +711,142 @@ struct MappingReadFailureVault {
     puts: AtomicU64,
     deleted: Mutex<Vec<String>>,
 }
+
+#[cfg(target_os = "macos")]
+struct MappingCreatorVault {
+    inner: Arc<tests::PolicyVault>,
+    store: Arc<Store>,
+    deny: bool,
+    create_calls: AtomicU64,
+    mapping_puts: AtomicU64,
+}
+#[cfg(target_os = "macos")]
+impl Vault for MappingCreatorVault {
+    fn get(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>> {
+        self.inner.get(reference)
+    }
+    fn get_optional(&self, reference: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        self.inner.get_optional(reference)
+    }
+    fn put(&self, reference: &str, value: &[u8]) -> Result<()> {
+        if reference.starts_with("claude-map/") {
+            self.mapping_puts.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.put(reference, value)
+    }
+    fn create_claude_mapping_secret(&self, binding_id: &str, value: &[u8]) -> Result<()> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        if self.deny {
+            return Err(fail("vault_unavailable"));
+        }
+        self.inner.create_claude_mapping_secret(binding_id, value)?;
+        let binding: HelperBinding = self.store.get("binding", binding_id)?.unwrap();
+        self.store.set_meta(
+            &authorization_epoch_reference(
+                &binding.origin,
+                &binding.installation_id,
+                &binding.account_id,
+            ),
+            &(binding.authorization_epoch + 1).to_string(),
+        )
+    }
+    fn delete(&self, reference: &str) -> Result<()> {
+        self.inner.delete(reference)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn claude_mapping_creator_denial_and_late_epoch_never_publish_files_or_grants() {
+    for deny in [true, false] {
+        let f = mapping_fixture();
+        let creator = Arc::new(MappingCreatorVault {
+            inner: f.vault.clone(),
+            store: f.service.store.clone(),
+            deny,
+            create_calls: AtomicU64::new(0),
+            mapping_puts: AtomicU64::new(0),
+        });
+        let service = Service::new(
+            f.service.store.clone(),
+            creator.clone(),
+            f.service.paths.clone(),
+        )
+        .unwrap();
+        let preview = automatic_preview(&service, &f);
+        assert!(
+            preview.can_apply,
+            "preview blocker: {:?}",
+            preview.blocking_reason
+        );
+        let context = mapping_context(&service, &preview);
+        let journal = preview_journal(&service, &preview);
+        let before_grants = grants(&service);
+        assert_eq!(
+            creator.create_calls.load(Ordering::SeqCst),
+            0,
+            "preview reserves only; it never creates a token"
+        );
+        assert!(
+            creator
+                .get_optional(&context.mapping.as_ref().unwrap().token_reference())
+                .unwrap()
+                .is_none()
+        );
+        let result = service.apply_client_config(&preview.id, true, false);
+        assert!(result.is_err());
+        if deny {
+            assert_eq!(result.unwrap_err().code, "vault_unavailable");
+        }
+        assert_eq!(creator.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            creator.mapping_puts.load(Ordering::SeqCst),
+            0,
+            "macOS must not fall back to generic put"
+        );
+        assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
+        assert_eq!(grants(&service), before_grants);
+        assert!(
+            service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|binding| !binding.enabled)
+        );
+        assert_eq!(
+            service
+                .store
+                .get::<Journal>("journal", &journal.id)
+                .unwrap()
+                .unwrap()
+                .phase,
+            "prepared"
+        );
+        let record = service
+            .store
+            .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &context.binding_id)
+            .unwrap()
+            .unwrap();
+        assert!(!record.committed);
+        assert!(
+            crate::claude_mapping::mapped_helper_token(
+                &context.binding_id,
+                &service.store,
+                creator.as_ref(),
+                chrono::Utc::now().timestamp()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            creator
+                .get_optional(&context.mapping.as_ref().unwrap().token_reference())
+                .unwrap()
+                .is_some(),
+            !deny
+        );
+    }
+}
 impl Vault for MappingReadFailureVault {
     fn get(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>> {
         if reference == self.reference {
@@ -1846,6 +1982,14 @@ fn claude_mapping_helper_modes_and_late_epoch_never_expose_the_upstream_key() {
     ensure_local_secret(&record, &binding, f.vault.as_ref()).unwrap();
     let reference = record.plan().unwrap().token_reference();
     let original_secret = f.vault.get(&reference).unwrap();
+    let mutations = f.vault.mutations.load(Ordering::SeqCst);
+    ensure_local_secret(&record, &binding, f.vault.as_ref()).unwrap();
+    assert_eq!(f.vault.mutations.load(Ordering::SeqCst), mutations);
+    assert_eq!(
+        f.vault.get(&reference).unwrap().as_slice(),
+        original_secret.as_slice(),
+        "existing authenticated token is reused without create/update/ACL migration"
+    );
     for corrupt in [b"{}".to_vec(), {
         let mut value: Value = serde_json::from_slice(&original_secret).unwrap();
         value["context_revision"] = json!(sha256(b"wrong context pin"));

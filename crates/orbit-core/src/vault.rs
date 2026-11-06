@@ -2,6 +2,9 @@ use crate::error::{Result, fail};
 use std::sync::Mutex;
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+mod macos_mapping_access;
+
 /// Only native services and the narrowly scoped helper can access this trait.
 pub trait Vault: Send + Sync {
     fn get(&self, reference: &str) -> Result<Zeroizing<Vec<u8>>>;
@@ -11,19 +14,40 @@ pub trait Vault: Send + Sync {
         self.get(reference).map(Some)
     }
     fn put(&self, reference: &str, value: &[u8]) -> Result<()>;
+    /// Create one new mapping token, with no generic put or ACL-update fallback.
+    /// Readers and legacy adapters do not acquire this capability implicitly.
+    fn create_claude_mapping_secret(&self, _: &str, _: &[u8]) -> Result<()> {
+        Err(fail("vault_unavailable"))
+    }
     fn delete(&self, reference: &str) -> Result<()>;
 }
 pub struct NativeVault {
     lock: Mutex<()>,
+    #[cfg(target_os = "macos")]
+    mapping_creator: Option<macos_mapping_access::MappingSecretCreator>,
 }
 impl Default for NativeVault {
     fn default() -> Self {
         Self {
             lock: Mutex::new(()),
+            #[cfg(target_os = "macos")]
+            mapping_creator: None,
         }
     }
 }
 impl NativeVault {
+    /// Inject immutable GUI deployment facts only. No OS or Keychain access is
+    /// performed here; the helper's default vault has no creation capability.
+    #[cfg(target_os = "macos")]
+    pub fn with_claude_mapping_creator(root: std::path::PathBuf, helper_sha256: String) -> Self {
+        Self {
+            lock: Mutex::new(()),
+            mapping_creator: Some(macos_mapping_access::MappingSecretCreator::new(
+                root,
+                helper_sha256,
+            )),
+        }
+    }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn entry(reference: &str) -> Result<keyring_core::Entry> {
         use keyring_core::api::CredentialStoreApi;
@@ -114,6 +138,21 @@ impl Vault for NativeVault {
             Err(fail("vault_unavailable"))
         }
     }
+    fn create_claude_mapping_secret(&self, binding_id: &str, value: &[u8]) -> Result<()> {
+        let _guard = self.lock.lock().map_err(|_| fail("vault_unavailable"))?;
+        #[cfg(target_os = "macos")]
+        {
+            self.mapping_creator
+                .as_ref()
+                .ok_or_else(|| fail("vault_unavailable"))?
+                .create(binding_id, value)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (binding_id, value);
+            Err(fail("vault_unavailable"))
+        }
+    }
 }
 #[derive(Default)]
 pub struct DeniedVault;
@@ -155,6 +194,22 @@ impl Vault for FakeVault {
             .lock()
             .unwrap()
             .insert(key.into(), Zeroizing::new(value.to_vec()));
+        Ok(())
+    }
+    fn create_claude_mapping_secret(&self, binding_id: &str, value: &[u8]) -> Result<()> {
+        let id = uuid::Uuid::parse_str(binding_id).map_err(|_| fail("invalid_identifier"))?;
+        if id.to_string() != binding_id {
+            return Err(fail("invalid_identifier"));
+        }
+        if value.is_empty() || value.len() > 64 * 1024 {
+            return Err(fail("invalid_secret"));
+        }
+        let key = format!("claude-map/{binding_id}");
+        let mut entries = self.entries.lock().unwrap();
+        if entries.contains_key(&key) {
+            return Err(fail("vault_unavailable"));
+        }
+        entries.insert(key, Zeroizing::new(value.to_vec()));
         Ok(())
     }
     fn delete(&self, key: &str) -> Result<()> {
