@@ -685,6 +685,21 @@ fn encode(value: Map<String, Value>) -> Result<Vec<u8>> {
 /// absent metadata file permits an empty starting profile. Existing profiles are
 /// read dependencies and never appear among the written files.
 pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
+    compile_with_timeout(plan, HelperTimeout::Current)
+}
+
+/// Only reconstruct the fixed historical output for strict journal validation.
+/// New user configurations always enter through `compile`.
+pub(crate) fn compile_legacy_helper_timeout(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
+    compile_with_timeout(plan, HelperTimeout::LegacyFiveSeconds)
+}
+
+enum HelperTimeout {
+    Current,
+    LegacyFiveSeconds,
+}
+
+fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Result<CompiledLibrary> {
     if plan.app_version != SUPPORTED_APP_VERSION
         || plan.source_member_sha256 != SOURCE_MEMBER_SHA256
     {
@@ -754,7 +769,13 @@ pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
             ]),
         ),
         ("inferenceCredentialHelperTtlSec".into(), json!(3600)),
-        ("inferenceCredentialHelperTimeoutSec".into(), json!(5)),
+        (
+            "inferenceCredentialHelperTimeoutSec".into(),
+            json!(match timeout {
+                HelperTimeout::Current => 60,
+                HelperTimeout::LegacyFiveSeconds => 5,
+            }),
+        ),
         (
             "inferenceCredentialHelperSilentRefreshEnabled".into(),
             json!(true),
@@ -873,6 +894,7 @@ mod tests {
             json!(["claude-map", BINDING])
         );
         assert_eq!(profile["inferenceModels"], json!(mapping.aliases));
+        assert_eq!(profile["inferenceCredentialHelperTimeoutSec"], 60);
         assert!(profile.get("inferenceGatewayApiKey").is_none());
         assert_eq!(compiled.mapping(), Some(&mapping));
         assert!(
@@ -955,7 +977,7 @@ mod tests {
             json!(["claude", BINDING])
         );
         assert_eq!(profile["inferenceCredentialHelperTtlSec"], 3600);
-        assert_eq!(profile["inferenceCredentialHelperTimeoutSec"], 5);
+        assert_eq!(profile["inferenceCredentialHelperTimeoutSec"], 60);
         assert_eq!(
             profile["inferenceCredentialHelperSilentRefreshEnabled"],
             true
