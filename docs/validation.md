@@ -10,6 +10,14 @@
 
 原需求把正式签名、证书安装、分发和发布留作另行授权；本目标交付可审查实现与测试候选，正式发布操作不作为本目标的完成门槛。下方按日期保留的历史“待验收”和平台门禁描述反映当时范围，当前范围以本节为准；历史失败和未验证事实不改写为通过。
 
+## 2026-11-06 受保护钥匙串的系统记录
+
+在项目内分别创建普通和受完整性保护的私有钥匙串，只使用合成数据。普通文件读回四条授权，受保护文件读回同样的四条授权，加上系统的 `Integrity` 和 `PartitionID` 记录。创建、精确属性核对和清理均成功。两份临时库已清理，User 域默认钥匙串及搜索列表在前后匹配。Apple 源码说明了系统记录的来源。 [条目完整性](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/Item.cpp#L434-L462) · [签名分区](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/localkey.cpp#L84-L97)
+
+原读回逻辑会拒绝六项样本。修正后，只在新条目的持久化读回中接受成对出现、符合已观察结构的两条系统记录，仍逐项核对四条应用授权。系统记录要求各自唯一、精确标签、NULL 应用列表、提示标记为 0 和有界十六进制内容。额外、重复、混合或格式不符的记录仍使创建失败。内存 ACL 构造及失败清理沿用原路径。
+
+独立的受保护合成库读者试验使用三个不同 ad-hoc 签名的程序。列入应用 ACL 的读者与未列入的读者都在禁用交互时返回 `-25293`，打开和解锁均成功。此结果说明仍需核验真实固定 helper 的系统分区授权及读取。隔离证据位于 `.cache/evidence/claude-helper-live-20261106/`。 [系统分区校验](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/acls.cpp#L111-L184)
+
 ## 2026-11-06 新候选在保存前返回安全存储错误
 
 本机运行 `b95c6f7707e091c6fb4052db0572598e8297f16e` 候选，用户在 macOS 系统窗口允许 Orbit 本次访问。专用账户模型目录随后加载，Claude Desktop `4.4212.0` 的 Los Angeles 01 / `gpt-6-luna` 脱敏预览已生成，加密备份处于 `prepared`。用户确认写入范围后，首次保存只观察到预览失效提示。按已确认范围仅续新临时 UUID 和端口，核对冻结的账户、连接、节点、模型、配置目标与原文件摘要后再次保存。关闭失效弹窗后看到此次操作的具体错误 `vault_unavailable`。弹窗在任意保存失败后都会标为失效，因此该提示无法区分真正过期与其他错误。
