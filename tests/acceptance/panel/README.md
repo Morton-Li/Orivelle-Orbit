@@ -1,50 +1,52 @@
 # 本地 Panel 授权验收
 
-临时环境运行真实 Panel、PHP-FPM、MySQL、队列及 Scheduler。Orbit 原生 Service 走真实 HTTPS、Web 登录与明确同意、PKCE、安装证明、自动 key 交付及撤销。Vault 和客户端路径使用项目内 fixture，不启动桌面应用。
+这项可选集成测试在本机 Docker 中运行 Panel、PHP-FPM、MySQL、队列与调度器。Orbit Service 经隔离 HTTPS 入口验证网页登录、同意授权、PKCE、安装证明、安装关联 key 的交付和撤销。Web 驱动使用合成账户，Vault 使用内存实现，客户端路径使用测试夹具。节点保持离线，证据范围限于 Panel 授权和 API 合同。
 
-此环境不运行 Edge、Sub2api 网关或推理上游。节点记录保持离线，目录负例是非公开模型过滤；不能据此声称成员权限矩阵、推理计费、浏览器界面、候选 GUI 登录或真实客户端载入通过。
+## 准备
 
-## 准备和启动
+在 macOS 上准备 Node、满足 Panel Composer 平台要求的 PHP 和 Composer、支持 `req -addext` 的 OpenSSL、Command Line Tools，以及本地 Docker Desktop。运行脚本使用 `/usr/local/bin/docker`、`desktop-linux` 的本地 Unix socket 与 Docker Desktop 自带的 Compose 插件。
 
-使用已准备的 Node、PHP/Composer、OpenSSL、Docker Desktop，以及任务自己的 Panel `vendor`、`node_modules` 缓存。准备脚本固定 Git 提交，先核对锁文件并拒绝越界链接，再在新快照中离线整理 Composer 依赖、构建静态资源。它不读取 Panel `.env`，也不安装全局工具。
+需要能访问对应的 Panel 源码与已准备的 `vendor/`、`node_modules/`。设置以下参数后，从 Orbit 仓库根目录运行命令。
 
-从 Orbit 任务 worktree 执行：
+- `panel_repo` 指向含桌面授权接口及相应迁移的 Panel 仓库，`panel_ref` 为选用的完整 40 位小写 Git 提交。
+- `cached_panel` 指向准备好的 Panel 依赖目录。该目录须同时包含与 `panel_ref` 一致的 `composer.lock`、`package-lock.json`。
+- `php_base` 使用满足 Panel 运行要求、提供 `docker-php-ext-install` 的 PHP-FPM 基础镜像，按 `镜像名@sha256:摘要` 固定。MySQL 和 Caddy 镜像由 Compose 配置固定。[Compose 文件](compose.yml)
+- 两个端口均需空闲，并可改为不同的 1024 至 65535 端口。
 
 ```sh
 node tests/acceptance/panel/prepare.mjs \
-  --panel-repo ../../../Panel --cached-panel ../Panel \
-  --panel-ref 01d8f67a5af6ba189c933a6f214de5ecfb8010e3 \
-  --php-base docker.m.daocloud.io/library/php@sha256:ff1aaac1e7832d2cfbf5b28bc1699e41e2fbeaad1be04f4245eb98d4c081fbeb \
+  --panel-repo "$panel_repo" --cached-panel "$cached_panel" \
+  --panel-ref "$panel_ref" --php-base "$php_base" \
   --port 59443 --wrong-san-port 59444
 ```
 
-准备脚本输出新建的 `run` 路径。将它设为任务变量 `orbitAcceptanceRun`，然后启动：
+脚本归档指定提交，核对锁文件和依赖链接，在项目内新快照中离线整理 Composer 依赖并构建静态资源。环境文件、合成凭据和测试证书独立生成，保存在忽略目录 `.cache/panel-acceptance/`。其中的输入文件、私钥和原始日志只供本次本地测试使用。
+
+## 执行
+
+将准备脚本输出的绝对 `run` 路径赋给 `orbit_acceptance_run`，启动独立环境。
 
 ```sh
-node tests/acceptance/panel/run.mjs setup "$orbitAcceptanceRun"
+node tests/acceptance/panel/run.mjs setup "$orbit_acceptance_run"
 ```
 
-端口仅绑定 `127.0.0.1`；PHP 和数据库只加入内部网络，TLS 入口另有专用发布网络。Docker 客户端配置和构建缓存保存在项目内，所有资源都有独立项目名及归属标签。随机合成密码、环境文件和证书私钥位于受保护的忽略目录，不输出到报告。
+容器端口只发布到 `127.0.0.1`。初始化在本次专用 MySQL 库中执行固定迁移，创建合成用户、模型和离线节点，安装与 key 由授权流程产生。
 
-初始化只接受新专属 MySQL 库及固定迁移的精确默认记录，随后建立一个合成用户、两个模型和一个离线节点。安装、桌面会话、推理 key、上游账户和消费记录均不预造；安装与 key 必须由真实授权流程产生。失败记录保留，不清库重做来隐藏失败。
-
-## 执行和证据
-
-先按原生构建文档使用已准备工具链及项目 Cargo 缓存。独立复核后，仅执行这个完整名称的 ignored 入口，不能批量运行其他系统集成测试：
+按[原生开发指南](../../../docs/build-candidates.md)准备工具链和项目缓存，再运行 macOS 上的这一条 `ignored` 用例。
 
 ```sh
-ORBIT_PANEL_ACCEPTANCE_INPUT="$orbitAcceptanceRun/native-input.json" \
+export CARGO_HOME="$PWD/runtime/cargo-home"
+export CARGO_TARGET_DIR="$PWD/runtime/target"
+ORBIT_PANEL_ACCEPTANCE_INPUT="$orbit_acceptance_run/native-input.json" \
   cargo test --locked --offline -p orbit-core --lib \
   service::tests::panel_acceptance::real_local_panel_pkce_key_permissions_and_revocation \
   -- --ignored --exact --nocapture --test-threads=1
 ```
 
-入口仅在 macOS 测试编译中存在。测试专用 HTTP 实例限定单一 hostname、回环解析和项目 CA，保留证书链与主机名验证，拒绝错误 CA、错误 SAN 和其他 origin。Web driver 只在内存中处理本次合成账户 Cookie，检查两次 CSRF 拒绝，并在发送回调前匹配本次实际 listener；不从网页提取推理 key。
+测试仅把隔离 hostname 解析到回环地址，使用本次的 CA，并校验证书链、主机名和 origin。用例同时检查错误 CA、错误 SAN 与 CSRF 拒绝。`source-manifest.json` 记录后端提交、锁文件与静态资源摘要，`runtime-setup.json` 记录初始化结果。原生子目录中的 `report.json` 只在用例完整成功后写入。
 
-`source-manifest.json` 记录后端提交、锁文件及静态资源摘要；`runtime-setup.json` 记录初始化结果。原生子目录的 `report.json` 仅在完整成功后写入。保留失败日志、源码摘要和具体未验收项，不将组件证据升级为真实桌面或上线验收。
-
-结束后清理本次标签核对通过的容器、网络和数据卷，保留项目内证据及镜像缓存：
+结束后用同一运行目录清理本次容器、网络和数据卷。脚本按 Compose 项目名与归属标签核对范围，证据和镜像仍可用于复核。
 
 ```sh
-node tests/acceptance/panel/run.mjs cleanup "$orbitAcceptanceRun"
+node tests/acceptance/panel/run.mjs cleanup "$orbit_acceptance_run"
 ```

@@ -1,67 +1,35 @@
-# Codex 完整模型目录编译
+# Codex 模型目录与接入
 
-`orbit_core::codex_catalog::compile` 将明确的模型映射编译为完整的 Codex 目录 JSON。它是纯函数；账户授权、配置写入和真实客户端载入分别需要自己的合同与证据。
+Orbit 根据当前 Orivelle 账户、节点和模型权限生成 Codex 用户模型目录，并将目录与用户配置作为一组文件管理。客户端的保存资格、确认与恢复流程见[桌面配置](desktop-configuration.md)。
 
-## 固定来源
+## 固定版本与来源
 
-本阶段只接受 CLI `0.163.0-alpha.10.2`，固定官方标签 `rust-v0.163.0-alpha.10.2` 对应的提交 `4ebc485ca321243727539187169425fcf972f2c4`。完整原始目录为 472072 字节，SHA-256 为 `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`，含 11 个条目、50 种原始字段。
+当前原生保存目标是 macOS Apple Silicon 上的 Codex Desktop `26.1013.40934`，捆绑 CLI `0.163.0-alpha.10.2`，目录版本标识为 `codex-cli-0.163.0-alpha.10.2`。Orbit 核验已安装应用和 CLI 的签名、固定资源摘要与用户配置根。Windows 自动保存与恢复仍待适配。
 
-原件、Apache-2.0 `LICENSE`、完整 `NOTICE` 和来源清单保存在 [`crates/orbit-core/resources/codex/0.163.0-alpha.10.2/`](../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json)。模板包含完整指令、工具、上下文、reasoning 和嵌套元数据；只列模型 ID 不能替代这些内容。原件不修改，新版本应增加独立来源固定、合同复核和测试，不能安装时动态追踪 latest。候选打包将三份许可证/来源材料映射到固定资源路径，并在实际包和 ZIP 解包副本中逐项核对，见[候选打包](build-candidates.md)。
+编译器使用官方标签 `rust-v0.163.0-alpha.10.2` 对应提交的完整原始模型目录，保留工具、上下文、指令和嵌套元数据。升级时为新版本建立独立来源记录，核对模板与客户端合同，并更新编译及配置测试。
 
-2026-10-21 仅只读检查公共安装包：Desktop `26.1013.40934` 捆绑该 CLI，内嵌目录与官方原件只差末尾 LF。证据在项目忽略目录 `.cache/evidence/codex-catalog-readonly-provenance-20261021.json`。Desktop 可选择其他 CLI 或 daemon，因此安装包相符不能证明运行实例的来源、有效配置或载入状态。
+启用应用打包时，`licenses/codex/0.163.0-alpha.10.2/` 资源路径保留三份第三方资料。来源清单记录原始目录、版本与 SHA-256。[Apache-2.0 许可证](../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/LICENSE)、[NOTICE](../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/NOTICE)、[来源清单](../crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json)
 
-[OpenAI 官方部署说明](https://learn.chatgpt.com/docs/enterprise/roll-out-a-gateway)要求桌面部署匹配捆绑 CLI 的目录，并为自定义别名提供完整元数据。使用本地 `model_catalog_json` 时会替换内置目录，修改后需要重启。此函数不写入该设置。
+## Panel 绑定与目录生成
 
-## 输入与生成规则
+Panel 在获准模型投影中提供可选的 `codex_catalog_binding`。管理员为支持公开 `openai.responses` 的文本模型显式指定 `profile_id` 和 `template_slug`，模板限于固定目录的八个可见主模型。省略绑定字段保留原值，显式 `null` 清除。账户出口将合法绑定标为 `declared`，将损坏或已不合格的绑定标为 `unavailable`，两者均为 `verified: false`。无绑定的模型仍可按原有权限用于其他功能。
 
-`CatalogPlan` 的版本、来源 hash、授权别名和辅助依赖均由调用方声明。编译器验证这些声明内部一致，但不会授予账户权限，也不会验证上游模型、实际路由、工具能力或组织策略。生产调用方仍需从当前账户和节点权限获得可信映射，不能按模型显示名猜测模板。
+Orbit 读取当前账户和节点的模型，在所选供应商范围内按 Panel 顺序保留兼容的显式主模板绑定。有效推理档位取模板、Panel 支持集合及成员限制的交集，保留模板的顺序和完整选项。目录要求 Panel 提供有效的默认档位，并保留模板要求的多代理档位。所选模型必须符合这些条件，才能作为默认模型写入 `model`。超出条目或输出限制时拒绝整组。
 
-- `authorized_aliases` 是允许集合；`mappings` 是本次要生成的准确子集，允许不输出其他获准模型。空映射、重复或无效别名、未获准的输出、未知模板均拒绝。
-- `default_alias` 必须映射为可见的主模型。它作为编译结果独立返回，供后续显式设置配置中的 `model`；目录 priority 保持原样，不能据此声称已改变客户端默认模型。
-- 每个映射保留完整原始对象，包括未知字段与完整嵌套值。仅修改 `slug`、将 `upgrade` 设为 `null`、按明确限制收窄 reasoning，以及将辅助模型的 `visibility` 设为 `hide`。原来隐藏的模板不会被提升为可见。
-- 辅助依赖必须显式指向已映射且获准的辅助条目，形成从主模型可达的无环图；缺失、重复、孤立或循环依赖拒绝。非空 `auto_review_model_override` 保留原引用，要求相同别名和模板的明确辅助映射，不能让引用落回其他目录。
-- `allowed_efforts` 与模板选项取交集，保留官方顺序及每个完整选项。交集为空、默认 effort 不在交集内，或移除了模板的 `multi_agent_reasoning_effort`，均拒绝；移除原默认值时必须明确提供替代值。输入列表中的其他 effort 不会新增能力。
+目录编译器保留模板的未知字段及嵌套结构，替换 `slug`，清空 `upgrade`，并应用明确的推理档位限制。辅助项须是显式授权、从主模型可达的无环依赖，并在目录中隐藏。保留的 `auto_review_model_override` 要求同名、同模板的辅助绑定。当前 Panel 作用域规划只生成主模型，辅助能力需另行核实。[目录编译源码](../crates/orbit-core/src/codex_catalog.rs)、[作用域规划源码](../crates/orbit-core/src/codex_binding.rs)
 
-辅助图只覆盖调用方声明和已识别的元数据引用。固定版本的 Guardian 选择逻辑在没有 override、也没有首选辅助条目时会回落到父模型，不应据此自动添加 `codex-auto-review`。其他配置、功能开关、插件或运行路径需要调用方另行核实，编译成功不表示所有隐式辅助请求都已覆盖。[固定版本选择逻辑](https://github.com/openai/codex/blob/4ebc485ca321243727539187169425fcf972f2c4/codex-rs/ext/guardian-reviewer/src/model.rs)
+## 用户配置写入与恢复
 
-上限为 256 个授权别名、64 个输出条目、每个名称 128 字节、合计 256 条依赖、每项 16 个 reasoning 选择和 1 MiB 输出。序列化写入时检查输出字节上限，失败不返回部分目录。生成结果包含目录字节、SHA-256、明确的默认别名和主/辅助别名列表；公开错误只返回固定错误码，不回显完整模板或输入内容。
+在接入页选择 Codex 模型并生成预览。预览展示目录来源、路径、摘要、别名和默认推理档位。应用前刷新账户、节点和模型信息，重新检查写入资格，并在账户锁内重新编译。配置目标、组织策略、本地写入资格、凭据或同作用域模型变动后，需要重新预览。
 
-## Panel 显式绑定
+确认后，Orbit 通过事务日志管理两份文件，先写入 `~/.codex/orivelle-orbit.models.json`，再更新同目录的 `config.toml`。TOML 写入独立的 `orivelle_orbit` Responses provider、命令凭据 helper，以及 `model`、`model_provider`、`model_catalog_json` 和 `model_reasoning_effort`。存在 `profile` 选择或 profile 中覆盖这些字段时，Orbit 停止自动写入。Codex CLI 和 IDE 可能共用该用户配置，保存后需完整重启目标应用。
 
-Panel 的可选 `provider_models.codex_catalog_binding` 只保存 `profile_id` 和 `template_slug`。固定注册表将 `codex-cli-0.163.0-alpha.10.2` 展开为上述 CLI 版本与原始目录摘要，模板只开放八个原本可见的主模型。它不复制完整模板，不按供应商型号或显示名推断映射，也不给辅助模型增加授权。
+配置版本同时绑定两份文件的存在状态与内容摘要。恢复时选择原账户和 Panel，核验原安装身份、配置目标和适用策略，并在检查整组文件后还原原始字节。发现外部写入冲突时停止。退出后仍可在原安装身份有效时恢复文件，helper 授权继续受当前凭据状态约束。
 
-绑定沿用现有模型编辑权限、行锁和审计事务；仅允许公共供应商的 text 模型、公开调用范围、明确的 `openai.responses` 能力与不超过 128 字节的有效公共别名。省略字段保留原值，显式 `null` 清除；绑定本身不启用模型、不改价格或授予权限。最终有效行不满足条件时拒绝绑定写入；失效旧值允许清除。
+## 运行来源与验证
 
-账户出口在原有账户、组、成员与模型过滤之后投影绑定：未配置为 `null`；合法声明为 `state: declared`、`verified: false`，附固定 profile、CLI、来源摘要和模板；未知、损坏或已不合格的值仅为 `state: unavailable`、`verified: false`，不回显存储原文。声明不是运行实例或上游能力证明。reasoning 的支持集合、成员允许集合与默认值仍以原有策略为准；其 `revision` 是 `null` 或成员版本整数，不能按字符串摘要猜测转换。
+已安装目标收据用于核验写入路径和版本。实际运行来源还取决于 Desktop 选择的 CLI 或 daemon、启动环境、有效配置根与进程连接。运行来源的核验范围是本机 backend，前台选中的远端 host 属于另一作用域。
 
-该合同的 Panel 源码为 `afbfe38a83668e8473e7b1dbc85410a1eea7c20e`，已显式合入本地 develop `19d74cc7cbea49d73c3b4cab9139bb805dd886db`。专项隔离 MySQL、受影响 CI 分组、前端与构建验收记录保存在 Panel 的 `storage/framework/testing/orbit-codex-binding-evidence/`；它们只证明该 Panel 快照的声明出口，Orbit 消费与真实客户端载入分别需要自己的证据。
+运行来源判定只在 macOS 测试中编译，使用合成启动参数、环境、签名、进程身份、配置根和 stdio 连接。[运行来源判定源码](../crates/orbit-core/src/codex_runtime.rs)
 
-## 作用域规划
-
-`orbit_core::codex_binding` 规范化账户出口，再由纯函数 `compile_scope` 编译目录。旧出口未带绑定时保持 `null`，损坏绑定只投影为不可用；推理策略必须保留支持集合、成员限制、明确默认值及真实的整数或空版本。它们不会阻止模型的其他用途，旧 `reasoning_efforts` 仍保留原有语义。
-
-调用方必须提供已经按当前账户、节点和 provider 过滤的模型；规划器不从 UI 接收模板或授权声明。只输出同 provider 下 text、Responses、明确主模板绑定、已知 reasoning 支持与明确有效默认值的模型，顺序沿用 Panel。所选 alias 是目录的显式默认；其他未知或不兼容模型不猜测、不输出，所选模型不合格则整次规划失败。接线层要求 Panel 的默认 effort 非空并仍在有效交集中；通用纯编译器允许沿用模板默认的能力不能替代这一要求。
-
-作用域摘要包含 origin、账户、安装、连接及其版本、授权 epoch、凭据版本、节点、provider、目录版本、所选模型、全部该范围模型的原始版本与规范化声明/策略，以及编译输出摘要。因此其他菜单项或作用域变化也会使旧预览失效。重复 alias、目录条目数量或编译输出上限超出时整组拒绝，不截断目录。摘要是比较冻结输入的一致性工具，不是新增授权或实际运行来源证明。
-
-## 联合配置与恢复
-
-Service 从当前账户、节点和 provider 的完整模型范围规划目录，预览仅向 UI 展示来源、摘要、路径、默认别名、reasoning 默认值和别名列表；完整模板及 journal 内容不经 IPC 返回。UI 只能提交单次 `preview_id` 和确认，不能提供模板、运行来源或授权材料。Panel 的 `verified: false` 声明与独立的 runtime 状态分别展示。
-
-预览与应用入口先检查项目授权、已安装配置目标及本地用户配置写入资格，再刷新 bootstrap 和完整模型出口；bootstrap 刷新后重新检查节点、权限、密钥与连接版本。提交在账户锁内重编译整个目录，比较完整范围及输出，不能只复核所选模型。配置目标、写入资格、策略或范围变化会永久退役旧预览，恢复原状态也不能复活它。运行来源保持独立；保存不要求客户端已经运行。
-
-目录固定为配置同目录下的 `orivelle-orbit.models.json`。一次 journal 先发布目录，再发布 `config.toml`，将 `model`、`model_provider`、`model_catalog_json` 和 `model_reasoning_effort` 设置为本次明确结果，并沿用现有 helper 的认证合同。两个文件的存在状态和摘要共同构成配置版本；任一外部修改均使旧证据失效。指定 `profile` 或 profile 内覆盖上述字段时拒绝自动修改并要求人工核查。保留的 plan mode、其他配置文件、CLI/daemon 选择及其他 runtime 路径尚未全部验证，不能据此声称所有 reasoning 请求均受本配置覆盖。
-
-新版加密 journal 冻结完整 actor、安装、连接、授权 epoch、凭据、节点、provider、模型声明与策略、来源与输出摘要、明确默认值、固定双路径、已安装配置目标及本地写入资格。Vault 读取返回后复查配置目标和写入资格；解密后、每个文件写入前、授权启用前及提交恢复状态前复核完整上下文。先检查全部文件，发现第三种外部状态则不覆盖任何文件。旧 runtime 上下文不能自动取得新版保存权限。人工恢复只还原原始双文件字节，仍要求原 owner、固定路径、当前配置目标和策略；退出或推理密钥丢失后可恢复原文件，但不会复活旧 helper 授权。Claude 诊断导出也排除两个 Codex 目标，不能绕过 journal 覆盖目录。
-
-生产 `CodexRuntimeSnapshot` 当前始终为 `unverified`，正向运行来源只存在于编译隔离的合成测试中。2026-10-22 用户配置保存改用独立的已安装目标合同，不再以活跃运行来源为前置。安装包版本、Panel 声明或 UI 状态仍不能构造已验证的运行身份；实际保存与恢复另行取得文件和 Vault 证据。
-
-2026-10-21 新增的[本机来源纯判定层](codex-runtime.md)仅在 macOS 测试编译中使用，8 项专项通过；六条双语文案明确本机 backend 的范围。该历史阶段收尾后按用户要求暂停。恢复后的采集研究分支独立保留，未合入当前保存主线。
-
-## 目录接线阶段证据（2026-10-21）
-
-项目内测试使用合成映射，验证模板保留、权限子集、引用、reasoning 与资源上限；作用域规划专项 10/10、双文件接线专项 10/10，以及导出目标保护的受影响 1/1 通过。最终完整 core128/helper1、rustfmt、helper 编译和 default/system typed check 通过；普通回归中的独立 signer 入口仍为 1 ignored，本阶段没有重复执行。前端完整质量链的 44/44 单测和 4/4 受影响浏览器用例通过，其他 11 项无变更流程未重跑。首轮浏览器在沙箱内启动阶段报告 SIGABRT，清理时报告 kill EPERM，四项页面断言未执行，原日志保留；成功运行使用项目内 profile 和 mock keychain。
-
-该历史阶段的最终源码、实际 argv、源码前后摘要、日志、历史失败及本地提交/合并记录见项目忽略目录 `.cache/evidence/codex-config-catalog-20261021/`。该阶段没有启动 Desktop、helper 或 Orbit GUI，没有读取用户认证资料、修改真实配置、调用系统安全存储或发送推理请求。后续保存合同的检查及原生证据分别见[验证记录](validation.md)。
-
-Panel 声明与目录编译不证明运行实例的 CLI 选择；组织远端策略仍为未知。用户配置保存使用独立的已安装配置目标与本地写入门禁，见[桌面用户配置合同](desktop-configuration.md)，不会生成 `loaded_evidence` 或 `connection_evidence`，也不代表模型菜单、流式或工具调用已经验收。历史 `42900ddd` Mac 候选不包含本模块；新候选必须以 `runtime/logs/candidate-manifest.json` 和来源材料阶段交付清单的完整源码、实际包/ZIP 摘要及三文件回读结果为准，构建不能替代运行验收。
+生产运行来源保持 `unverified`。保存完成后状态为待重启，实际载入、模型选择与连接须分别取得客户端证据。当前验收范围见[验证指南](validation.md)。
