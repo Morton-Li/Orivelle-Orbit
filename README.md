@@ -4,7 +4,7 @@
 
 Orbit 固定对接生产 Panel `https://orivelle.powerbyte.io`，不提供手填地址或运行时覆盖入口，取得桌面账户会话、安装关联 key、账户信息、获准节点和模型。Panel 是权限、预算与结算的权威；桌面配置和图片请求使用 Panel 返回的现有节点地址，推理由 Edge 执行。
 
-当前为项目内开发候选。目标平台为 **Windows 11 25H2 x64**、**macOS 15+ Apple Silicon**；平台支持必须以真实系统验收为准。macOS Intel 已移除。Linux、Windows ARM64和移动端不在范围内。
+当前为项目内开发候选。按 2026-11-06 用户最新确认，本目标只在当前办公 Mac（**macOS 26.7.1、Apple Silicon / arm64**）验收；Windows、macOS 15 最低版本及其他环境测试不再作为完成门槛。现有 Windows 构建配置保留，但不表示已验证支持；当前 Mac 的结果也不外推到其他系统或架构。macOS Intel 已移除。Linux、Windows ARM64和移动端不在范围内。
 
 开发使用已经准备好的 Node 24.18.0、npm 11.16.0、Rust 1.97.1，以及相应平台构建工具。版本和依赖分别固定在 `.node-version`、`rust-toolchain.toml`、`package-lock.json`、`Cargo.lock`。不使用动态 latest。
 
@@ -19,10 +19,10 @@ npm 使用项目 `.npmrc` 中的 npmmirror；锁文件内 npmjs 下载地址按 
 
 普通 debug 构建采用项目内数据和测试配置根，并拒绝真实系统安全存储。真实客户端配置、原生安全存储以及实际桌面接入测试需明确授权。浏览器和 fake gateway 测试分别是界面、合同证据，不能替代客户端或平台验收。
 
-配置应用按客户端独立预览、确认和恢复。保存后显示待重启/载入未确认；只有匹配配置、应用版本和连接上下文的实际证据才能确认载入或连接。Claude 固定版本的[本地配置库合同](docs/claude-configuration.md)、写入资格、三文件事务及 Service 的预览、确认、重开恢复已接通，并通过项目内隔离往返测试。退出账户后仍可恢复原配置，失效的旧 helper 授权不会复活；真实 Desktop 载入与连接仍待验收。旧导出仅为配置诊断候选，不表示可直接导入，也不改变客户端的保存、载入或连接状态。
+配置应用按客户端独立预览、确认和恢复。保存后显示待重启/载入未确认；只有匹配配置、应用版本和连接上下文的实际证据才能确认载入或连接。Claude 固定版本的[本地配置库合同](docs/claude-configuration.md)、写入资格、三文件事务及 Service 的预览、确认、重开恢复已接通。最新候选已在本机 Claude Desktop `4.4212.0` 完成一次真实 Code Read，并通过 GUI 保留后续偏好、恢复原接入；metadata 原权限由单独步骤补回。该结果不代表全部角色、流式及错误流程已验收。退出账户后仍可恢复原配置，失效的旧 helper 授权不会复活。Codex 按用户要求跳过验证，不操作其配置。旧导出仅为配置诊断候选，不表示可直接导入，也不改变客户端的保存、载入或连接状态。
 
 图片请求复用 Edge 严格 JSON 合同。异常后不自动重发；已收到的本地保存材料可以仅重试本地保存。没有服务器图片结果恢复、生成去重、幂等或成功结果重放。执行记录和结算状态以 Panel 为权威，金额以十进制字符串展示。
 
 详见 [实施与安全合同](docs/implementation.md)、[验证记录与环境门禁](docs/validation.md)、[原生检查与候选打包](docs/build-candidates.md)。正式签名、发布、公钥与更新渠道配置另行授权。
 
-macOS arm64 已生成可审查的 `.app` 和 ZIP 构建候选，位于 `runtime/candidates/`；`runtime/logs/candidate-manifest.json` 记录源码、helper、整个应用包和归档的摘要与回读结果。候选仅有 linker ad-hoc 签名，未启用正式证书或更新渠道。它已完成构建与静态核查，真实运行、客户端配置和系统安全存储按明确授权范围分别验收并记录。
+macOS arm64 已生成可审查的 `.app` 和 ZIP 构建候选，位于 `runtime/candidates/`；`runtime/logs/candidate-manifest.json` 记录源码、helper、整个应用包和归档的摘要与回读结果。候选仅有 linker ad-hoc 签名，未启用正式证书或更新渠道。实际候选来源、运行、系统安全存储及限定的 Claude 验收见[验证记录](docs/validation.md)；文档后续提交不改变已运行候选的源码身份。
