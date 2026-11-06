@@ -416,23 +416,60 @@ impl Http {
                 *value = Some((status, request_id.clone()));
             }
         }
-        if response.content_length().is_some_and(|len| len > limit) {
-            return Err(fail("response_too_large"));
-        }
-        let mut bytes = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| fail("result_unconfirmed"))?;
-            if (bytes.len() as u64).saturating_add(chunk.len() as u64) > limit {
-                return Err(fail("response_too_large"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
         Ok(RemoteResponse {
             status,
             request_id,
-            bytes,
+            bytes: bounded_response_body(response, limit).await?,
         })
+    }
+
+    pub(crate) async fn get_update(
+        &self,
+        mut url: Url,
+        accept: &str,
+        limit: u64,
+        timeout: Duration,
+        allow_redirect: impl Fn(&Url, &Url) -> bool,
+    ) -> Result<RemoteResponse> {
+        const MAX_REDIRECTS: usize = 3;
+        self.validate_url(url.as_str())?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        for redirects in 0..=MAX_REDIRECTS {
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| fail("update_request_failed"))?;
+            let response = self
+                .client
+                .get(url.clone())
+                .header(reqwest::header::ACCEPT, accept)
+                .timeout(remaining)
+                .send()
+                .await
+                .map_err(|_| fail("update_request_failed"))?;
+            let status = response.status().as_u16();
+            if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+                return Ok(RemoteResponse {
+                    status,
+                    request_id: None,
+                    bytes: bounded_response_body(response, limit).await?,
+                });
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| fail("invalid_update_redirect"))?;
+            let next = url
+                .join(location)
+                .map_err(|_| fail("invalid_update_redirect"))?;
+            self.validate_url(next.as_str())?;
+            if redirects == MAX_REDIRECTS || !allow_redirect(&url, &next) {
+                return Err(fail("invalid_update_redirect"));
+            }
+            url = next;
+        }
+        Err(fail("invalid_update_redirect"))
     }
     pub async fn panel<T: DeserializeOwned>(
         &self,
@@ -529,6 +566,22 @@ impl Http {
         Ok(envelope)
     }
 }
+async fn bounded_response_body(response: reqwest::Response, limit: u64) -> Result<Vec<u8>> {
+    if response.content_length().is_some_and(|len| len > limit) {
+        return Err(fail("response_too_large"));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| fail("result_unconfirmed"))?;
+        if (bytes.len() as u64).saturating_add(chunk.len() as u64) > limit {
+            return Err(fail("response_too_large"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 pub struct RemoteResponse {
     pub status: u16,
     pub request_id: Option<String>,
@@ -783,6 +836,48 @@ mod tests {
             ]
         );
     }
+    #[tokio::test]
+    async fn update_get_follows_only_allowed_redirects_and_keeps_the_body_bound() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (path, response) in [
+                (
+                    "/latest",
+                    "HTTP/1.1 302 Found\r\nLocation: /asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                ),
+                (
+                    "/asset",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nprobe",
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let count = stream.read(&mut bytes).await.unwrap();
+                let headers = String::from_utf8_lossy(&bytes[..count]);
+                assert!(headers.starts_with(&format!("GET {path} ")));
+                assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let url = Url::parse(&format!("http://{addr}/latest")).unwrap();
+        let response = Http::fixture()
+            .get_update(
+                url,
+                "application/octet-stream",
+                4,
+                Duration::from_secs(1),
+                |from, to| {
+                    from.path() == "/latest"
+                        && to.path() == "/asset"
+                        && from.origin() == to.origin()
+                },
+            )
+            .await;
+        assert!(matches!(response, Err(error) if error.code == "response_too_large"));
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn post_redirect_never_resends_credentials_or_generation() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
