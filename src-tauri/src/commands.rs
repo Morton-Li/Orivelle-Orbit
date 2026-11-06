@@ -323,17 +323,23 @@ pub async fn export_claude_import(
     Ok(Saved { saved: true })
 }
 #[tauri::command]
-pub fn preview_restore(native: State<'_, Native>, request: Backup) -> Result<ConfigPreview> {
-    native.service.preview_restore(&request.backup_group_id)
+pub async fn preview_restore(native: State<'_, Native>, request: Backup) -> Result<ConfigPreview> {
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || service.preview_restore(&request.backup_group_id))
+        .await
+        .map_err(|_| fail("state_unavailable"))?
 }
 #[tauri::command]
-pub fn restore_client_config(
+pub async fn restore_client_config(
     native: State<'_, Native>,
     request: Confirmation,
 ) -> Result<ConfigResult> {
-    native
-        .service
-        .apply_client_config(&request.preview_id, request.confirmed, true)
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.apply_client_config(&request.preview_id, request.confirmed, true)
+    })
+    .await
+    .map_err(|_| fail("state_unavailable"))?
 }
 #[tauri::command]
 pub async fn select_image_inputs(
@@ -607,6 +613,42 @@ async fn install_verified_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_commands_keep_async_results_and_closed_request_schema() {
+        async fn preview_signature(
+            native: State<'_, Native>,
+            request: Backup,
+        ) -> Result<ConfigPreview> {
+            preview_restore(native, request).await
+        }
+        async fn restore_signature(
+            native: State<'_, Native>,
+            request: Confirmation,
+        ) -> Result<ConfigResult> {
+            restore_client_config(native, request).await
+        }
+        let _ = (preview_signature, restore_signature);
+        assert!(
+            serde_json::from_value::<Backup>(
+                serde_json::json!({"backup_group_id":"synthetic-backup"})
+            )
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<Confirmation>(
+                serde_json::json!({"preview_id":"synthetic-preview","confirmed":true})
+            )
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<Backup>(
+                serde_json::json!({"backup_group_id":"synthetic-backup","path":"/unexpected"})
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_value::<Confirmation>(serde_json::json!({"preview_id":"synthetic-preview","confirmed":true,"path":"/unexpected"})).is_err());
+    }
 
     #[test]
     fn production_panel_login_empty_request_rejects_caller_selected_origin() {
