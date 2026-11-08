@@ -366,6 +366,15 @@ try {
     "Orbit WebView2, native settings, diagnostics and Windows platform gates verified.",
   );
 } catch (error) {
+  console.error(
+    "Panel fixture request counts:",
+    Object.fromEntries(fixture.requests),
+  );
+  const notice = await page
+    ?.locator(".toast")
+    .textContent({ timeout: 1_000 })
+    .catch(() => null);
+  if (notice) console.error("Orbit UI notice:", notice);
   await page
     ?.screenshot({ path: path.join(evidence, "failure.png"), timeout: 5_000 })
     .catch(() => {});

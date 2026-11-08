@@ -120,6 +120,8 @@ export async function startPanelFixture() {
           assert.equal(callback.search, "");
           assert.equal(installation.code_challenge_method, "S256");
           assert.equal(installation.client_id, "orivelle-orbit");
+          wire.bootstrap_reply.data.meta.installation_id =
+            installation.installation_id;
           approved = false;
           reply(response, {
             data: {
