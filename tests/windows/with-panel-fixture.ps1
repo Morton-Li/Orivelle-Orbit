@@ -1,5 +1,3 @@
-param([string]$Executable)
-
 $ErrorActionPreference = 'Stop'
 if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') {
     throw 'Run the Panel fixture on a GitHub-hosted Windows x64 runner.'
@@ -51,11 +49,7 @@ try {
     }
     $env:NO_PROXY = "$panelHost,127.0.0.1,localhost"
 
-    $desktopArguments = @('tests/windows/desktop.mjs')
-    if ($Executable) {
-        $desktopArguments += (Resolve-Path -LiteralPath $Executable).Path
-    }
-    & node @desktopArguments
+    node tests/windows/desktop.mjs
     if ($LASTEXITCODE -ne 0) {
         throw "Windows desktop integration failed with exit code $LASTEXITCODE."
     }
