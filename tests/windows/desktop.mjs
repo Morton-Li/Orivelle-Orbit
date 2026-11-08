@@ -158,6 +158,14 @@ async function exerciseImages(page, navigation) {
   assert((fixture.requests.get("GET /api/v1/orbit/bootstrap") ?? 0) >= 2);
   await navigation.getByRole("link", { name: "接入", exact: true }).click();
   await page.locator("#access-node").selectOption(fixture.nodeId);
+  const configPreviews = page.getByRole("button", {
+    name: "预览配置",
+    exact: true,
+  });
+  assert.equal(await configPreviews.count(), 2);
+  for (const preview of await configPreviews.all()) {
+    assert(!(await preview.isEnabled()));
+  }
   await navigation
     .getByRole("link", { name: "图片工作台", exact: true })
     .click();
@@ -199,7 +207,7 @@ async function exerciseImages(page, navigation) {
     .first()
     .click();
   await page.getByRole("button", { name: "编辑图片", exact: true }).waitFor();
-  await page.getByRole("button", { name: "移除参考图", exact: true }).click();
+  await page.getByRole("button", { name: /^移除参考图: / }).click();
   const reference = path.join(profile, "reference.png");
   await writeFile(reference, fixture.png);
   await fileDialog(
@@ -258,7 +266,15 @@ async function revokeAndLogout(page, navigation) {
     fixture.requests.get("POST /api/v1/orbit/sessions/current/revoke"),
     1,
   );
-  console.log("Inference credential revocation and logout verified.");
+  await page.getByRole("button", { name: "忘记此安装", exact: true }).click();
+  const forget = page.getByRole("dialog");
+  await forget.getByRole("checkbox").check();
+  await forget.getByRole("button", { name: "确认", exact: true }).click();
+  await forget.waitFor({ state: "hidden" });
+  assert.deepEqual((await invoke(page, "bootstrap")).installations, []);
+  console.log(
+    "Inference credential revocation, logout and installation cleanup verified.",
+  );
 }
 
 let browser;
