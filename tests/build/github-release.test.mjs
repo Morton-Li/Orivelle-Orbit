@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import {
   assembleRelease,
+  prepareReleaseSource,
   releaseNames,
   releaseVersion,
   updateEndpoint,
@@ -20,6 +29,63 @@ test("formal updates are tied to a stable tag and a GitHub repository", () => {
     "https://github.com/Owner/Orbit/releases/latest/download/latest.json",
   );
   assert.throws(() => updateEndpoint("Owner/Orbit/other"), /OWNER\/REPO/);
+});
+
+test("a release tag prepares a clean, versioned build checkout", async (t) => {
+  const directory = await mkdtemp(path.resolve("runtime/tmp/release-source-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(path.join(directory, "src-tauri"));
+  const files = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "package-lock.json",
+    "src-tauri/tauri.conf.json",
+  ];
+  for (const file of files) await copyFile(file, path.join(directory, file));
+  const read = (file) => readFile(path.join(directory, file), "utf8");
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  git("init", "--quiet");
+  git("add", "--", ...files);
+  git(
+    "-c",
+    "user.name=Orbit Test",
+    "-c",
+    "user.email=test@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    "Fixture",
+  );
+  const source = git("rev-parse", "HEAD");
+  const version =
+    JSON.parse(await read("package.json")).version === "1.2.3"
+      ? "1.2.4"
+      : "1.2.3";
+  const tag = `v${version}`;
+
+  const prepared = await prepareReleaseSource(tag, directory);
+  assert.equal(git("rev-parse", "HEAD^"), source);
+  assert.equal(git("status", "--porcelain"), "");
+  assert.equal(await prepareReleaseSource(tag, directory), prepared);
+  for (const file of files.filter((item) => item.endsWith(".json"))) {
+    const document = JSON.parse(await read(file));
+    assert.equal(document.version, version);
+    if (file === "package-lock.json")
+      assert.equal(document.packages[""].version, version);
+  }
+  assert.ok((await read("Cargo.toml")).includes(`version = "${version}"`));
+  const lock = (await read("Cargo.lock")).replaceAll("\r\n", "\n");
+  for (const name of [
+    "orbit-core",
+    "orbit-credential-helper",
+    "orivelle-orbit",
+  ]) {
+    assert.ok(lock.includes(`name = "${name}"\nversion = "${version}"`));
+  }
 });
 
 test("Windows packaging is opt-in and the release advertises only the verified macOS updater", async (t) => {

@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { digest } from "./candidate-evidence.mjs";
+import { digest, freezeSource } from "./candidate-evidence.mjs";
 
 const versionPattern =
   /^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$/;
@@ -45,29 +45,81 @@ export function releaseNames(version) {
   };
 }
 
-async function validateSourceVersion(tag) {
+export async function prepareReleaseSource(tag, directory = process.cwd()) {
   const version = releaseVersion(tag);
-  const [npm, npmLock, tauri, cargo] = await Promise.all(
-    [
-      "package.json",
-      "package-lock.json",
-      "src-tauri/tauri.conf.json",
-      "Cargo.toml",
-    ].map((file) => readFile(file, "utf8")),
-  );
-  const workspace = cargo
-    .split(/^\[workspace\.package\]\s*$/m)[1]
-    ?.split(/^\[/m)[0];
-  const versions = [
-    JSON.parse(npm).version,
-    JSON.parse(npmLock).version,
-    JSON.parse(npmLock).packages[""].version,
-    JSON.parse(tauri).version,
-    workspace?.match(/^version\s*=\s*"([^"]+)"\s*$/m)?.[1],
-  ];
-  if (versions.some((item) => item !== version)) {
-    throw new Error("The release tag must match the committed Orbit versions.");
+  const inspect = (command, args) =>
+    execFileSync(command, args, { cwd: directory, encoding: "utf8" }).trim();
+  const source = freezeSource(inspect);
+  const changes = new Map();
+  for (const file of [
+    "package.json",
+    "package-lock.json",
+    "src-tauri/tauri.conf.json",
+  ]) {
+    const text = await readFile(path.join(directory, file), "utf8");
+    const manifest = JSON.parse(text);
+    manifest.version = version;
+    if (file === "package-lock.json") manifest.packages[""].version = version;
+    const next = JSON.stringify(manifest, null, 2) + "\n";
+    const updated = text.includes("\r\n")
+      ? next.replaceAll("\n", "\r\n")
+      : next;
+    if (updated !== text) changes.set(file, updated);
   }
+  const cargoToml = await readFile(path.join(directory, "Cargo.toml"), "utf8");
+  const lockfile = await readFile(path.join(directory, "Cargo.lock"), "utf8");
+  const workspace = replaceVersion(
+    cargoToml,
+    /^(\[workspace\.package\]\r?\nversion = )"[^"\r\n]+"(?=\r?$)/gm,
+    version,
+    "Cargo.toml workspace",
+  );
+  let locked = lockfile;
+  for (const name of [
+    "orbit-core",
+    "orbit-credential-helper",
+    "orivelle-orbit",
+  ]) {
+    locked = replaceVersion(
+      locked,
+      new RegExp(
+        `^(\\[\\[package\\]\\]\\r?\\nname = "${name}"\\r?\\nversion = )"[^"\\r\\n]+"(?=\\r?$)`,
+        "gm",
+      ),
+      version,
+      `Cargo.lock package ${name}`,
+    );
+  }
+  if (workspace !== cargoToml) changes.set("Cargo.toml", workspace);
+  if (locked !== lockfile) changes.set("Cargo.lock", locked);
+  if (changes.size === 0) return source.head;
+
+  for (const [file, content] of changes) {
+    await writeFile(path.join(directory, file), content);
+  }
+  // Freeze the generated source too. The release still points at the original tag.
+  inspect("git", [
+    "-c",
+    "user.name=github-actions[bot]",
+    "-c",
+    "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--only",
+    "-m",
+    `Prepare Orbit build ${tag}`,
+    "--",
+    ...changes.keys(),
+  ]);
+  return freezeSource(inspect).head;
+}
+
+function replaceVersion(text, pattern, version, label) {
+  if ([...text.matchAll(pattern)].length !== 1) {
+    throw new Error(`Expected one version entry in ${label}.`);
+  }
+  return text.replace(pattern, `$1"${version}"`);
 }
 
 function decodeBase64(value) {
@@ -273,7 +325,6 @@ async function publishRelease(
   publicKey,
   includeWindows,
 ) {
-  await validateSourceVersion(tag);
   const assets = await assembleRelease(directory, tag, repository, publicKey, {
     includeWindows,
   });
@@ -392,7 +443,17 @@ if (
 ) {
   const [command, tag, directory] = process.argv.slice(2);
   if (command === "validate-tag") {
-    await validateSourceVersion(tag);
+    console.log(releaseVersion(tag));
+  } else if (command === "prepare-source") {
+    if (
+      process.env.GITHUB_ACTIONS !== "true" ||
+      process.env.RUNNER_ENVIRONMENT !== "github-hosted"
+    ) {
+      throw new Error("Prepare release source in a GitHub-hosted checkout.");
+    }
+    console.log(
+      `Prepared ${tag} build source ${await prepareReleaseSource(tag)}.`,
+    );
   } else if (command === "publish" && directory) {
     await publishRelease(
       path.resolve(directory),
@@ -403,6 +464,8 @@ if (
       process.env.ORBIT_WINDOWS_PACKAGING === "true",
     );
   } else {
-    throw new Error("Use validate-tag TAG or publish TAG DIRECTORY.");
+    throw new Error(
+      "Use validate-tag TAG, prepare-source TAG or publish TAG DIRECTORY.",
+    );
   }
 }
