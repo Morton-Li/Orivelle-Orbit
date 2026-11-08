@@ -1,5 +1,9 @@
 name: Prepare Orbit native build
 description: Install the locked toolchain and run native build checks on a hosted runner
+inputs:
+  validate:
+    description: Run the front-end, build script and native checks after setup
+    default: "true"
 runs:
   using: composite
   steps:
@@ -32,10 +36,15 @@ runs:
       run: npm ci
 
     - name: Check Orbit
+      if: inputs.validate == 'true'
       shell: bash
       run: |
         set -euo pipefail
         node scripts/native-workflow.mjs preflight
         npm run check
-        node --test tests/build/*.test.mjs
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          node --test tests/build/desktop-fake-gateway.test.mjs tests/build/github-release.test.mjs tests/build/updater-signer-probe.test.mjs
+        else
+          node --test tests/build/*.test.mjs
+        fi
         node scripts/native-workflow.mjs check

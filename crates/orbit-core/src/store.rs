@@ -60,7 +60,14 @@ pub fn private_directory(path: &Path) -> Result<()> {
     if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink() || !m.is_dir()) {
         return Err(fail("local_storage_unavailable"));
     }
-    fs::create_dir_all(path).map_err(|_| fail("local_storage_unavailable"))?;
+    fs::create_dir_all(path)
+        .inspect_err(|error| {
+            eprintln!(
+                "Orbit could not create a private directory ({}).",
+                error.kind()
+            )
+        })
+        .map_err(|_| fail("local_storage_unavailable"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -96,9 +103,10 @@ fn windows_private_acl(path: &Path, directory: bool) -> Result<()> {
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    const SCRIPT: &str = r#"$ErrorActionPreference='Stop'; try {
+    const SCRIPT: &str = r#"$ErrorActionPreference='Stop'; $stage='path'; try {
 $p=$env:ORBIT_PRIVATE_PATH; $item=Get-Item -LiteralPath $p -Force;
-if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 };
+if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse point' };
+$stage='descriptor';
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
 $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');
 $inherit=[Security.AccessControl.InheritanceFlags]::None;
@@ -106,21 +114,26 @@ if ($env:ORBIT_PRIVATE_DIRECTORY -eq '1') {
  $acl=[Security.AccessControl.DirectorySecurity]::new();
  $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';
 } else { $acl=[Security.AccessControl.FileSecurity]::new() };
-$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false);
+$sections=[Security.AccessControl.AccessControlSections]'Owner,Access';
+if ($item.GetAccessControl($sections).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { $acl.SetOwner($sid) };
+$acl.SetAccessRuleProtection($true,$false);
 foreach ($principal in @($sid,$system)) {
  $rule=[Security.AccessControl.FileSystemAccessRule]::new($principal,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow);
  $acl.AddAccessRule($rule);
 };
-Set-Acl -LiteralPath $p -AclObject $acl;
-$actual=Get-Acl -LiteralPath $p;
-if (!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { exit 1 };
+$stage='apply';
+# Persist only the owner and DACL sections changed above.
+$item.SetAccessControl($acl);
+$stage='verify';
+$actual=$item.GetAccessControl($sections);
+if (!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner or inheritance' };
 $rules=$actual.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);
-if ($rules.Count -ne 2) { exit 1 };
+if ($rules.Count -ne 2) { throw 'rule count' };
 foreach ($r in $rules) {
- if ($r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $r.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or ($r.IdentityReference.Value -ne $sid.Value -and $r.IdentityReference.Value -ne $system.Value)) { exit 1 };
+ if ($r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $r.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or ($r.IdentityReference.Value -ne $sid.Value -and $r.IdentityReference.Value -ne $system.Value)) { throw 'access rule' };
 };
 [Console]::Write('ORBIT_ACL_OK'); exit 0;
-} catch { exit 1 }"#;
+} catch { [Console]::Write('{0}:{1:X8}', $stage, $_.Exception.GetBaseException().HResult); exit 1 }"#;
     if !path.is_absolute() {
         return Err(fail("local_storage_unavailable"));
     }
@@ -128,6 +141,7 @@ foreach ($r in $rules) {
         std::env::var_os("SystemRoot").ok_or_else(|| fail("local_storage_unavailable"))?;
     let executable =
         PathBuf::from(system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let target = if directory { "directory" } else { "file" };
     let mut child = Command::new(executable)
         .args([
             "-NoLogo",
@@ -142,8 +156,14 @@ foreach ($r in $rules) {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
+        .inspect_err(|error| {
+            eprintln!(
+                "Orbit could not start Windows permission setup ({}).",
+                error.kind()
+            )
+        })
         .map_err(|_| fail("local_storage_unavailable"))?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(status) = child
             .try_wait()
@@ -160,12 +180,24 @@ foreach ($r in $rules) {
             return if status.success() && output == b"ORBIT_ACL_OK" {
                 Ok(())
             } else {
+                let result = String::from_utf8_lossy(&output);
+                let (step, hresult) = result.split_once(':').unwrap_or_default();
+                let stage = match step {
+                    "path" => "read target metadata",
+                    "descriptor" => "construct private permissions",
+                    "apply" => "apply private permissions",
+                    "verify" => "verify private permissions",
+                    _ => "run the ACL helper",
+                };
+                let code = u32::from_str_radix(hresult, 16).unwrap_or_default();
+                eprintln!("Orbit could not {stage} on Windows ({target}, {code:#010x}).");
                 Err(fail("local_storage_unavailable"))
             };
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            eprintln!("Orbit timed out securing a private {target} on Windows.");
             return Err(fail("local_storage_unavailable"));
         }
         std::thread::sleep(Duration::from_millis(20));

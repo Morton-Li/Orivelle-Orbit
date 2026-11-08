@@ -1,0 +1,127 @@
+name: Windows Integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - ".github/workflows/windows-integration.yml"
+      - ".github/actions/prepare-native/action.yml"
+      - "crates/orbit-core/src/**"
+      - "scripts/native-workflow.mjs"
+      - "src-tauri/src/**"
+      - "tests/build/**"
+      - "tests/windows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-windows-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  validation:
+    name: Run Windows regression tests
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: orbit-windows-regression-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Run browser workflow tests
+        run: npm run test:e2e -- --reporter=line --retries=1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ failure() }}
+        with:
+          name: orbit-windows-regression-failure
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows:
+    name: Build and verify Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: orbit-windows-candidate-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+
+      - uses: ./.github/actions/prepare-native
+        with:
+          validate: "false"
+
+      - name: Build Windows x64 candidate
+        run: node scripts/native-workflow.mjs candidate
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Prepare WebView2 Runtime
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $keys = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$client"
+          )
+          $version = Get-ItemPropertyValue -LiteralPath $keys -Name pv -ErrorAction SilentlyContinue |
+            Where-Object { $_ -and $_ -ne '0.0.0.0' }
+          if ($version) {
+            Write-Output "WebView2 Runtime: $version"
+          } else {
+            $setup = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $setup
+            $install = Start-Process -FilePath $setup -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($install.ExitCode -ne 0) {
+              throw "WebView2 installation failed with exit code $($install.ExitCode)."
+            }
+          }
+
+      - name: Exercise the Orbit desktop executable
+        shell: pwsh
+        run: ./tests/windows/with-panel-fixture.ps1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: orbit-windows-integration
+          path: |
+            runtime/logs/native-preflight.json
+            runtime/logs/candidate-manifest.json
+            runtime/logs/windows-integration/
+          if-no-files-found: ignore
+          retention-days: 7
