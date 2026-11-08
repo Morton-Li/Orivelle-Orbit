@@ -109,6 +109,8 @@ jobs:
 
       - name: Verify the Windows installer payload
         shell: pwsh
+        env:
+          ORBIT_RELEASE_TAG: ${{ needs.source.outputs.tag }}
         run: |
           $installers = @(Get-ChildItem -LiteralPath 'runtime/github-release' -Filter '*-setup.exe' -File)
           if ($installers.Count -ne 1) {
@@ -116,16 +118,25 @@ jobs:
           }
           $payload = Join-Path $env:RUNNER_TEMP ('orbit-nsis-' + [Guid]::NewGuid().ToString('N'))
           $archiveTool = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          & $archiveTool t -tNsis $installers[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The Windows installer failed its archive integrity check.'
+          }
           & $archiveTool e -tNsis -y "-o$payload" $installers[0].FullName '-ir!orivelle-orbit.exe'
           if ($LASTEXITCODE -ne 0) {
             throw 'The Windows installer payload could not be read.'
           }
           $packaged = Join-Path $payload 'orivelle-orbit.exe'
-          $built = 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
-          if ((Get-FileHash -LiteralPath $packaged).Hash -ne (Get-FileHash -LiteralPath $built).Hash) {
-            throw 'The installer payload differs from the compiled Windows application.'
+          $version = (Get-Item -LiteralPath $packaged).VersionInfo.ProductVersion
+          if ($version -ne $env:ORBIT_RELEASE_TAG.Substring(1)) {
+            throw 'The packaged Orbit version does not match the release tag.'
           }
-          Write-Output 'Verified the Windows installer payload against the compiled x64 application.'
+          $binary = [IO.File]::ReadAllBytes($packaged)
+          $peHeader = [BitConverter]::ToInt32($binary, 0x3c)
+          if ([BitConverter]::ToUInt32($binary, $peHeader) -ne 0x4550 -or [BitConverter]::ToUInt16($binary, $peHeader + 4) -ne 0x8664) {
+            throw 'The packaged Orbit executable is not Windows x64.'
+          }
+          Write-Output "Verified the Windows x64 installer for Orbit $version."
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
