@@ -1,0 +1,76 @@
+name: Windows Integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - ".github/workflows/windows-integration.yml"
+      - ".github/actions/prepare-native/action.yml"
+      - "scripts/native-workflow.mjs"
+      - "tests/windows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-windows-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build and verify Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Build Windows x64 candidate
+        run: node scripts/native-workflow.mjs candidate
+
+      - name: Run browser workflow tests
+        run: npm run test:e2e -- --reporter=line
+
+      - name: Prepare WebView2 Runtime
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $keys = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$client"
+          )
+          $version = Get-ItemPropertyValue -LiteralPath $keys -Name pv -ErrorAction SilentlyContinue |
+            Where-Object { $_ -and $_ -ne '0.0.0.0' }
+          if ($version) {
+            Write-Output "WebView2 Runtime: $version"
+          } else {
+            $setup = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $setup
+            $install = Start-Process -FilePath $setup -ArgumentList '/silent', '/install' -Wait -PassThru
+            if ($install.ExitCode -ne 0) {
+              throw "WebView2 installation failed with exit code $($install.ExitCode)."
+            }
+          }
+
+      - name: Exercise the Orbit desktop executable
+        run: node tests/windows/desktop.mjs
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: orbit-windows-integration
+          path: |
+            runtime/logs/native-preflight.json
+            runtime/logs/candidate-manifest.json
+            runtime/logs/windows-integration/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
