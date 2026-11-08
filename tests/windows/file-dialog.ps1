@@ -36,7 +36,9 @@ $fileNameIds = [System.Windows.Automation.OrCondition]::new([System.Windows.Auto
     [System.Windows.Automation.PropertyCondition]::new($element::NameProperty, 'File name:')
 ))
 $valueCondition = [System.Windows.Automation.PropertyCondition]::new($element::IsValuePatternAvailableProperty, $true)
-$fileNameCondition = [System.Windows.Automation.AndCondition]::new($fileNameIds, $valueCondition)
+$writableCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.ValuePattern]::IsReadOnlyProperty, $false)
+$editCondition = [System.Windows.Automation.PropertyCondition]::new($element::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+$fileNameCondition = [System.Windows.Automation.AndCondition]::new([System.Windows.Automation.Condition[]]@($fileNameIds, $valueCondition, $writableCondition, $editCondition))
 $acceptIds = [System.Windows.Automation.OrCondition]::new([System.Windows.Automation.Condition[]]@(
     [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1'),
     [System.Windows.Automation.PropertyCondition]::new($element::NameProperty, 'Save'),
@@ -71,7 +73,8 @@ if ($dialog) {
     $controls = $dialog.FindAll($scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
     foreach ($control in $controls) {
         if ($control.Current.ControlType -in @([System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::Button)) {
-            Write-Output "Control $($control.Current.ControlType.ProgrammaticName) [$($control.Current.AutomationId)] $($control.Current.Name)"
+            $readOnly = $control.GetCurrentPropertyValue([System.Windows.Automation.ValuePattern]::IsReadOnlyProperty, $true)
+            Write-Output "Control $($control.Current.ControlType.ProgrammaticName) [$($control.Current.AutomationId)] $($control.Current.Name) read-only=$readOnly"
         }
     }
 }
