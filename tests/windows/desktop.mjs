@@ -233,7 +233,7 @@ async function exerciseImages(page, navigation) {
   await page.getByRole("button", { name: "编辑图片", exact: true }).click();
   await waitForImages(page, 2);
 
-  await page.getByRole("tab", { name: "本地历史", exact: true }).click();
+  await page.getByRole("tab", { name: /^本地历史/ }).click();
   await page
     .getByRole("button", { name: "删除本地历史", exact: true })
     .first()
