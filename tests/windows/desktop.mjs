@@ -1,4 +1,4 @@
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -143,21 +143,20 @@ async function authorizeAccount(page) {
 }
 
 async function waitForImages(page, count) {
-  await page.waitForFunction(
-    async (expected) => {
-      const state = await window.__TAURI_INTERNALS__.invoke("bootstrap", {
-        request: {},
-      });
-      return (
-        state.image_history.length === expected &&
-        state.tasks.filter(
-          (task) => task.state === "completed" && task.charges.length > 0,
-        ).length === expected
-      );
-    },
-    count,
-    { polling: 250, timeout: 30_000 },
-  );
+  await expect
+    .poll(
+      async () => {
+        const state = await invoke(page, "bootstrap");
+        return {
+          images: state.image_history.length,
+          reconciled: state.tasks.filter(
+            (task) => task.state === "completed" && task.charges.length > 0,
+          ).length,
+        };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({ images: count, reconciled: count });
 }
 
 async function exerciseImages(page, navigation) {
@@ -328,16 +327,11 @@ try {
 
   const nextTheme = initial.settings.theme === "dark" ? "light" : "dark";
   await page.locator("#setting-theme").selectOption(nextTheme);
-  await page.waitForFunction(
-    async (theme) => {
-      const state = await window.__TAURI_INTERNALS__.invoke("bootstrap", {
-        request: {},
-      });
-      return state.settings.theme === theme;
-    },
-    nextTheme,
-    { polling: 250 },
-  );
+  await expect
+    .poll(async () => (await invoke(page, "bootstrap")).settings.theme, {
+      timeout: 15_000,
+    })
+    .toBe(nextTheme);
   await page.locator("#setting-locale").selectOption("en");
   await navigation
     .getByRole("link", { name: "Settings", exact: true })
