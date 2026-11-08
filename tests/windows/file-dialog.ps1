@@ -3,79 +3,62 @@ param(
     [Parameter(Mandatory)][string]$FilePath
 )
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
+    throw 'Use this picker automation only on a GitHub-hosted Windows runner.'
+}
+
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type -TypeDefinition @'
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 
-public static class OrbitTestWindows {
+public static class OrbitTestPicker {
     private delegate bool EnumCallback(IntPtr window, IntPtr data);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumCallback callback, IntPtr data);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int size);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
 
-    public static IntPtr[] VisibleForProcess(int process) {
-        var windows = new List<IntPtr>();
+    public static IntPtr Find(int process) {
+        IntPtr picker = IntPtr.Zero;
         EnumWindows((window, data) => {
             uint owner;
             GetWindowThreadProcessId(window, out owner);
-            if (owner == (uint)process && IsWindowVisible(window)) windows.Add(window);
-            return true;
+            if (owner != (uint)process || !IsWindowVisible(window)) return true;
+            var name = new StringBuilder(256);
+            GetClassName(window, name, name.Capacity);
+            if (name.ToString() != "#32770") return true;
+            picker = window;
+            return false;
         }, IntPtr.Zero);
-        return windows.ToArray();
+        return picker;
     }
 }
 '@
 
-$scope = [System.Windows.Automation.TreeScope]
-$element = [System.Windows.Automation.AutomationElement]
-$fileNameIds = [System.Windows.Automation.OrCondition]::new([System.Windows.Automation.Condition[]]@(
-    [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1148'),
-    [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1001'),
-    [System.Windows.Automation.PropertyCondition]::new($element::NameProperty, 'File name:')
-))
-$valueCondition = [System.Windows.Automation.PropertyCondition]::new($element::IsValuePatternAvailableProperty, $true)
-$writableCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.ValuePattern]::IsReadOnlyProperty, $false)
-$editCondition = [System.Windows.Automation.PropertyCondition]::new($element::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-$fileNameCondition = [System.Windows.Automation.AndCondition]::new([System.Windows.Automation.Condition[]]@($fileNameIds, $valueCondition, $writableCondition, $editCondition))
-$acceptIds = [System.Windows.Automation.OrCondition]::new([System.Windows.Automation.Condition[]]@(
-    [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1'),
-    [System.Windows.Automation.PropertyCondition]::new($element::NameProperty, 'Save'),
-    [System.Windows.Automation.PropertyCondition]::new($element::NameProperty, 'Open')
-))
-$invokeCondition = [System.Windows.Automation.PropertyCondition]::new($element::IsInvokePatternAvailableProperty, $true)
-$acceptCondition = [System.Windows.Automation.AndCondition]::new($acceptIds, $invokeCondition)
-
 $deadline = (Get-Date).AddSeconds(15)
-$dialog = $null
 do {
-    $windowNames = @()
-    foreach ($handle in [OrbitTestWindows]::VisibleForProcess($OrbitProcess)) {
-        $window = $element::FromHandle($handle)
-        $windowNames += "$($window.Current.Name) [$($window.Current.ClassName)]"
-        if ($window.Current.ClassName -ne '#32770' -and $window.Current.Name -notin @('Open', 'Save As')) {
-            continue
+    $picker = [OrbitTestPicker]::Find($OrbitProcess)
+    if ($picker -ne [IntPtr]::Zero) {
+        if ([OrbitTestPicker]::GetForegroundWindow() -ne $picker) {
+            [OrbitTestPicker]::SetForegroundWindow($picker) | Out-Null
         }
-        $dialog = $window
-        $fileName = $dialog.FindFirst($scope::Descendants, $fileNameCondition)
-        $accept = $dialog.FindFirst($scope::Descendants, $acceptCondition)
-        if ($fileName -and $accept) {
-            $fileName.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($FilePath)
-            $accept.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        if ([OrbitTestPicker]::GetForegroundWindow() -eq $picker) {
+            # Alt+N targets the filename field in the Windows open/save dialog.
+            [System.Windows.Forms.Clipboard]::SetText($FilePath)
+            [System.Windows.Forms.SendKeys]::SendWait('%n')
+            [System.Windows.Forms.SendKeys]::SendWait('^a^v')
+            if ([OrbitTestPicker]::GetForegroundWindow() -ne $picker) {
+                throw 'The Windows picker lost focus before confirmation.'
+            }
+            [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
             return
         }
     }
     Start-Sleep -Milliseconds 200
 } while ((Get-Date) -lt $deadline)
 
-if ($dialog) {
-    $controls = $dialog.FindAll($scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-    foreach ($control in $controls) {
-        if ($control.Current.ControlType -in @([System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::Button)) {
-            $readOnly = $control.GetCurrentPropertyValue([System.Windows.Automation.ValuePattern]::IsReadOnlyProperty, $true)
-            Write-Output "Control $($control.Current.ControlType.ProgrammaticName) [$($control.Current.AutomationId)] $($control.Current.Name) read-only=$readOnly"
-        }
-    }
-}
-throw "The Orbit file dialog did not expose a filename field and an accept button. Visible Orbit windows: $($windowNames -join ', ')"
+throw 'The Orbit open or save dialog did not become active.'
