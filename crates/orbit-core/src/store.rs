@@ -107,15 +107,18 @@ if ($env:ORBIT_PRIVATE_DIRECTORY -eq '1') {
  $acl=[Security.AccessControl.DirectorySecurity]::new();
  $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';
 } else { $acl=[Security.AccessControl.FileSecurity]::new() };
-$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false);
+$sections=[Security.AccessControl.AccessControlSections]'Owner,Access';
+if ($item.GetAccessControl($sections).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { $acl.SetOwner($sid) };
+$acl.SetAccessRuleProtection($true,$false);
 foreach ($principal in @($sid,$system)) {
  $rule=[Security.AccessControl.FileSystemAccessRule]::new($principal,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow);
  $acl.AddAccessRule($rule);
 };
 $stage='apply';
-Set-Acl -LiteralPath $p -AclObject $acl;
+# Persist only the owner and DACL sections changed above.
+$item.SetAccessControl($acl);
 $stage='verify';
-$actual=Get-Acl -LiteralPath $p;
+$actual=$item.GetAccessControl($sections);
 if (!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner or inheritance' };
 $rules=$actual.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);
 if ($rules.Count -ne 2) { throw 'rule count' };
@@ -123,7 +126,7 @@ foreach ($r in $rules) {
  if ($r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $r.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or ($r.IdentityReference.Value -ne $sid.Value -and $r.IdentityReference.Value -ne $system.Value)) { throw 'access rule' };
 };
 [Console]::Write('ORBIT_ACL_OK'); exit 0;
-} catch { [Console]::Write($stage); exit 1 }"#;
+} catch { [Console]::Write('{0}:{1:X8}', $stage, $_.Exception.GetBaseException().HResult); exit 1 }"#;
     if !path.is_absolute() {
         return Err(fail("local_storage_unavailable"));
     }
@@ -163,14 +166,18 @@ foreach ($r in $rules) {
             return if status.success() && output == b"ORBIT_ACL_OK" {
                 Ok(())
             } else {
-                let stage = match output.as_slice() {
-                    b"path" => "read target metadata",
-                    b"descriptor" => "construct private permissions",
-                    b"apply" => "apply private permissions",
-                    b"verify" => "verify private permissions",
+                let result = String::from_utf8_lossy(&output);
+                let (step, hresult) = result.split_once(':').unwrap_or_default();
+                let stage = match step {
+                    "path" => "read target metadata",
+                    "descriptor" => "construct private permissions",
+                    "apply" => "apply private permissions",
+                    "verify" => "verify private permissions",
                     _ => "run the ACL helper",
                 };
-                eprintln!("Orbit could not {stage} on Windows.");
+                let target = if directory { "directory" } else { "file" };
+                let code = u32::from_str_radix(hresult, 16).unwrap_or_default();
+                eprintln!("Orbit could not {stage} on Windows ({target}, {code:#010x}).");
                 Err(fail("local_storage_unavailable"))
             };
         }
