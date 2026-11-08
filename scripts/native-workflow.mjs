@@ -23,6 +23,7 @@ import {
   releaseNames,
   updateEndpoint,
   updaterPublicKey,
+  verifyUpdaterSignature,
 } from "./github-release.mjs";
 import {
   prepareProjectDirectory,
@@ -93,6 +94,7 @@ for (const key of Object.keys(inheritedEnv)) {
     normalized.startsWith("TAURI_SIGNING_") ||
     normalized.startsWith("TAURI_PRIVATE_") ||
     normalized.startsWith("APPLE_") ||
+    normalized.startsWith("CODESIGN_CERTIFICATE_") ||
     normalized.startsWith("NPM_CONFIG_") ||
     normalized.startsWith("VITE") ||
     normalized.startsWith("CARGO_REGISTRIES_") ||
@@ -276,35 +278,26 @@ if (mode === "preflight") {
   if (githubRelease) {
     for (const name of [
       "ORBIT_RELEASE_UPDATER_PUBLIC_KEY",
-      "ORBIT_RELEASE_MAC_CERTIFICATE_SHA256",
       "TAURI_SIGNING_PRIVATE_KEY",
       "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-      "APPLE_CERTIFICATE",
-      "APPLE_CERTIFICATE_PASSWORD",
-      "APPLE_SIGNING_IDENTITY",
-      "APPLE_ID",
-      "APPLE_PASSWORD",
-      "APPLE_TEAM_ID",
+      "CODESIGN_CERTIFICATE_P12_BASE64",
+      "CODESIGN_CERTIFICATE_PASSWORD",
     ]) {
       if (!process.env[name]?.trim())
         throw new Error("Missing release input " + name);
       releaseInputs[name] = process.env[name];
     }
     updaterPublicKey(releaseInputs.ORBIT_RELEASE_UPDATER_PUBLIC_KEY);
-    if (
-      !/^[a-f\d]{64}$/i.test(releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256)
-    )
-      throw new Error(
-        "Expected the SHA-256 fingerprint of the release signing certificate.",
-      );
-    if (
-      !releaseInputs.APPLE_SIGNING_IDENTITY.startsWith(
-        "Developer ID Application: ",
+    releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256 = (
+      await readFile(
+        path.join(root, "scripts/macos-signing-certificate.sha256"),
+        "utf8",
       )
+    ).trim();
+    if (
+      !/^[A-F0-9]{64}$/.test(releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256)
     )
-      throw new Error(
-        "The macOS release requires an Apple Developer ID Application identity.",
-      );
+      throw new Error("Invalid pinned macOS signing certificate fingerprint.");
     releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT = updateEndpoint(
       process.env.GITHUB_REPOSITORY,
     );
@@ -403,8 +396,10 @@ if (mode === "preflight") {
       },
     );
     await run(
-      process.execPath,
+      "/bin/bash",
       [
+        "scripts/package-self-signed-macos.sh",
+        process.execPath,
         cli,
         "bundle",
         ...packageFlags,
@@ -545,8 +540,14 @@ if (mode === "preflight") {
     const names = releaseNames(config.version);
     if (githubRelease) {
       const app = path.join(bundle, "macos", config.productName + ".app");
-      await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]);
-      await run("/usr/bin/xcrun", ["stapler", "validate", app]);
+      await run("/usr/bin/codesign", [
+        "--verify",
+        "--deep",
+        "--strict",
+        "-R",
+        `=identifier "${config.identifier}"`,
+        app,
+      ]);
       const certificateDir = await mkdtemp(
         path.join(env.TMPDIR, "release-certificate-"),
       );
@@ -554,8 +555,7 @@ if (mode === "preflight") {
         const prefix = path.join(certificateDir, "certificate");
         await run("/usr/bin/codesign", [
           "--display",
-          "--extract-certificates",
-          prefix,
+          `--extract-certificates=${prefix}`,
           app,
         ]);
         const certificate = await fileDigest(prefix + "0");
@@ -575,10 +575,18 @@ if (mode === "preflight") {
         config.productName + "_" + config.version + "_aarch64.dmg",
       );
       const update = app + ".tar.gz";
+      const signature = update + ".sig";
+      await run("/usr/bin/codesign", ["--verify", "--strict", dmg]);
       await run("/usr/bin/hdiutil", ["verify", dmg]);
+      await verifyUpdaterSignature(
+        update,
+        (await readFile(signature, "ascii")).trim(),
+        config.version,
+        releaseInputs.ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
+      );
       await copyFile(dmg, path.join(directory, names.macos));
       await copyFile(update, path.join(directory, names.update));
-      await copyFile(update + ".sig", path.join(directory, names.signature));
+      await copyFile(signature, path.join(directory, names.signature));
     } else {
       const installer = path.join(
         bundle,

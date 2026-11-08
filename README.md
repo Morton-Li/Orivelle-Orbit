@@ -4,7 +4,9 @@ Orbit 是 Orivelle 的桌面应用。用同一个账户连接 Codex 和 Claude D
 
 ## 📦 获取 Orbit
 
-macOS 安装包适用于搭载 Apple 芯片的 Mac。发布后，可在本仓库的 **Releases** 页面下载。
+macOS 安装包适用于搭载 Apple 芯片、运行 macOS 15 或更高版本的 Mac。从 [Releases](https://github.com/Morton-Li/Orivelle-Orbit/releases/latest) 下载 `.dmg`，打开后将 Orbit 拖到「应用程序」。
+
+如果首次打开时 macOS 提示无法验证开发者，请确认安装包来自本仓库，然后在「系统设置」的「隐私与安全性」中选择「仍要打开」。
 
 ## 🚀 开始使用
 
