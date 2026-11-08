@@ -1,0 +1,18 @@
+{
+    admin off
+    auto_https off
+}
+
+:9443 {
+    tls /certs/server.pem /certs/server.key
+    root * /app/public
+    header Referrer-Policy "no-referrer"
+    php_fastcgi panel:9000
+    file_server
+}
+
+# Deliberately mismatched SAN for the native TLS rejection assertion.
+:9444 {
+    tls /certs/wrong-san.pem /certs/wrong-san.key
+    respond "isolated TLS negative fixture"
+}

@@ -1,0 +1,140 @@
+stages:
+  - validate
+  - candidate
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: "$CI_COMMIT_BRANCH"
+
+# These are native, prepared runners. No job installs global tools, runs the GUI,
+# touches client settings or the system vault, or signs/publishes a release.
+.macos-native:
+  tags:
+    - orbit-macos-arm64
+  before_script:
+    - node scripts/native-workflow.mjs preflight
+    - mkdir -p .cache/tmp .cache/browser
+    - export TMPDIR="$CI_PROJECT_DIR/.cache/tmp"
+    - export XDG_CACHE_HOME="$CI_PROJECT_DIR/.cache/browser"
+    - npm ci --registry https://registry.npmmirror.com/ --cache .cache/npm --userconfig /dev/null
+  cache:
+    key:
+      files:
+        - package-lock.json
+        - Cargo.lock
+      prefix: macos-arm64
+    paths:
+      - .cache/npm/
+      - runtime/cargo-home/
+      - runtime/target/
+
+.windows-native:
+  tags:
+    - orbit-windows-x64
+  before_script:
+    - node scripts/native-workflow.mjs preflight
+    - New-Item -ItemType Directory -Force .cache/tmp, .cache/browser | Out-Null
+    - $env:TEMP = "$env:CI_PROJECT_DIR/.cache/tmp"
+    - $env:TMP = $env:TEMP
+    - $env:XDG_CACHE_HOME = "$env:CI_PROJECT_DIR/.cache/browser"
+    - Set-Content -Path .cache/npm-userconfig -Value ''
+    - npm ci --registry https://registry.npmmirror.com/ --cache .cache/npm --userconfig .cache/npm-userconfig
+  cache:
+    key:
+      files:
+        - package-lock.json
+        - Cargo.lock
+      prefix: windows-x64
+    paths:
+      - .cache/npm/
+      - runtime/cargo-home/
+      - runtime/target/
+
+validate:macos-arm64:
+  extends: .macos-native
+  stage: validate
+  timeout: 30 minutes
+  script:
+    - node --test tests/build/macos-candidate.test.mjs
+    - node --test tests/build/updater-signer-probe.test.mjs
+    - node --test tests/build/desktop-fake-gateway.test.mjs
+    - npm run check
+    - npm run test:e2e
+    - node scripts/native-workflow.mjs check
+    - node scripts/native-workflow.mjs signer-probe
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - runtime/logs/
+      - .cache/evidence/
+      - test-results/
+
+validate:windows-x64:
+  extends: .windows-native
+  stage: validate
+  timeout: 30 minutes
+  script:
+    - node --test tests/build/updater-signer-probe.test.mjs
+    - node --test tests/build/desktop-fake-gateway.test.mjs
+    - npm run check
+    - npm run test:e2e
+    - node scripts/native-workflow.mjs check
+    - node scripts/native-workflow.mjs signer-probe
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - runtime/logs/
+      - .cache/evidence/
+      - test-results/
+
+candidate:macos-arm64:
+  extends: .macos-native
+  stage: candidate
+  timeout: 60 minutes
+  needs:
+    - validate:macos-arm64
+  script:
+    - node scripts/native-workflow.mjs bundle
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - runtime/target/aarch64-apple-darwin/release/bundle/macos/
+      - runtime/candidates/
+      - runtime/logs/candidate-manifest.json
+
+candidate:windows-x64:
+  extends: .windows-native
+  stage: candidate
+  timeout: 60 minutes
+  needs:
+    - validate:windows-x64
+  script:
+    - node scripts/native-workflow.mjs candidate
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe
+      - runtime/logs/candidate-manifest.json
+
+# Windows NSIS packing is a separate manual candidate gate. Its complete local
+# NSIS cache and WebView2 runtime must be prepared before bundling.
+bundle:windows-x64:
+  extends: .windows-native
+  stage: candidate
+  rules:
+    - if: '$ORBIT_WINDOWS_PACKAGING == "true"'
+      when: manual
+      allow_failure: false
+  timeout: 60 minutes
+  needs:
+    - validate:windows-x64
+  script:
+    - node scripts/native-workflow.mjs bundle
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - runtime/target/x86_64-pc-windows-msvc/release/bundle/nsis/
+      - runtime/logs/candidate-manifest.json

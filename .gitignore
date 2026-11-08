@@ -1,0 +1,10 @@
+node_modules/
+.cache/
+dist/
+target/
+runtime/
+/src-tauri/gen/
+playwright-report/
+test-results/
+.DS_Store
+*.log

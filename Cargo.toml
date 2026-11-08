@@ -1,0 +1,57 @@
+[workspace]
+members = ["crates/orbit-core", "crates/orbit-helper", "src-tauri"]
+default-members = ["crates/orbit-core", "crates/orbit-helper"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[workspace.dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.145", features = ["raw_value"] }
+thiserror = "=2.0.17"
+uuid = { version = "=1.18.1", features = ["v4", "serde"] }
+chrono = { version = "=0.4.42", default-features = false, features = ["clock", "serde"] }
+sha2 = "=0.10.9"
+base64 = "=0.22.1"
+url = { version = "=2.5.7", features = ["serde"] }
+reqwest = { version = "=0.13.3", default-features = false, features = ["rustls", "json", "stream"] }
+tokio = { version = "=1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+futures-util = "=0.3.31"
+hyper = { version = "=1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
+http-body-util = "=0.1.5"
+http = "=1.5.0"
+rusqlite = { version = "=0.37.0", features = ["bundled", "backup"] }
+image = { version = "=0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+toml_edit = "=0.24.0"
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+rand = "=0.8.5"
+chacha20poly1305 = "=0.10.1"
+zeroize = { version = "=1.8.2", features = ["derive"] }
+tempfile = "=3.23.0"
+fs2 = "=0.4.3"
+keyring-core = "=1.0.1"
+apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }
+security-framework = "=3.7.0"
+core-foundation = "=0.10.1"
+windows-native-keyring-store = { version = "=1.1.0", default-features = false }
+tauri = { version = "=2.12.3", features = ["protocol-asset"] }
+tauri-build = "=2.7.2"
+tauri-plugin-updater = "=2.13.3"
+tauri-plugin-dialog = "=2.6.0"
+tauri-plugin-opener = "=2.5.3"
+arboard = { version = "=3.6.1", default-features = false,features=["image-data"] }
+minisign-verify = "=0.3.0"
+plist = "=1.8.0"
+flate2 = "=1.1.9"
+tar = "=0.4.46"
+libc = "=0.2.189"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+strip = "symbols"
+panic = "unwind"

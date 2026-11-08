@@ -1,0 +1,43 @@
+name: Build Orbit
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package ${{ matrix.runner == 'macos-15' && 'macOS arm64' || 'Windows x64' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(vars.ORBIT_WINDOWS_PACKAGING == 'true' && '["macos-15", "windows-2025"]' || '["macos-15"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Build unsigned candidate
+        run: node scripts/native-workflow.mjs github-bundle
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ matrix.runner == 'macos-15' && 'orbit-macos-arm64' || 'orbit-windows-x64' }}
+          path: |
+            ${{ matrix.runner == 'macos-15' && 'runtime/candidates/*-candidate.zip' || 'runtime/github-release/*-setup.exe' }}
+            runtime/logs/candidate-manifest.json
+          if-no-files-found: error
+          compression-level: 0

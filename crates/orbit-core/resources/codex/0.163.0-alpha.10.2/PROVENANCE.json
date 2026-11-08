@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "project": "OpenAI Codex",
+  "cli_version": "0.163.0-alpha.10.2",
+  "source_tag": "rust-v0.163.0-alpha.10.2",
+  "tag_object_sha": "d9151c94a70013f176ff370fa93da02734662e41",
+  "source_commit": "4ebc485ca321243727539187169425fcf972f2c4",
+  "catalog": {
+    "path": "models.json",
+    "source_path": "codex-rs/models-manager/models.json",
+    "url": "https://raw.githubusercontent.com/openai/codex/4ebc485ca321243727539187169425fcf972f2c4/codex-rs/models-manager/models.json",
+    "bytes": 472072,
+    "sha256": "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+    "models": 11,
+    "distinct_entry_fields": 50,
+    "modified": false
+  },
+  "license": {
+    "identifier": "Apache-2.0",
+    "path": "LICENSE",
+    "url": "https://raw.githubusercontent.com/openai/codex/4ebc485ca321243727539187169425fcf972f2c4/LICENSE",
+    "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+  },
+  "notice": {
+    "path": "NOTICE",
+    "url": "https://raw.githubusercontent.com/openai/codex/4ebc485ca321243727539187169425fcf972f2c4/NOTICE",
+    "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+  },
+  "contract_sources": [
+    {
+      "path": "codex-rs/protocol/src/openai_models.rs",
+      "url": "https://raw.githubusercontent.com/openai/codex/4ebc485ca321243727539187169425fcf972f2c4/codex-rs/protocol/src/openai_models.rs",
+      "sha256": "4b080aeaf5c158104e27d8277f3bc03ee3ad55b55a41c30a788d831fb2e2a99f"
+    },
+    {
+      "path": "codex-rs/models-manager/src/lib.rs",
+      "url": "https://raw.githubusercontent.com/openai/codex/4ebc485ca321243727539187169425fcf972f2c4/codex-rs/models-manager/src/lib.rs",
+      "sha256": "b31b6e8fdaebedbbf07999b27c02201020e8d876ae293ac05a8fe4bf051244d3"
+    },
+    {
+      "path": "codex-rs/core/src/config/mod.rs",
+      "url": "https://raw.githubusercontent.com/openai/codex/4ebc485ca321243727539187169425fcf972f2c4/codex-rs/core/src/config/mod.rs",
+      "sha256": "cbd8dd6d50cb7d61183d309cbefa95cd368de87bf44d2ac60e83c3a2aff59658"
+    }
+  ],
+  "verification": "Exact official catalog bytes matched the installed public CLI catalog after removing one trailing LF on 2026-10-21; this does not identify the running Desktop executable or prove client loading.",
+  "documentation": "https://learn.chatgpt.com/docs/enterprise/roll-out-a-gateway",
+  "maintenance": "Keep this version immutable. A new Desktop/CLI version requires a separate source pin, complete template review and compiler tests; do not select latest dynamically."
+}

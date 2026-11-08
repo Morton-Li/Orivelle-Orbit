@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "evidence_level": "synthetic_protocol_fixture",
+  "complete_desktop_catalog": false,
+  "models": [
+    {
+      "id": "orbit-fixture-main",
+      "role": "main",
+      "text": "Synthetic main fixture complete."
+    },
+    {
+      "id": "orbit-fixture-aux",
+      "role": "aux",
+      "text": "Synthetic auxiliary fixture complete."
+    }
+  ],
+  "tool": {
+    "name": "orbit_fixture_read",
+    "arguments": { "fixture": "synthetic-only" }
+  }
+}

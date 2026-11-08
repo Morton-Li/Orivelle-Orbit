@@ -1,0 +1,149 @@
+name: Release Orbit
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-release
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Verify release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      windows_packaging: ${{ steps.source.outputs.windows_packaging }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Check stable tag, versions and main ancestry
+        id: source
+        shell: bash
+        env:
+          ORBIT_WINDOWS_PACKAGING: ${{ vars.ORBIT_WINDOWS_PACKAGING == 'true' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          node scripts/github-release.mjs validate-tag "$GITHUB_REF_NAME"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          printf 'windows_packaging=%s\n' "$ORBIT_WINDOWS_PACKAGING" >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: Sign and package macOS arm64
+    needs: source
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: codesign
+    outputs:
+      updater_public_key: ${{ steps.package.outputs.updater_public_key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Build, notarize and sign updater
+        id: package
+        shell: bash
+        env:
+          ORBIT_RELEASE_UPDATER_PUBLIC_KEY: ${{ vars.ORBIT_RELEASE_UPDATER_PUBLIC_KEY }}
+          ORBIT_RELEASE_MAC_CERTIFICATE_SHA256: ${{ vars.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.CODESIGN_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          node scripts/native-workflow.mjs github-release
+          printf 'updater_public_key=%s\n' "$ORBIT_RELEASE_UPDATER_PUBLIC_KEY" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: orbit-release-macos
+          path: runtime/github-release/
+          if-no-files-found: error
+          compression-level: 0
+
+  windows:
+    name: Package Windows x64
+    needs: source
+    if: ${{ needs.source.outputs.windows_packaging == 'true' }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Build NSIS installer
+        run: node scripts/native-workflow.mjs github-bundle
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: orbit-release-windows
+          path: runtime/github-release/
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Verify and publish GitHub Release
+    needs: [source, macos, windows]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.source.result == 'success' &&
+        needs.macos.result == 'success' &&
+        needs.windows.result == (needs.source.outputs.windows_packaging == 'true' && 'success' || 'skipped')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: orbit-release-*
+          path: runtime/release-to-publish
+          merge-multiple: true
+
+      - name: Publish verified draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORBIT_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+          ORBIT_RELEASE_UPDATER_PUBLIC_KEY: ${{ needs.macos.outputs.updater_public_key }}
+          ORBIT_WINDOWS_PACKAGING: ${{ needs.source.outputs.windows_packaging }}
+        run: node scripts/github-release.mjs publish "$GITHUB_REF_NAME" runtime/release-to-publish
