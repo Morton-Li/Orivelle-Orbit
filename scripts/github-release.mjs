@@ -57,13 +57,20 @@ export async function prepareReleaseSource(tag, directory = process.cwd()) {
     "src-tauri/tauri.conf.json",
   ]) {
     const text = await readFile(path.join(directory, file), "utf8");
-    const manifest = JSON.parse(text);
-    manifest.version = version;
-    if (file === "package-lock.json") manifest.packages[""].version = version;
-    const next = JSON.stringify(manifest, null, 2) + "\n";
-    const updated = text.includes("\r\n")
-      ? next.replaceAll("\n", "\r\n")
-      : next;
+    let updated = replaceVersion(
+      text,
+      /^(  "version": )"[^"\r\n]+"(?=,?\r?$)/gm,
+      version,
+      file,
+    );
+    if (file === "package-lock.json") {
+      updated = replaceVersion(
+        updated,
+        /^(    "": \{\r?\n      "name": "[^"\r\n]+",\r?\n      "version": )"[^"\r\n]+"(?=,?\r?$)/gm,
+        version,
+        "package-lock.json root package",
+      );
+    }
     if (updated !== text) changes.set(file, updated);
   }
   const cargoToml = await readFile(path.join(directory, "Cargo.toml"), "utf8");
