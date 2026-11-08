@@ -20,8 +20,6 @@ import {
   verifySource,
 } from "../../scripts/candidate-evidence.mjs";
 
-const testAppBundle = process.platform === "win32" ? test.skip : test;
-
 const plist = {
   CFBundleIdentifier: "io.orivelle.orbit",
   CFBundleShortVersionString: "0.1.0",
@@ -71,142 +69,112 @@ async function fixture(t) {
   };
 }
 
-testAppBundle(
-  "bundle proof includes resources, metadata and executable permissions",
-  async (t) => {
-    const options = await fixture(t);
-    const before = await inspectMacApp(options);
-    assert.deepEqual(before.codex_source_materials, {
-      project: "OpenAI Codex",
-      cli_version: "0.163.0-alpha.10.2",
-      source_commit: "4ebc485ca321243727539187169425fcf972f2c4",
-      catalog_sha256:
-        "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
-      files: CODEX_SOURCE_MATERIALS.files.map(({ path, bytes, sha256 }) => ({
-        path,
-        bytes,
-        sha256,
-      })),
-    });
-    await writeFile(options.icon, "changed icon");
-    const changedResource = await inspectMacApp(options);
-    assert.notEqual(before.package_sha256, changedResource.package_sha256);
-    await chmod(options.binary, 0o600);
-    await assert.rejects(inspectMacApp(options), /executable differs/);
-  },
-);
+test("bundle proof includes resources, metadata and executable permissions", async (t) => {
+  const options = await fixture(t);
+  const before = await inspectMacApp(options);
+  assert.deepEqual(before.codex_source_materials, {
+    project: "OpenAI Codex",
+    cli_version: "0.163.0-alpha.10.2",
+    source_commit: "4ebc485ca321243727539187169425fcf972f2c4",
+    catalog_sha256:
+      "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+    files: CODEX_SOURCE_MATERIALS.files.map(({ path, bytes, sha256 }) => ({
+      path,
+      bytes,
+      sha256,
+    })),
+  });
+  await writeFile(options.icon, "changed icon");
+  const changedResource = await inspectMacApp(options);
+  assert.notEqual(before.package_sha256, changedResource.package_sha256);
+  await chmod(options.binary, 0o600);
+  await assert.rejects(inspectMacApp(options), /executable differs/);
+});
 
-testAppBundle(
-  "required Codex materials cannot be omitted or disabled by empty expectations",
-  async (t) => {
-    const options = await fixture(t);
-    for (const material of CODEX_SOURCE_MATERIALS.files) {
-      const target = path.join(options.app, material.path);
-      const original = await readFile(target);
-      await rm(target);
-      await assert.rejects(inspectMacApp(options), /Codex source material/);
-      await assert.rejects(
-        inspectMacApp({ ...options, expected: { ...expected, resources: [] } }),
-        /Codex source material/,
-      );
-      await writeFile(target, original);
-    }
-  },
-);
-
-testAppBundle(
-  "same-length altered Codex materials fail their exact source hashes",
-  async (t) => {
-    const options = await fixture(t);
-    for (const material of CODEX_SOURCE_MATERIALS.files) {
-      const target = path.join(options.app, material.path);
-      const original = await readFile(target);
-      const altered = Buffer.from(original);
-      altered[0] ^= 1;
-      await writeFile(target, altered);
-      await assert.rejects(inspectMacApp(options), /Codex source material/);
-      await writeFile(target, original);
-    }
-  },
-);
-
-testAppBundle(
-  "correct Codex bytes at another resource destination do not satisfy the pin",
-  async (t) => {
-    const options = await fixture(t);
-    const wrong = path.join(
-      options.app,
-      "Contents/Resources/codex-wrong-target",
-    );
-    await mkdir(wrong);
-    for (const material of CODEX_SOURCE_MATERIALS.files) {
-      const target = path.join(options.app, material.path);
-      const misplaced = path.join(wrong, material.name);
-      await rename(target, misplaced);
-      await assert.rejects(inspectMacApp(options), /Codex source material/);
-      await rename(misplaced, target);
-    }
-  },
-);
-
-testAppBundle(
-  "a directory cannot replace a required Codex regular file",
-  async (t) => {
-    const options = await fixture(t);
-    const target = path.join(options.app, CODEX_SOURCE_MATERIALS.files[0].path);
+test("required Codex materials cannot be omitted or disabled by empty expectations", async (t) => {
+  const options = await fixture(t);
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(options.app, material.path);
+    const original = await readFile(target);
     await rm(target);
-    await mkdir(target);
     await assert.rejects(inspectMacApp(options), /Codex source material/);
-  },
-);
+    await assert.rejects(
+      inspectMacApp({ ...options, expected: { ...expected, resources: [] } }),
+      /Codex source material/,
+    );
+    await writeFile(target, original);
+  }
+});
 
-testAppBundle(
-  "a replaced app executable cannot inherit the compiled candidate proof",
-  async (t) => {
-    const options = await fixture(t);
-    await writeFile(options.binary, "replacement executable");
-    await assert.rejects(inspectMacApp(options), /executable differs/);
-  },
-);
+test("same-length altered Codex materials fail their exact source hashes", async (t) => {
+  const options = await fixture(t);
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(options.app, material.path);
+    const original = await readFile(target);
+    const altered = Buffer.from(original);
+    altered[0] ^= 1;
+    await writeFile(target, altered);
+    await assert.rejects(inspectMacApp(options), /Codex source material/);
+    await writeFile(target, original);
+  }
+});
 
-testAppBundle(
-  "wrong identity, version, minimum system or executable traversal is rejected",
-  async (t) => {
-    const options = await fixture(t);
-    for (const patch of [
-      { CFBundleIdentifier: "another.app" },
-      { CFBundleShortVersionString: "0.2.0" },
-      { LSMinimumSystemVersion: "14.0" },
-      { CFBundleExecutable: "../private" },
-    ]) {
-      await assert.rejects(
-        inspectMacApp({
-          ...options,
-          metadata: async () => ({ ...plist, ...patch }),
-        }),
-        /metadata differs/,
-      );
-    }
-  },
-);
+test("correct Codex bytes at another resource destination do not satisfy the pin", async (t) => {
+  const options = await fixture(t);
+  const wrong = path.join(options.app, "Contents/Resources/codex-wrong-target");
+  await mkdir(wrong);
+  for (const material of CODEX_SOURCE_MATERIALS.files) {
+    const target = path.join(options.app, material.path);
+    const misplaced = path.join(wrong, material.name);
+    await rename(target, misplaced);
+    await assert.rejects(inspectMacApp(options), /Codex source material/);
+    await rename(misplaced, target);
+  }
+});
 
-testAppBundle(
-  "symlink resources and a bundle outside the project cannot be included",
-  async (t) => {
-    const options = await fixture(t);
-    const other = path.join(options.project, "external-fixture");
-    await writeFile(other, "synthetic private material");
-    await symlink(other, path.join(options.app, "Contents/Resources/link"));
-    await assert.rejects(inspectMacApp(options), /unsupported entry/);
+test("a directory cannot replace a required Codex regular file", async (t) => {
+  const options = await fixture(t);
+  const target = path.join(options.app, CODEX_SOURCE_MATERIALS.files[0].path);
+  await rm(target);
+  await mkdir(target);
+  await assert.rejects(inspectMacApp(options), /Codex source material/);
+});
+
+test("a replaced app executable cannot inherit the compiled candidate proof", async (t) => {
+  const options = await fixture(t);
+  await writeFile(options.binary, "replacement executable");
+  await assert.rejects(inspectMacApp(options), /executable differs/);
+});
+
+test("wrong identity, version, minimum system or executable traversal is rejected", async (t) => {
+  const options = await fixture(t);
+  for (const patch of [
+    { CFBundleIdentifier: "another.app" },
+    { CFBundleShortVersionString: "0.2.0" },
+    { LSMinimumSystemVersion: "14.0" },
+    { CFBundleExecutable: "../private" },
+  ]) {
     await assert.rejects(
       inspectMacApp({
         ...options,
-        project: path.join(options.app, "Contents"),
+        metadata: async () => ({ ...plist, ...patch }),
       }),
-      /project directory/,
+      /metadata differs/,
     );
-  },
-);
+  }
+});
+
+test("symlink resources and a bundle outside the project cannot be included", async (t) => {
+  const options = await fixture(t);
+  const other = path.join(options.project, "external-fixture");
+  await writeFile(other, "synthetic private material");
+  await symlink(other, path.join(options.app, "Contents/Resources/link"));
+  await assert.rejects(inspectMacApp(options), /unsupported entry/);
+  await assert.rejects(
+    inspectMacApp({ ...options, project: path.join(options.app, "Contents") }),
+    /project directory/,
+  );
+});
 
 function inspect({
   head = "a".repeat(40),

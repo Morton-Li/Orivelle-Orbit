@@ -42,5 +42,9 @@ runs:
         set -euo pipefail
         node scripts/native-workflow.mjs preflight
         npm run check
-        node --test tests/build/*.test.mjs
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          node --test tests/build/desktop-fake-gateway.test.mjs tests/build/github-release.test.mjs tests/build/updater-signer-probe.test.mjs
+        else
+          node --test tests/build/*.test.mjs
+        fi
         node scripts/native-workflow.mjs check
