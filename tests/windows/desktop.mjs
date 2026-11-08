@@ -158,6 +158,8 @@ async function exerciseImages(page, navigation) {
   assert((fixture.requests.get("GET /api/v1/orbit/bootstrap") ?? 0) >= 2);
   await navigation.getByRole("link", { name: "接入", exact: true }).click();
   await page.locator("#access-node").selectOption(fixture.nodeId);
+  await page.locator("#model-codex").selectOption(fixture.textModelId);
+  await page.locator("#model-claude").selectOption(fixture.textModelId);
   const configPreviews = page.getByRole("button", {
     name: "预览配置",
     exact: true,
@@ -296,7 +298,12 @@ try {
   assert.equal(initial.platform, "windows");
   assert.deepEqual(initial.connections, []);
   assert.equal(initial.clients.length, 2);
-  assert(initial.clients.every((client) => !client.platform_supported));
+  assert(initial.clients.every((client) => client.platform_supported));
+  assert(
+    initial.clients.every(
+      (client) => client.configuration_access !== "allowed",
+    ),
+  );
   await authorizeAccount(page);
   await exerciseImages(page, navigation);
   await revokeAndLogout(page, navigation);
