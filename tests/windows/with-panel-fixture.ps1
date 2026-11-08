@@ -8,13 +8,26 @@ if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows'
 $panelHost = 'orivelle.powerbyte.io'
 $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
 $originalHosts = [IO.File]::ReadAllBytes($hostsPath)
+$debugPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+$debugApp = 'orivelle-orbit.exe'
 $fixtureDirectory = Join-Path $env:RUNNER_TEMP ('orbit-panel-' + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $fixtureDirectory | Out-Null
 $root = $null
 $server = $null
 $hostsChanged = $false
+$debugAdded = $false
 
 try {
+    # Elevated hosts ignore CDP flags passed in the environment in WebView2 150+.
+    if (-not (Test-Path -LiteralPath $debugPolicy)) {
+        New-Item -Path $debugPolicy -Force | Out-Null
+    }
+    if ((Get-Item -LiteralPath $debugPolicy).GetValueNames() -contains $debugApp) {
+        throw 'An Orbit WebView2 policy already exists on this runner.'
+    }
+    New-ItemProperty -LiteralPath $debugPolicy -Name $debugApp -PropertyType String -Value '--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222' | Out-Null
+    $debugAdded = $true
+
     $root = New-SelfSignedCertificate -Type Custom -Subject 'CN=Orbit CI fixture root' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyUsage CertSign, CRLSign -TextExtension '2.5.29.19={critical}{text}ca=1&pathlength=0' -NotAfter (Get-Date).AddHours(2) -CertStoreLocation 'Cert:\LocalMachine\My'
     $server = New-SelfSignedCertificate -Type SSLServerAuthentication -DnsName $panelHost -Signer $root -KeyExportPolicy Exportable -NotAfter (Get-Date).AddHours(1) -CertStoreLocation 'Cert:\LocalMachine\My'
 
@@ -41,6 +54,9 @@ try {
         throw "Windows desktop integration failed with exit code $LASTEXITCODE."
     }
 } finally {
+    if ($debugAdded) {
+        Remove-ItemProperty -LiteralPath $debugPolicy -Name $debugApp
+    }
     if ($hostsChanged) {
         [IO.File]::WriteAllBytes($hostsPath, $originalHosts)
         Clear-DnsClientCache
@@ -49,7 +65,10 @@ try {
         Remove-Item "Cert:\LocalMachine\My\$($server.Thumbprint)" -DeleteKey
     }
     if ($root) {
-        Remove-Item "Cert:\LocalMachine\Root\$($root.Thumbprint)"
+        $trustedRoot = "Cert:\LocalMachine\Root\$($root.Thumbprint)"
+        if (Test-Path -LiteralPath $trustedRoot) {
+            Remove-Item -LiteralPath $trustedRoot
+        }
         Remove-Item "Cert:\LocalMachine\My\$($root.Thumbprint)" -DeleteKey
     }
     Remove-Item -LiteralPath $fixtureDirectory -Recurse -Force

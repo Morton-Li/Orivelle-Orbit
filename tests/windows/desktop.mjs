@@ -1,7 +1,7 @@
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -29,13 +29,12 @@ const powershell = promisify(execFile);
 const appEnvironment = { ...process.env };
 delete appEnvironment.ORBIT_FIXTURE_PFX;
 delete appEnvironment.ORBIT_FIXTURE_PASSPHRASE;
+delete appEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS;
 const app = spawn(executable, {
   stdio: "inherit",
   env: {
     ...appEnvironment,
     WEBVIEW2_USER_DATA_FOLDER: profile,
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
-      "--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222",
   },
 });
 app.unref();
@@ -62,7 +61,21 @@ async function waitForWebView() {
     }
     await delay(250);
   }
-  throw new Error("Orbit's WebView2 did not start within 60 seconds.");
+  const database = path.join(
+    process.env.APPDATA,
+    "io.orivelle.orbit",
+    "orbit.sqlite3",
+  );
+  console.error(
+    "Orbit data store exists:",
+    await access(database).then(
+      () => true,
+      () => false,
+    ),
+  );
+  throw new Error(
+    "Orbit's WebView2 debugging endpoint did not answer within 60 seconds.",
+  );
 }
 
 function invoke(page, command, request = {}) {
@@ -283,7 +296,10 @@ let browser;
 let page;
 try {
   await waitForWebView();
-  browser = await chromium.connectOverCDP(endpoint, { timeout: 15_000 });
+  browser = await chromium.connectOverCDP(endpoint, {
+    noDefaults: true,
+    timeout: 15_000,
+  });
   const context = browser.contexts()[0];
   if (!context) throw new Error("WebView2 did not expose a browser context.");
   page =
