@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to verify, for example v1.0.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +25,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.source.outputs.tag }}
       windows_packaging: ${{ steps.source.outputs.windows_packaging }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,20 +38,22 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
 
-      - name: Check stable tag, versions and main ancestry
+      - name: Check stable tag and main ancestry
         id: source
         shell: bash
         env:
+          MANUAL_RELEASE_TAG: ${{ inputs.tag }}
           ORBIT_WINDOWS_PACKAGING: ${{ vars.ORBIT_WINDOWS_PACKAGING == 'true' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            tag="v$(node -p 'require("./package.json").version')"
+            tag="$MANUAL_RELEASE_TAG"
           fi
           node scripts/github-release.mjs validate-tag "$tag"
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
           printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
           printf 'windows_packaging=%s\n' "$ORBIT_WINDOWS_PACKAGING" >> "$GITHUB_OUTPUT"
 
   macos:
@@ -61,6 +69,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/prepare-native
+        with:
+          release-tag: ${{ needs.source.outputs.tag }}
 
       - name: Build, self-sign and verify macOS release files
         env:
@@ -91,6 +101,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/prepare-native
+        with:
+          release-tag: ${{ needs.source.outputs.tag }}
 
       - name: Build NSIS installer
         run: node scripts/native-workflow.mjs github-bundle

@@ -4,6 +4,9 @@ inputs:
   validate:
     description: Run the front-end, build script and native checks after setup
     default: "true"
+  release-tag:
+    description: Version tag to apply to the release checkout
+    default: ""
 runs:
   using: composite
   steps:
@@ -11,6 +14,13 @@ runs:
       with:
         node-version-file: .node-version
         package-manager-cache: false
+
+    - name: Apply the release tag version
+      if: inputs.release-tag != ''
+      shell: bash
+      env:
+        ORBIT_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: node scripts/github-release.mjs prepare-source "$ORBIT_RELEASE_TAG"
 
     - name: Prepare the pinned tools
       shell: bash
