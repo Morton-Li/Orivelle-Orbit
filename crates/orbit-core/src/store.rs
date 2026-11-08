@@ -96,9 +96,10 @@ fn windows_private_acl(path: &Path, directory: bool) -> Result<()> {
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    const SCRIPT: &str = r#"$ErrorActionPreference='Stop'; try {
+    const SCRIPT: &str = r#"$ErrorActionPreference='Stop'; $stage='path'; try {
 $p=$env:ORBIT_PRIVATE_PATH; $item=Get-Item -LiteralPath $p -Force;
-if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 };
+if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse point' };
+$stage='descriptor';
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
 $system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');
 $inherit=[Security.AccessControl.InheritanceFlags]::None;
@@ -111,16 +112,18 @@ foreach ($principal in @($sid,$system)) {
  $rule=[Security.AccessControl.FileSystemAccessRule]::new($principal,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow);
  $acl.AddAccessRule($rule);
 };
+$stage='apply';
 Set-Acl -LiteralPath $p -AclObject $acl;
+$stage='verify';
 $actual=Get-Acl -LiteralPath $p;
-if (!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { exit 1 };
+if (!$actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'owner or inheritance' };
 $rules=$actual.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);
-if ($rules.Count -ne 2) { exit 1 };
+if ($rules.Count -ne 2) { throw 'rule count' };
 foreach ($r in $rules) {
- if ($r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $r.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or ($r.IdentityReference.Value -ne $sid.Value -and $r.IdentityReference.Value -ne $system.Value)) { exit 1 };
+ if ($r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $r.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or ($r.IdentityReference.Value -ne $sid.Value -and $r.IdentityReference.Value -ne $system.Value)) { throw 'access rule' };
 };
 [Console]::Write('ORBIT_ACL_OK'); exit 0;
-} catch { exit 1 }"#;
+} catch { [Console]::Write($stage); exit 1 }"#;
     if !path.is_absolute() {
         return Err(fail("local_storage_unavailable"));
     }
@@ -160,6 +163,14 @@ foreach ($r in $rules) {
             return if status.success() && output == b"ORBIT_ACL_OK" {
                 Ok(())
             } else {
+                let stage = match output.as_slice() {
+                    b"path" => "read target metadata",
+                    b"descriptor" => "construct private permissions",
+                    b"apply" => "apply private permissions",
+                    b"verify" => "verify private permissions",
+                    _ => "run the ACL helper",
+                };
+                eprintln!("Orbit could not {stage} on Windows.");
                 Err(fail("local_storage_unavailable"))
             };
         }

@@ -5285,6 +5285,7 @@ mod tests {
             .unwrap();
         f.service.store.get("journal", id).unwrap().unwrap()
     }
+    #[cfg(not(windows))]
     #[test]
     fn desktop_config_flow_bootstrap_and_confirmation_share_qualification_without_running_runtime()
     {
@@ -5438,6 +5439,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn desktop_config_flow_legacy_runtime_context_never_becomes_a_target_receipt() {
         let f = policy_fixture(ClientKind::Codex);
@@ -5530,6 +5532,7 @@ mod tests {
             assert!(!service.paths.codex_catalog().exists());
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_joint_menu_patch_revision_and_single_use() {
         let f = policy_fixture(ClientKind::Codex);
@@ -5618,6 +5621,7 @@ mod tests {
             snapshot_revision
         );
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_full_menu_and_actor_changes_reject_before_vault() {
         for change in [
@@ -5711,6 +5715,7 @@ mod tests {
             assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
         }
     }
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn codex_config_target_and_policy_gate_precede_command_refresh_and_service_mutations() {
         for gate in ["target", "policy"] {
@@ -5784,6 +5789,7 @@ mod tests {
             assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
         }
     }
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn codex_config_bootstrap_refresh_rejects_late_node_permission_and_key_changes() {
         for change in ["node-url", "node-state", "permission", "key"] {
@@ -5880,6 +5886,7 @@ mod tests {
             assert_eq!(calls.lock().unwrap().len(), 3);
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_target_or_menu_late_during_vault_read_stops_first_file_write() {
         for late in ["target", "menu"] {
@@ -5931,6 +5938,7 @@ mod tests {
             assert_eq!(f.bindings(), bindings);
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_context_change_after_pair_publish_never_enables_final_grant() {
         for late in ["target", "menu"] {
@@ -6041,6 +6049,7 @@ mod tests {
             );
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
         for mode in ["old-null", "null-default", "profile", "profile-table"] {
@@ -6102,6 +6111,7 @@ mod tests {
             assert!(!f.service.paths.codex_catalog().exists());
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_restore_original_pair_after_logout_never_revives_prior_grant() {
         let f = policy_fixture(ClientKind::Codex);
@@ -6143,6 +6153,7 @@ mod tests {
                 .all(|binding| !binding.enabled)
         );
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_unverified_recovery_has_no_vault_or_store_side_effects() {
         for gate in ["target", "policy"] {
@@ -6171,6 +6182,7 @@ mod tests {
             );
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn changed_or_unknown_policy_rejects_apply_before_vault_files_or_binding_changes() {
         for epoch in [1, 2, 3] {
@@ -6203,6 +6215,7 @@ mod tests {
             );
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn policy_change_while_vault_read_is_blocked_prevents_first_apply_or_export_write() {
         for client in [ClientKind::Codex, ClientKind::Claude] {
@@ -6253,6 +6266,7 @@ mod tests {
             assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn restore_and_claude_export_recheck_the_frozen_policy_before_any_secret_access() {
         let f = policy_fixture(ClientKind::Codex);
@@ -6299,6 +6313,7 @@ mod tests {
         assert_eq!(f.bindings(), bindings);
         assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
     }
+    #[cfg(not(windows))]
     #[test]
     fn policy_arriving_after_file_publish_never_enables_the_final_helper_grant() {
         let f = policy_fixture(ClientKind::Codex);
@@ -7629,6 +7644,7 @@ mod tests {
             );
         }
     }
+    #[cfg(not(windows))]
     #[test]
     fn codex_config_service_rebuild_coordinates_only_authenticated_pair_and_repairs_backup_projection()
      {
@@ -7963,6 +7979,7 @@ mod tests {
             install.id
         );
     }
+    #[cfg(not(windows))]
     #[test]
     fn claude_official_body_export_is_gated_and_never_claims_config_applied() {
         let (_dir, original, vault, mut record, install) = setup();

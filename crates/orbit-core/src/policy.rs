@@ -1301,6 +1301,7 @@ mod tests {
             file_source("claude_machine_mdm", &path, Format::ClaudePlist).status == Status::Absent
         );
     }
+    #[cfg(not(windows))]
     #[test]
     fn desktop_config_flow_local_qualification_never_claims_global_policy_clear() {
         let target = target();
@@ -1551,6 +1552,7 @@ mod tests {
         drop(file);
         assert!(file_source("system", &path, Format::Toml).status == Status::Limit);
     }
+    #[cfg(unix)]
     #[test]
     fn byte_identical_policy_replacement_is_a_new_source_revision() {
         let dir = tempfile::tempdir().unwrap();

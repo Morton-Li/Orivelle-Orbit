@@ -2383,11 +2383,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         let original = b"# user comment\nweb_search = 'disabled'\n";
         fs::write(&path, original).unwrap();
+        let helper = dir.path().join("orbit-helper");
         let patched = codex_patch(
             Some(original),
             "https://edge.test/v1",
             "model",
-            Path::new("/fixture/orbit-helper"),
+            &helper,
             &uuid(),
         )
         .unwrap();
@@ -2577,21 +2578,28 @@ mod tests {
     #[test]
     fn preview_diff_contains_actual_owned_changes_and_redacts_old_secrets() {
         let original=b"model='old'\n[model_providers.orivelle_orbit]\ncustom_unowned='keep'\nexperimental_bearer_token='original-secret'\n[model_providers.orivelle_orbit.auth]\ncwd='/user/owned'\n";
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("orbit-credential-helper");
         let after = codex_patch(
             Some(original),
             "https://edge.test/v1",
             "new",
-            Path::new("/private/orbit/bin/orbit-credential-helper"),
+            &helper,
             &uuid(),
         )
         .unwrap();
         let diff = codex_redacted_diff(Some(original), &after).unwrap();
         assert!(diff.contains("auth.command"));
-        assert!(diff.contains("/private/orbit/bin/orbit-credential-helper"));
+        assert!(diff.contains("orbit-credential-helper"));
         assert!(diff.contains("auth.args"));
         assert!(diff.contains("experimental_bearer_token"));
         assert!(!diff.contains("original-secret"));
         let after = std::str::from_utf8(&after).unwrap();
+        let document = after.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            document["model_providers"]["orivelle_orbit"]["auth"]["command"].as_str(),
+            helper.to_str(),
+        );
         assert!(after.contains("custom_unowned"));
         assert!(after.contains("cwd"));
     }
