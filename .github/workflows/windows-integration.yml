@@ -8,6 +8,7 @@ on:
       - ".github/workflows/windows-integration.yml"
       - ".github/actions/prepare-native/action.yml"
       - "scripts/native-workflow.mjs"
+      - "tests/build/**"
       - "tests/windows/**"
 
 permissions:
@@ -17,31 +18,52 @@ concurrency:
   group: orbit-windows-integration-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
-  windows:
-    name: Build and verify Windows x64
+  validation:
+    name: Run Windows regression tests
     runs-on: windows-2025
-    timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-        env:
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: core.autocrlf
-          GIT_CONFIG_VALUE_0: "false"
 
       - uses: ./.github/actions/prepare-native
 
-      - name: Build Windows x64 candidate
-        run: node scripts/native-workflow.mjs candidate
-
       - name: Run browser workflow tests
         run: npm run test:e2e -- --reporter=line
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ failure() }}
+        with:
+          name: orbit-windows-regression-failure
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows:
+    name: Build and verify Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/prepare-native
+        with:
+          validate: "false"
+
+      - name: Build Windows x64 candidate
+        run: node scripts/native-workflow.mjs candidate
 
       - name: Prepare WebView2 Runtime
         shell: pwsh
@@ -75,6 +97,5 @@ jobs:
             runtime/logs/native-preflight.json
             runtime/logs/candidate-manifest.json
             runtime/logs/windows-integration/
-            test-results/
           if-no-files-found: ignore
           retention-days: 7

@@ -111,7 +111,13 @@ test(
 for (const scenario of ["ignore-term", "inherited-pipe"]) {
   test(
     `failed signer ${scenario} is bounded, clears owned keys and preserves sibling`,
-    { timeout: 7_000 },
+    {
+      timeout: 7_000,
+      skip:
+        process.platform === "win32" && scenario === "inherited-pipe"
+          ? "The inherited-pipe scenario uses a POSIX process group"
+          : false,
+    },
     async () =>
       workspace(async (root) => {
         const sibling = path.join(root, "runtime/tmp/existing-sibling");
