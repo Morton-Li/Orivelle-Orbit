@@ -165,13 +165,13 @@ if (process.platform === "darwin") {
     process.env.ORBIT_DEVELOPER_DIR ?? "/Library/Developer/CommandLineTools";
   const sdk =
     process.env.ORBIT_MAC_SDK ?? path.join(developer, "SDKs", "MacOSX15.4.sdk");
-  const clang = path.join(developer, "usr", "bin", "clang");
-  await Promise.all([access(clang), access(sdk)]);
+  Object.assign(env, { DEVELOPER_DIR: developer, SDKROOT: sdk });
+  const clang = inspect("/usr/bin/xcrun", ["--find", "clang"]);
+  const clangxx = inspect("/usr/bin/xcrun", ["--find", "clang++"]);
+  await Promise.all([access(clang), access(clangxx), access(sdk)]);
   Object.assign(env, {
-    DEVELOPER_DIR: developer,
-    SDKROOT: sdk,
     CC: clang,
-    CXX: path.join(developer, "usr", "bin", "clang++"),
+    CXX: clangxx,
     CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: clang,
     MACOSX_DEPLOYMENT_TARGET: "15.0",
   });
