@@ -403,15 +403,20 @@ pub async fn use_history_as_input(
     .map_err(|_| fail("image_worker_failed"))?
 }
 #[tauri::command]
-pub fn create_image_task(native: State<'_, Native>, request: CreateTask) -> Result<TaskView> {
-    native.service.create_image_task(
-        &request.connection_id,
-        request.expected_revision,
-        &request.model_id,
-        request.prompt,
-        request.parameters,
-        request.input_ids,
-    )
+pub async fn create_image_task(native: State<'_, Native>, request: CreateTask) -> Result<TaskView> {
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.create_image_task(
+            &request.connection_id,
+            request.expected_revision,
+            &request.model_id,
+            request.prompt,
+            request.parameters,
+            request.input_ids,
+        )
+    })
+    .await
+    .map_err(|_| fail("image_worker_failed"))?
 }
 #[tauri::command]
 pub fn cancel_image_task(native: State<'_, Native>, request: Task) -> Result<TaskView> {

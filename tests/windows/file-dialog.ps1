@@ -10,7 +10,12 @@ $element = [System.Windows.Automation.AutomationElement]
 $processCondition = [System.Windows.Automation.PropertyCondition]::new($element::ProcessIdProperty, $OrbitProcess)
 $dialogCondition = [System.Windows.Automation.PropertyCondition]::new($element::ClassNameProperty, '#32770')
 $condition = [System.Windows.Automation.AndCondition]::new($processCondition, $dialogCondition)
-$fileNameCondition = [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1001')
+$fileNameIds = [System.Windows.Automation.OrCondition]::new([System.Windows.Automation.Condition[]]@(
+    [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1148'),
+    [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1001')
+))
+$valueCondition = [System.Windows.Automation.PropertyCondition]::new($element::IsValuePatternAvailableProperty, $true)
+$fileNameCondition = [System.Windows.Automation.AndCondition]::new($fileNameIds, $valueCondition)
 $acceptCondition = [System.Windows.Automation.PropertyCondition]::new($element::AutomationIdProperty, '1')
 
 $deadline = (Get-Date).AddSeconds(15)
