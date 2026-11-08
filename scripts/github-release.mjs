@@ -219,12 +219,10 @@ export async function assembleRelease(
   tag,
   repository,
   publicKey,
-  { includeWindows = false } = {},
 ) {
   const version = releaseVersion(tag);
   const files = releaseNames(version);
-  const required = [files.macos, files.update, files.signature];
-  if (includeWindows) required.push(files.windows);
+  const required = [files.macos, files.windows, files.update, files.signature];
   const permitted = new Set([...required, "latest.json", "SHA256SUMS"]);
   const entries = await readdir(directory);
   if (
@@ -330,11 +328,8 @@ async function publishRelease(
   repository,
   commit,
   publicKey,
-  includeWindows,
 ) {
-  const assets = await assembleRelease(directory, tag, repository, publicKey, {
-    includeWindows,
-  });
+  const assets = await assembleRelease(directory, tag, repository, publicKey);
   const repo = "repos/" + repository;
   if (api(repo + "/commits/" + tag).sha !== commit) {
     throw new Error("The release tag changed after the build.");
@@ -468,7 +463,6 @@ if (
       process.env.GITHUB_REPOSITORY,
       process.env.ORBIT_RELEASE_COMMIT,
       process.env.ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
-      process.env.ORBIT_WINDOWS_PACKAGING === "true",
     );
   } else {
     throw new Error(
