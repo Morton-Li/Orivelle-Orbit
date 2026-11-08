@@ -3713,7 +3713,7 @@ impl Service {
         Ok(task)
     }
     async fn execute_image(self: Arc<Self>, mut snapshot: TaskSnapshot) {
-        let Ok(_permit) = self.image_workers.clone().acquire_owned().await else {
+        let Ok(permit) = self.image_workers.clone().acquire_owned().await else {
             return;
         };
         if self
@@ -3755,7 +3755,15 @@ impl Service {
             snapshot.task.state = "unconfirmed".into();
             snapshot.task.error = Some(fail("result_unconfirmed"));
         }
-        let _ = self.persist_task(&snapshot);
+        {
+            let Ok(_gate) = self.account_gate.lock() else {
+                return;
+            };
+            let _ = self.persist_task(&snapshot);
+            // History mutations can proceed once local writes finish. A later
+            // usage response only merges financial facts into the current task.
+            drop(permit);
+        }
         let _ = self.reconcile_task(&mut snapshot).await;
     }
     async fn send_image_once(&self, snapshot: &mut TaskSnapshot) -> Result<()> {
