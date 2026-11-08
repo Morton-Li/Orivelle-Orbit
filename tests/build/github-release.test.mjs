@@ -88,7 +88,7 @@ test("a release tag prepares a clean, versioned build checkout", async (t) => {
   }
 });
 
-test("Windows packaging is opt-in and the release advertises only the verified macOS updater", async (t) => {
+test("the release requires both installers and advertises the verified macOS updater", async (t) => {
   const directory = await mkdtemp(path.resolve("runtime/tmp/github-release-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const wire = JSON.parse(
@@ -106,37 +106,16 @@ test("Windows packaging is opt-in and the release advertises only the verified m
   await writeFile(path.join(directory, names.signature), wire.signature);
   await writeFile(path.join(directory, names.macos), "synthetic disk image");
 
-  const macosAssets = await assembleRelease(
-    directory,
-    "v0.2.0",
-    "Owner/Orbit",
-    wire.public_key,
-  );
-  assert.equal(macosAssets.length, 5);
-  assert(!macosAssets.some(({ name }) => name === names.windows));
-
-  const includeWindows = { includeWindows: true };
-  await assert.rejects(
-    assembleRelease(
-      directory,
-      "v0.2.0",
-      "Owner/Orbit",
-      wire.public_key,
-      includeWindows,
-    ),
-    /asset set is incomplete/,
-  );
-  await writeFile(path.join(directory, names.windows), "synthetic installer");
   await assert.rejects(
     assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
     /asset set is incomplete or unexpected/,
   );
+  await writeFile(path.join(directory, names.windows), "synthetic installer");
   const assets = await assembleRelease(
     directory,
     "v0.2.0",
     "Owner/Orbit",
     wire.public_key,
-    includeWindows,
   );
   const manifest = JSON.parse(
     await readFile(path.join(directory, "latest.json"), "utf8"),

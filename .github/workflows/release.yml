@@ -26,7 +26,6 @@ jobs:
     outputs:
       commit: ${{ steps.source.outputs.commit }}
       tag: ${{ steps.source.outputs.tag }}
-      windows_packaging: ${{ steps.source.outputs.windows_packaging }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,7 +42,6 @@ jobs:
         shell: bash
         env:
           MANUAL_RELEASE_TAG: ${{ inputs.tag }}
-          ORBIT_WINDOWS_PACKAGING: ${{ vars.ORBIT_WINDOWS_PACKAGING == 'true' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
@@ -54,7 +52,6 @@ jobs:
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
           printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
-          printf 'windows_packaging=%s\n' "$ORBIT_WINDOWS_PACKAGING" >> "$GITHUB_OUTPUT"
 
   macos:
     name: Sign and package macOS arm64
@@ -91,9 +88,12 @@ jobs:
   windows:
     name: Package Windows x64
     needs: source
-    if: ${{ needs.source.outputs.windows_packaging == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,6 +106,26 @@ jobs:
 
       - name: Build NSIS installer
         run: node scripts/native-workflow.mjs github-bundle
+
+      - name: Install and exercise the packaged Windows application
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath 'runtime/github-release' -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw 'Expected exactly one Windows installer.'
+          }
+          $installDir = Join-Path $env:RUNNER_TEMP ('Orbit Install ' + [Guid]::NewGuid().ToString('N'))
+          $setup = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) {
+            throw "Orbit installation failed with exit code $($setup.ExitCode)."
+          }
+          $installed = Join-Path $installDir 'orivelle-orbit.exe'
+          $built = 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
+          if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath $built).Hash) {
+            throw 'The installer payload differs from the compiled Windows application.'
+          }
+          ./tests/windows/with-panel-fixture.ps1 -Executable $installed
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -122,7 +142,7 @@ jobs:
         !cancelled() && github.event_name == 'push' &&
         needs.source.result == 'success' &&
         needs.macos.result == 'success' &&
-        needs.windows.result == (needs.source.outputs.windows_packaging == 'true' && 'success' || 'skipped')
+        needs.windows.result == 'success'
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -151,5 +171,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ORBIT_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
           ORBIT_RELEASE_UPDATER_PUBLIC_KEY: ${{ vars.ORBIT_RELEASE_UPDATER_PUBLIC_KEY }}
-          ORBIT_WINDOWS_PACKAGING: ${{ needs.source.outputs.windows_packaging }}
         run: node scripts/github-release.mjs publish "$GITHUB_REF_NAME" runtime/release-to-publish

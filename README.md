@@ -4,7 +4,10 @@ Orbit 是 Orivelle 的桌面应用。用同一个账户连接 Codex 和 Claude D
 
 ## 📦 获取 Orbit
 
-macOS 安装包适用于搭载 Apple 芯片、运行 macOS 15 或更高版本的 Mac。从 [Releases](https://github.com/Morton-Li/Orivelle-Orbit/releases/latest) 下载 `.dmg`，打开后将 Orbit 拖到「应用程序」。
+从 [Releases](https://github.com/Morton-Li/Orivelle-Orbit/releases/latest) 下载适合你设备的安装包。
+
+- **macOS**（Apple 芯片，macOS 15 或更高版本）下载 `.dmg`，打开后将 Orbit 拖到「应用程序」。
+- **Windows**（x64）下载以 `-setup.exe` 结尾的安装包，双击并按提示安装。
 
 如果首次打开时 macOS 提示无法验证开发者，请确认安装包来自本仓库，然后在「系统设置」的「隐私与安全性」中选择「仍要打开」。
 
@@ -78,9 +81,9 @@ Orivelle 会处理你提交的提示词和参考图。收到的图片保存在�
 
 ### 检查更新
 
-在「设置」的「更新」中选择「检查更新」，也可开启「启动时检查更新」。有可安装的更新时，选择「下载并验证」，等当前任务结束后确认「安装并重启」。
+在 Mac 上，打开「设置」的「更新」并选择「检查更新」，也可开启「启动时检查更新」。有可安装的更新时，选择「下载并验证」，等当前任务结束后确认「安装并重启」。
 
-需要手动更新时，从 **Releases** 下载新版安装包，按发布说明安装。
+Windows 通过 **Releases** 手动更新。从发布页下载新版安装包，按提示安装。Mac 用户也可以用这个方式更新。
 
 ### 设置和诊断
 
