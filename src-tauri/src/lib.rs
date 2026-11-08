@@ -45,12 +45,10 @@ pub fn run() {
         .setup(|app| {
             let authorized = cfg!(feature = "system-integration");
             let root = if authorized {
-                app.path()
-                    .app_data_dir()
-                    .map_err(|_| {
-                        eprintln!("Orbit could not resolve the app data directory.");
-                        fail("local_storage_unavailable")
-                    })?
+                app.path().app_data_dir().map_err(|_| {
+                    eprintln!("Orbit could not resolve the app data directory.");
+                    fail("local_storage_unavailable")
+                })?
             } else {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/gui")
             };
@@ -74,13 +72,10 @@ pub fn run() {
                     .inspect_err(|error| eprintln!("Orbit data store setup: {}", error.code))?,
             );
             let paths = if authorized {
-                let home = app
-                    .path()
-                    .home_dir()
-                    .map_err(|_| {
-                        eprintln!("Orbit could not resolve the user home directory.");
-                        fail("local_storage_unavailable")
-                    })?;
+                let home = app.path().home_dir().map_err(|_| {
+                    eprintln!("Orbit could not resolve the user home directory.");
+                    fail("local_storage_unavailable")
+                })?;
                 SystemPaths::native(&root, &home)?
             } else {
                 SystemPaths::isolated(&root)?
