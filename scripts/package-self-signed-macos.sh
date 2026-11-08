@@ -8,16 +8,9 @@ fi
 : "${CODESIGN_CERTIFICATE_P12_BASE64:?Set this secret in the codesign environment}"
 : "${CODESIGN_CERTIFICATE_PASSWORD:?Set this secret in the codesign environment}"
 
-certificate_sha256=FEEE897C91F36CAFE6AE34CD4AD50F701C89D688DF68DD22D09E0FFD77635FEB
-app_name='Orivelle Orbit.app'
-app="$GITHUB_WORKSPACE/runtime/target/aarch64-apple-darwin/release/bundle/macos/$app_name"
-version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
-  echo 'The application bundle has an invalid version.' >&2
-  exit 1
-fi
-output="$GITHUB_WORKSPACE/runtime/candidates/Orivelle-Orbit-$version-macos-arm64-self-signed.dmg"
+read -r certificate_sha256 < "$GITHUB_WORKSPACE/scripts/macos-signing-certificate.sha256"
 
+previous_umask="$(umask)"
 umask 077
 work="$(mktemp -d "$RUNNER_TEMP/orbit-self-sign.XXXXXX")"
 keychain="$work/signing.keychain-db"
@@ -69,6 +62,22 @@ if [[ "$(/usr/bin/security find-identity -p codesigning "$keychain")" != *"$iden
   exit 1
 fi
 
+# The release bundler can use the identity while this temporary keychain exists.
+if (( $# > 0 )); then
+  umask "$previous_umask"
+  APPLE_SIGNING_IDENTITY="$identity" "$@"
+  exit
+fi
+
+app_name='Orivelle Orbit.app'
+app="$GITHUB_WORKSPACE/runtime/target/aarch64-apple-darwin/release/bundle/macos/$app_name"
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
+  echo 'The application bundle has an invalid version.' >&2
+  exit 1
+fi
+output="$GITHUB_WORKSPACE/runtime/candidates/Orivelle-Orbit-$version-macos-arm64-self-signed.dmg"
+
 mkdir -m 755 "$work/image"
 staged_app="$work/image/$app_name"
 /usr/bin/ditto "$app" "$staged_app"
@@ -84,7 +93,7 @@ mkdir "$mount"
 /usr/bin/hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$image" >/dev/null
 mounted=true
 packaged_app="$mount/$app_name"
-/usr/bin/codesign --verify --deep --strict -R 'identifier "io.orivelle.orbit"' "$packaged_app"
+/usr/bin/codesign --verify --deep --strict -R '=identifier "io.orivelle.orbit"' "$packaged_app"
 /usr/bin/codesign --display --extract-certificates="$work/embedded-" "$packaged_app"
 if [[ "$(fingerprint -sha256 -inform DER -in "$work/embedded-0")" != "$certificate_sha256" ]]; then
   echo 'The packaged app uses a different certificate.' >&2
