@@ -33,6 +33,9 @@ impl RuntimeLock {
             .create(true)
             .truncate(false)
             .open(&path)
+            .inspect_err(|error| {
+                eprintln!("Orbit could not open the runtime lock ({}).", error.kind())
+            })
             .map_err(|_| fail("local_storage_unavailable"))?;
         private_file(&path)?;
         file.try_lock_exclusive()

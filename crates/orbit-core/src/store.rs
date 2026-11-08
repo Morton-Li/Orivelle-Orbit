@@ -60,7 +60,14 @@ pub fn private_directory(path: &Path) -> Result<()> {
     if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink() || !m.is_dir()) {
         return Err(fail("local_storage_unavailable"));
     }
-    fs::create_dir_all(path).map_err(|_| fail("local_storage_unavailable"))?;
+    fs::create_dir_all(path)
+        .inspect_err(|error| {
+            eprintln!(
+                "Orbit could not create a private directory ({}).",
+                error.kind()
+            )
+        })
+        .map_err(|_| fail("local_storage_unavailable"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -134,6 +141,7 @@ foreach ($r in $rules) {
         std::env::var_os("SystemRoot").ok_or_else(|| fail("local_storage_unavailable"))?;
     let executable =
         PathBuf::from(system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let target = if directory { "directory" } else { "file" };
     let mut child = Command::new(executable)
         .args([
             "-NoLogo",
@@ -148,8 +156,14 @@ foreach ($r in $rules) {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
+        .inspect_err(|error| {
+            eprintln!(
+                "Orbit could not start Windows permission setup ({}).",
+                error.kind()
+            )
+        })
         .map_err(|_| fail("local_storage_unavailable"))?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(status) = child
             .try_wait()
@@ -175,7 +189,6 @@ foreach ($r in $rules) {
                     "verify" => "verify private permissions",
                     _ => "run the ACL helper",
                 };
-                let target = if directory { "directory" } else { "file" };
                 let code = u32::from_str_radix(hresult, 16).unwrap_or_default();
                 eprintln!("Orbit could not {stage} on Windows ({target}, {code:#010x}).");
                 Err(fail("local_storage_unavailable"))
@@ -184,6 +197,7 @@ foreach ($r in $rules) {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            eprintln!("Orbit timed out securing a private {target} on Windows.");
             return Err(fail("local_storage_unavailable"));
         }
         std::thread::sleep(Duration::from_millis(20));
