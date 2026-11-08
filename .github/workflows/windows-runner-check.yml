@@ -1,0 +1,25 @@
+name: Windows Runner Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/windows-runner-check.yml"]
+
+permissions: {}
+
+jobs:
+  check:
+    name: Verify Windows x64 runner
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - name: Check Windows and PowerShell
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') {
+            throw "Expected Windows X64, got $env:RUNNER_OS $env:RUNNER_ARCH."
+          }
+          $os = Get-CimInstance -ClassName Win32_OperatingSystem
+          Write-Output "$($os.Caption) $($os.Version) ($env:RUNNER_ARCH)"
+          Write-Output "PowerShell $($PSVersionTable.PSVersion)"
