@@ -11,6 +11,7 @@ use std::time::Duration;
 use url::Url;
 
 pub const PRODUCTION_PANEL_ORIGIN: &str = "https://orivelle.powerbyte.io";
+const USER_AGENT: &str = concat!("Orivelle-Orbit/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone)]
 pub struct Http {
@@ -67,7 +68,7 @@ impl Http {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(10))
-            .user_agent("Orivelle-Orbit/0.1.0")
+            .user_agent(USER_AGENT)
             .build()
             .map_err(|_| fail("network_unavailable"))?;
         // The mapping is an explicit native-only HTTPS route. It does not use
@@ -78,7 +79,7 @@ impl Http {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(10))
-            .user_agent("Orivelle-Orbit/0.1.0")
+            .user_agent(USER_AGENT)
             .build()
             .map_err(|_| fail("network_unavailable"))?;
         Ok(Self {
@@ -119,7 +120,7 @@ impl Http {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(10))
-            .user_agent("Orivelle-Orbit/0.1.0")
+            .user_agent(USER_AGENT)
             .build()
             .map_err(|_| fail("local_tls_client_unavailable"))?;
         Ok(Self {
