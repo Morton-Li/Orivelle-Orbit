@@ -1445,7 +1445,7 @@ fn retire_completed(root: &Path, current: &Path, fault: &dyn Faults) -> Result<(
     sync_directory(&root.join("updates"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::{
