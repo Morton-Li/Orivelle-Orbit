@@ -3,6 +3,7 @@ name: Release Orbit
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,6 +15,7 @@ concurrency:
 jobs:
   source:
     name: Verify release source
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -37,7 +39,11 @@ jobs:
           ORBIT_WINDOWS_PACKAGING: ${{ vars.ORBIT_WINDOWS_PACKAGING == 'true' && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          node scripts/github-release.mjs validate-tag "$GITHUB_REF_NAME"
+          tag="$GITHUB_REF_NAME"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            tag="v$(node -p 'require("./package.json").version')"
+          fi
+          node scripts/github-release.mjs validate-tag "$tag"
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
           printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           printf 'windows_packaging=%s\n' "$ORBIT_WINDOWS_PACKAGING" >> "$GITHUB_OUTPUT"
@@ -58,20 +64,15 @@ jobs:
 
       - uses: ./.github/actions/prepare-native
 
-      - name: Build, notarize and sign updater
+      - name: Build, self-sign and verify macOS release files
         id: package
         shell: bash
         env:
           ORBIT_RELEASE_UPDATER_PUBLIC_KEY: ${{ vars.ORBIT_RELEASE_UPDATER_PUBLIC_KEY }}
-          ORBIT_RELEASE_MAC_CERTIFICATE_SHA256: ${{ vars.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256 }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.CODESIGN_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          CODESIGN_CERTIFICATE_P12_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_P12_BASE64 }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           node scripts/native-workflow.mjs github-release
@@ -113,7 +114,7 @@ jobs:
     needs: [source, macos, windows]
     if: >-
       ${{
-        !cancelled() &&
+        !cancelled() && github.event_name == 'push' &&
         needs.source.result == 'success' &&
         needs.macos.result == 'success' &&
         needs.windows.result == (needs.source.outputs.windows_packaging == 'true' && 'success' || 'skipped')

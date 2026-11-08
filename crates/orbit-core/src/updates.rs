@@ -631,16 +631,20 @@ pub fn validate_macos_bundle(bundle: &Path, version: &str) -> Result<()> {
             .parent()
             .ok_or_else(|| fail("invalid_path"))?
             .join(format!("cert-{}-", uuid()));
+        let mut extract = std::ffi::OsString::from("--extract-certificates=");
+        extract.push(&prefix);
         let result = std::process::Command::new("/usr/bin/codesign")
-            .args(["--display", "--extract-certificates"])
-            .arg(&prefix)
+            .arg("--display")
+            .arg(extract)
             .arg(bundle)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .map_err(|_| fail("update_codesign_invalid"))?;
-        let cert = PathBuf::from(format!("{}0", prefix.display()));
+        let mut cert = prefix.into_os_string();
+        cert.push("0");
+        let cert = PathBuf::from(cert);
         let actual = crate::images::bounded_read(&cert, 64 * 1024).map(|b| sha256(&b));
         let _ = fs::remove_file(&cert);
         if !result.success() || actual?.to_ascii_lowercase() != fingerprint.to_ascii_lowercase() {

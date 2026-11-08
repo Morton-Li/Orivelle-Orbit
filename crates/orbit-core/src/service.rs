@@ -4340,7 +4340,8 @@ impl Service {
         let _operation = self.begin_mutation()?;
         let bootstrap = self.bootstrap()?;
         let text = format!(
-            "Orivelle Orbit 0.1.0\nPlatform: {} / {}\nSchema: {}\nState revision: {}\nSession state: {}\nVault mode: {}\nConnections: {}\nLocal tasks: {}\nClient states: {}\nImages, prompts, account identifiers, URLs, tokens and configuration contents excluded.\n",
+            "Orivelle Orbit {}\nPlatform: {} / {}\nSchema: {}\nState revision: {}\nSession state: {}\nVault mode: {}\nConnections: {}\nLocal tasks: {}\nClient states: {}\nImages, prompts, account identifiers, URLs, tokens and configuration contents excluded.\n",
+            env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
             bootstrap.schema_version,
