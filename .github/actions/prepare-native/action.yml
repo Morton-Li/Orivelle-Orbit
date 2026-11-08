@@ -1,5 +1,9 @@
 name: Prepare Orbit native build
 description: Install the locked toolchain and run native build checks on a hosted runner
+inputs:
+  validate:
+    description: Run the front-end, build script and native checks after setup
+    default: "true"
 runs:
   using: composite
   steps:
@@ -32,6 +36,7 @@ runs:
       run: npm ci
 
     - name: Check Orbit
+      if: inputs.validate == 'true'
       shell: bash
       run: |
         set -euo pipefail
