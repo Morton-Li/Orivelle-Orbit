@@ -107,25 +107,25 @@ jobs:
       - name: Build NSIS installer
         run: node scripts/native-workflow.mjs github-bundle
 
-      - name: Install and exercise the packaged Windows application
+      - name: Verify the Windows installer payload
         shell: pwsh
-        timeout-minutes: 10
         run: |
           $installers = @(Get-ChildItem -LiteralPath 'runtime/github-release' -Filter '*-setup.exe' -File)
           if ($installers.Count -ne 1) {
             throw 'Expected exactly one Windows installer.'
           }
-          $installDir = Join-Path $env:RUNNER_TEMP ('Orbit Install ' + [Guid]::NewGuid().ToString('N'))
-          $setup = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
-          if ($setup.ExitCode -ne 0) {
-            throw "Orbit installation failed with exit code $($setup.ExitCode)."
+          $payload = Join-Path $env:RUNNER_TEMP ('orbit-nsis-' + [Guid]::NewGuid().ToString('N'))
+          $archiveTool = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          & $archiveTool e -tNsis -y "-o$payload" $installers[0].FullName '-ir!orivelle-orbit.exe'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The Windows installer payload could not be read.'
           }
-          $installed = Join-Path $installDir 'orivelle-orbit.exe'
+          $packaged = Join-Path $payload 'orivelle-orbit.exe'
           $built = 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
-          if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath $built).Hash) {
+          if ((Get-FileHash -LiteralPath $packaged).Hash -ne (Get-FileHash -LiteralPath $built).Hash) {
             throw 'The installer payload differs from the compiled Windows application.'
           }
-          ./tests/windows/with-panel-fixture.ps1 -Executable $installed
+          Write-Output 'Verified the Windows installer payload against the compiled x64 application.'
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

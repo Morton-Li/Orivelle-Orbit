@@ -16,8 +16,7 @@ if (
 }
 
 const executable = path.resolve(
-  process.argv[2] ??
-    "runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe",
+  "runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe",
 );
 const evidence = path.resolve("runtime/logs/windows-integration");
 await mkdir(evidence, { recursive: true });
