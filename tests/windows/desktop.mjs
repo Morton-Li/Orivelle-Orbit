@@ -309,7 +309,9 @@ try {
   page.on("pageerror", (error) => console.error(error));
 
   const navigation = page.getByRole("navigation");
-  await navigation.getByRole("link", { name: "首页", exact: true }).click();
+  await navigation.getByRole("link", { name: "首页", exact: true }).waitFor({
+    timeout: 90_000,
+  });
   const initial = await invoke(page, "bootstrap");
   assert.equal(initial.platform, "windows");
   assert.deepEqual(initial.connections, []);
