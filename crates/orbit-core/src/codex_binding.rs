@@ -272,6 +272,7 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
     let mut prepared = Vec::new();
     let mut selected_error = "codex_binding_unavailable";
     let mut selected_default = None;
+    let mut default_alias = selected;
     for model in &scoped {
         if !unique.insert(model.id.as_str()) {
             return Err(fail("codex_catalog_scope_invalid"));
@@ -314,7 +315,8 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
         });
         match one {
             Ok(one) => {
-                if model.id == selected {
+                if model.id == default_alias || default_alias.is_empty() {
+                    default_alias = &model.id;
                     let output: Value = serde_json::from_slice(one.bytes())
                         .map_err(|_| fail("codex_catalog_source_unverified"))?;
                     selected_default = Some(
@@ -353,7 +355,7 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
         source_sha256: codex_catalog::SOURCE_SHA256,
         authorized_aliases: &authorized,
         mappings: &mappings,
-        default_alias: selected,
+        default_alias,
     })?;
     let inputs: Vec<_> = scoped.iter().map(|model| json!({
         "alias": model.id, "provider_id": model.provider_id,
@@ -365,7 +367,7 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
             PROFILE_ID,
             codex_catalog::SOURCE_SHA256,
             context,
-            selected,
+            default_alias,
             catalog.sha256(),
             inputs,
         ))

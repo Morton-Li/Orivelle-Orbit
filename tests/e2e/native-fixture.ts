@@ -211,14 +211,18 @@ export async function fixture(
               restore_source: {
                 backup_group_id: backup.id,
                 expires_at: backup.expires_at,
+                kind: backup.kind,
               },
               impact: ["Synthetic complete original operation group"],
               redacted_diff: "- mixed fixture state\n+ original fixture group",
               expires_at: new Date(Date.now() + 60000).toISOString(),
-              can_apply: restoreMode === "recoverable",
+              can_apply:
+                backup.kind === "switch" || restoreMode === "recoverable",
               can_export_import: false,
               blocking_reason:
-                restoreMode === "recoverable" ? null : "config_conflict",
+                backup.kind === "switch" || restoreMode === "recoverable"
+                  ? null
+                  : "config_conflict",
             };
           }
           if (command === "restore_client_config") {
@@ -227,6 +231,15 @@ export async function fixture(
                 item.id ===
                 control.lastRequests.preview_restore?.backup_group_id,
             )!;
+            if (backup.kind === "switch") {
+              current.backups = current.backups.filter(
+                (item) => item.id !== backup.id,
+              );
+              current.clients.find(
+                (client) => client.client === backup.client,
+              )!.configuration_state = "not_configured";
+              update();
+            }
             return {
               client: backup.client,
               state: "restored",
@@ -247,6 +260,7 @@ export async function fixture(
             client.connection_evidence = null;
             current.backups.push({
               id: "synthetic-config-backup",
+              kind: "switch",
               client: client.client,
               account_id: current.session.account!.id,
               account_label: current.session.account!.label,
@@ -290,7 +304,9 @@ export async function fixture(
               codex_configuration_target:
                 request.client === "codex" ? codexConfigurationTarget : null,
               codex_runtime: request.client === "codex" ? codexRuntime : null,
-              model_id: request.model_id,
+              model_id:
+                (request.claude_models as { primary: string } | undefined)
+                  ?.primary ?? codexCatalog.default_alias,
               context: {
                 account_id: connection.account_id,
                 account_label: current.session.account!.label,

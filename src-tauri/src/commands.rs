@@ -59,27 +59,16 @@ pub struct Node {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DeleteConnection {
-    connection_id: String,
-    expected_revision: u64,
-    expected_credential_revision: Option<String>,
-    revoke_inference_key: bool,
-    confirmed: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RevokeKey {
-    connection_id: String,
-    expected_credential_revision: String,
-    confirmed: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Preview {
     connection_id: String,
     expected_revision: u64,
     client: ClientKind,
-    model_id: String,
+    claude_models: Option<ClaudeRoleModels>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientConfiguration {
+    client: ClientKind,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,18 +133,6 @@ pub struct Settings {
 #[serde(deny_unknown_fields)]
 pub struct Diagnostic {
     preview_id: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Installation {
-    installation_id: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Forget {
-    preview_id: String,
-    acknowledged_backup_loss: bool,
-    confirmed: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,46 +209,12 @@ pub async fn logout(native: State<'_, Native>, request: Connection) -> Result<Bo
     native.service.logout(&request.connection_id).await
 }
 #[tauri::command]
-pub fn select_connection(native: State<'_, Native>, request: Connection) -> Result<BootstrapView> {
-    native.service.select_connection(&request.connection_id)
-}
-#[tauri::command]
 pub fn select_node(native: State<'_, Native>, request: Node) -> Result<BootstrapView> {
     native.service.select_node(
         &request.connection_id,
         &request.node_id,
         request.expected_revision,
     )
-}
-#[tauri::command]
-pub async fn delete_connection(
-    native: State<'_, Native>,
-    request: DeleteConnection,
-) -> Result<BootstrapView> {
-    native
-        .service
-        .delete_connection(
-            &request.connection_id,
-            request.expected_revision,
-            request.expected_credential_revision.as_deref(),
-            request.revoke_inference_key,
-            request.confirmed,
-        )
-        .await
-}
-#[tauri::command]
-pub async fn revoke_inference_key(
-    native: State<'_, Native>,
-    request: RevokeKey,
-) -> Result<BootstrapView> {
-    native
-        .service
-        .revoke_inference_key(
-            &request.connection_id,
-            &request.expected_credential_revision,
-            request.confirmed,
-        )
-        .await
 }
 #[tauri::command]
 pub async fn list_models(native: State<'_, Native>, request: Connection) -> Result<Vec<ModelView>> {
@@ -284,11 +227,11 @@ pub async fn preview_client_config(
 ) -> Result<ConfigPreview> {
     native
         .service
-        .preview_client_config_refreshed(
+        .preview_switch_config(
             &request.connection_id,
             request.expected_revision,
             request.client,
-            &request.model_id,
+            request.claude_models.as_ref(),
         )
         .await
 }
@@ -340,6 +283,16 @@ pub async fn preview_restore(native: State<'_, Native>, request: Backup) -> Resu
     })
     .await
     .map_err(|_| fail("state_unavailable"))?
+}
+#[tauri::command]
+pub async fn backup_client_config(
+    native: State<'_, Native>,
+    request: ClientConfiguration,
+) -> Result<BootstrapView> {
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || service.backup_client_config(request.client))
+        .await
+        .map_err(|_| fail("state_unavailable"))?
 }
 #[tauri::command]
 pub async fn restore_client_config(
@@ -526,29 +479,6 @@ pub async fn export_diagnostics(
     }
     service.export_diagnostics(&request.preview_id, &path)?;
     Ok(Saved { saved: true })
-}
-#[tauri::command]
-pub fn preview_forget_installation(
-    native: State<'_, Native>,
-    request: Installation,
-) -> Result<ForgetInstallationPreview> {
-    native
-        .service
-        .preview_forget_installation(&request.installation_id)
-}
-#[tauri::command]
-pub async fn forget_installation(
-    native: State<'_, Native>,
-    request: Forget,
-) -> Result<BootstrapView> {
-    native
-        .service
-        .forget_installation(
-            &request.preview_id,
-            request.acknowledged_backup_loss,
-            request.confirmed,
-        )
-        .await
 }
 #[tauri::command]
 pub async fn check_update(native: State<'_, Native>, request: Empty) -> Result<UpdateView> {

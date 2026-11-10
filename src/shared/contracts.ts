@@ -1,5 +1,10 @@
 /** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
 export type ClientKind = "codex" | "claude";
+export type ClaudeRoleModels = {
+  primary: string;
+  fallback: string;
+  auxiliary: string;
+};
 export type Theme = "system" | "light" | "dark";
 export type Locale = "zh-CN" | "en";
 export const CAPABILITIES = {
@@ -265,13 +270,9 @@ export type RestoreOwner = {
   panel_origin: string;
   installation_id: string;
 };
-export type InstallationView = {
-  id: string;
-  panel_origin: string;
-  account_labels: string[];
-};
 export type BackupGroup = RestoreOwner & {
   id: string;
+  kind?: "switch" | "manual";
   client: ClientKind;
   created_at: string;
   expires_at: string;
@@ -297,7 +298,6 @@ export type BootstrapView = {
   maintenance_active: boolean;
   session: SessionView;
   connections: ConnectionView[];
-  installations: InstallationView[];
   nodes: NodeView[];
   active_connection_id: string | null;
   clients: ClientView[];
@@ -368,7 +368,11 @@ export type ConfigPreview = ConfigPreviewBase &
         model_id: null;
         context: null;
         restore_owner: RestoreOwner;
-        restore_source: { backup_group_id: string; expires_at: string };
+        restore_source: {
+          backup_group_id: string;
+          expires_at: string;
+          kind?: BackupGroup["kind"];
+        };
         restore_coordination?: ClaudeRestoreCoordination | null;
       }
   );
@@ -403,14 +407,6 @@ export type UpdateView = {
   version: string | null;
   reason: string | null;
 };
-export type ForgetInstallationPreview = {
-  id: string;
-  panel_origin: string;
-  affected_account_labels: string[];
-  backup_group_count: number;
-  consequences: string[];
-};
-
 export interface IpcCommands {
   bootstrap: { args: Record<string, never>; result: BootstrapView };
   start_login: { args: Record<string, never>; result: LoginStart };
@@ -420,27 +416,8 @@ export interface IpcCommands {
     result: BootstrapView;
   };
   logout: { args: { connection_id: string }; result: BootstrapView };
-  select_connection: { args: { connection_id: string }; result: BootstrapView };
   select_node: {
     args: { connection_id: string; node_id: string; expected_revision: number };
-    result: BootstrapView;
-  };
-  delete_connection: {
-    args: {
-      connection_id: string;
-      expected_revision: number;
-      expected_credential_revision: string | null;
-      revoke_inference_key: boolean;
-      confirmed: true;
-    };
-    result: BootstrapView;
-  };
-  revoke_inference_key: {
-    args: {
-      connection_id: string;
-      expected_credential_revision: string;
-      confirmed: true;
-    };
     result: BootstrapView;
   };
   list_models: { args: { connection_id: string }; result: ModelView[] };
@@ -449,7 +426,7 @@ export interface IpcCommands {
       connection_id: string;
       expected_revision: number;
       client: ClientKind;
-      model_id: string;
+      claude_models?: ClaudeRoleModels;
     };
     result: ConfigPreview;
   };
@@ -468,6 +445,7 @@ export interface IpcCommands {
     };
     result: ConfigPreview;
   };
+  backup_client_config: { args: { client: ClientKind }; result: BootstrapView };
   restore_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;
@@ -523,18 +501,6 @@ export interface IpcCommands {
   export_diagnostics: {
     args: { preview_id: string };
     result: { saved: boolean };
-  };
-  preview_forget_installation: {
-    args: { installation_id: string };
-    result: ForgetInstallationPreview;
-  };
-  forget_installation: {
-    args: {
-      preview_id: string;
-      acknowledged_backup_loss: true;
-      confirmed: true;
-    };
-    result: BootstrapView;
   };
   check_update: { args: Record<string, never>; result: UpdateView };
   download_update: {

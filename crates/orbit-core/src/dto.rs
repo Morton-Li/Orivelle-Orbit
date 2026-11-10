@@ -265,14 +265,10 @@ pub struct RestoreOwner {
     pub installation_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallationView {
-    pub id: String,
-    pub panel_origin: String,
-    pub account_labels: Vec<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupGroup {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BackupKind>,
     pub client: ClientKind,
     #[serde(flatten)]
     pub owner: RestoreOwner,
@@ -316,7 +312,6 @@ pub struct BootstrapView {
     pub maintenance_active: bool,
     pub session: SessionView,
     pub connections: Vec<ConnectionView>,
-    pub installations: Vec<InstallationView>,
     pub nodes: Vec<NodeView>,
     pub active_connection_id: Option<String>,
     pub clients: Vec<ClientView>,
@@ -340,6 +335,27 @@ pub struct PreviewContext {
 pub struct RestoreSource {
     pub backup_group_id: String,
     pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BackupKind>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupKind {
+    Switch,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeRoleModels {
+    pub primary: String,
+    pub fallback: String,
+    pub auxiliary: String,
+}
+impl ClaudeRoleModels {
+    pub(crate) fn ids(&self) -> [&str; 3] {
+        [&self.primary, &self.fallback, &self.auxiliary]
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClaudeRestoreCoordination {
@@ -435,12 +451,4 @@ pub struct UpdateView {
     pub current_version: String,
     pub version: Option<String>,
     pub reason: Option<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ForgetInstallationPreview {
-    pub id: String,
-    pub panel_origin: String,
-    pub affected_account_labels: Vec<String>,
-    pub backup_group_count: u32,
-    pub consequences: Vec<String>,
 }

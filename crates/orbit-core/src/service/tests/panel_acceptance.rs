@@ -627,60 +627,12 @@ impl Harness {
                     == 1,
             "installation_or_active_key_was_not_reused",
         )?;
-        let revision = second
-            .view
-            .credential_revision
-            .as_deref()
-            .ok_or("real_key_revision_missing")?;
-        match self
-            .service
-            .revoke_inference_key(&second.view.id, revision, false)
-            .await
-        {
-            Err(error) if error.code == "confirmation_required" => {}
-            _ => return Err("unconfirmed_key_revoke_was_not_refused"),
-        }
-        let view = self
-            .service
-            .revoke_inference_key(&second.view.id, revision, true)
-            .await
-            .map_err(|_| "real_key_revoke_failed")?;
-        checked(
-            view.session.status == "authenticated"
-                && view.session.inference_credential_status == "revoked"
-                && second
-                    .credential_reference
-                    .as_ref()
-                    .is_some_and(|reference| self.vault.get(reference).is_err()),
-            "local_key_revoke_incomplete",
-        )?;
-        let record = self
-            .service
-            .record(&second.view.id)
-            .map_err(|_| "real_connection_missing")?;
-        let session = self
-            .service
-            .session(&record)
-            .map_err(|_| "real_session_missing")?;
-        let current = self
-            .protected_bootstrap(&second_installation, &session)
-            .await
-            .map_err(|_| "post_revoke_account_access_failed")?;
-        checked(
-            current["inference_keys"].as_array().is_some_and(|keys| {
-                keys.iter().any(|key| {
-                    key["api_key_id"].as_str() == second.api_key_id.as_deref()
-                        && key["state"] == "revoked"
-                })
-            }),
-            "server_key_was_not_revoked",
-        )?;
-        self.logout_and_prove_revoked(&record).await?;
+        self.logout_and_prove_revoked(&second).await?;
         let report = json!({ "state": "passed", "scope": "real_panel_mysql_protocol", "tlsChainAndHostname": true,
             "wrongCaRejected": true, "wrongSanRejected": true, "originConfined": true,
             "pkceAndProofExchange": true, "loginCsrfRejected": true, "consentCsrfRejected": true,
             "autoKeyDelivered": true, "installationAndKeyReused": true, "modelPermissionsFiltered": true,
-            "sessionRevocationVerified": true, "explicitKeyRevocationVerified": true,
+            "sessionRevocationVerified": true,
             "node": "offline", "clientConfiguration": "not_permitted", "vault": "memory",
             "edgeInference": "not_exercised", "candidateGuiAuth": "not_exercised", "desktopLoaded": "unconfirmed" });
         crate::config::atomic_write(

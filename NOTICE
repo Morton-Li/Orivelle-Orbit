@@ -5,3 +5,7 @@ Licensed under the Apache License, Version 2.0.
 
 This product includes the model catalog from OpenAI Codex.
 The accompanying OpenAI Codex LICENSE and NOTICE provide its license and attribution.
+
+The Codex and Claude Desktop icons are the respective product assets shipped by
+OpenAI (com.openai.codex, icon-codex-light.png) and Anthropic
+(com.anthropic.claudefordesktop, electron.icns).

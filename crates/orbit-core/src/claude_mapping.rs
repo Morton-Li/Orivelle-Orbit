@@ -3,7 +3,7 @@
 
 use crate::{
     config::{ClaudeContext, Journal},
-    dto::ClientKind,
+    dto::{ClaudeRoleModels, ClientKind},
     error::{Result, fail},
     identity::{HelperBinding, authorization_epoch_reference, sha256, validate_uuid},
     network::Http,
@@ -39,16 +39,28 @@ pub fn requires_mapping(model_id: &str) -> bool {
     !(model_id.starts_with("claude-") || model_id.starts_with("anthropic/claude-"))
 }
 
-fn aliases(model_id: &str) -> Vec<ModelAlias> {
+fn aliases(model_id: &str, roles: Option<&ClaudeRoleModels>) -> Vec<ModelAlias> {
     // Version 1 persisted labels are part of frozen encrypted contexts. Keep
     // this version's rule when adding future locales or plan versions.
     [
-        (SONNET, "主模型"),
-        (OPUS, "备用主模型"),
-        (HAIKU, "辅助模型"),
+        (
+            SONNET,
+            "主模型",
+            roles.map_or(model_id, |roles| &roles.primary),
+        ),
+        (
+            OPUS,
+            "备用主模型",
+            roles.map_or(model_id, |roles| &roles.fallback),
+        ),
+        (
+            HAIKU,
+            "辅助模型",
+            roles.map_or(model_id, |roles| &roles.auxiliary),
+        ),
     ]
     .into_iter()
-    .map(|(name, role)| ModelAlias {
+    .map(|(name, role, model_id)| ModelAlias {
         name: name.into(),
         label_override: format!("{model_id} · {role}"),
     })
@@ -67,6 +79,8 @@ pub struct MappingPlan {
     pub upstream_model_id: String,
     pub aliases: Vec<ModelAlias>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<ClaudeRoleModels>,
 }
 
 impl MappingPlan {
@@ -81,17 +95,34 @@ impl MappingPlan {
                 return Err(fail("invalid_configuration"));
             }
         }
-        if self.version != 1
+        let valid_model = |model: &str| {
+            !model.is_empty() && model.len() <= 128 && model.bytes().all(|b| b.is_ascii_graphic())
+        };
+        if self.version != if self.roles.is_some() { 2 } else { 1 }
             || self.port == 0
-            || self.upstream_model_id.is_empty()
-            || self.upstream_model_id.len() > 128
-            || !self.upstream_model_id.bytes().all(|b| b.is_ascii_graphic())
-            || self.aliases != aliases(&self.upstream_model_id)
+            || !valid_model(&self.upstream_model_id)
+            || self.roles.as_ref().is_some_and(|roles| {
+                roles.primary != self.upstream_model_id || !roles.ids().into_iter().all(valid_model)
+            })
+            || self.aliases != aliases(&self.upstream_model_id, self.roles.as_ref())
             || chrono::DateTime::parse_from_rfc3339(&self.created_at).is_err()
         {
             return Err(fail("invalid_configuration"));
         }
         Ok(())
+    }
+    pub(crate) fn upstream_model(&self, alias: &str) -> Option<&str> {
+        let index = match alias {
+            SONNET => 0,
+            OPUS => 1,
+            HAIKU | DATED_HAIKU => 2,
+            _ => return None,
+        };
+        Some(
+            self.roles
+                .as_ref()
+                .map_or(self.upstream_model_id.as_str(), |roles| roles.ids()[index]),
+        )
     }
     pub fn base_path(&self) -> String {
         format!("/orivelle-orbit/claude/{}", self.binding_id)
@@ -147,6 +178,7 @@ pub(crate) struct ForwardPermit {
     pub access: MappingAccess,
     pub messages_url: Url,
     pub upstream_model_id: String,
+    pub requested_alias: String,
     pub api_key: Zeroizing<String>,
 }
 
@@ -165,7 +197,7 @@ pub(crate) enum ForwardOutcome {
 
 pub(crate) trait MappingAuthority: Send + Sync + 'static {
     fn authenticate(&self, bearer: &[u8]) -> Result<MappingAccess>;
-    fn authorize_messages(&self, access: MappingAccess) -> Result<ForwardPermit>;
+    fn authorize_messages(&self, access: MappingAccess, alias: String) -> Result<ForwardPermit>;
     fn before_send(&self, permit: ForwardPermit) -> Result<ForwardPermit>;
     fn observe(&self, permit: ForwardPermit, outcome: ForwardOutcome) -> Result<()>;
 }
@@ -220,14 +252,22 @@ impl MappingManager {
         binding_id: &str,
         profile_id: &str,
         model_id: &str,
+        roles: Option<&ClaudeRoleModels>,
     ) -> Result<MappingPlan> {
-        self.reserve_for(binding_id, profile_id, model_id, Duration::from_secs(300))
+        self.reserve_for(
+            binding_id,
+            profile_id,
+            model_id,
+            roles,
+            Duration::from_secs(300),
+        )
     }
     fn reserve_for(
         &self,
         binding_id: &str,
         profile_id: &str,
         model_id: &str,
+        roles: Option<&ClaudeRoleModels>,
         ttl: Duration,
     ) -> Result<MappingPlan> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -236,7 +276,7 @@ impl MappingManager {
             .set_nonblocking(true)
             .map_err(|_| fail("claude_mapping_unavailable"))?;
         let plan = MappingPlan {
-            version: 1,
+            version: if roles.is_some() { 2 } else { 1 },
             binding_id: binding_id.into(),
             profile_id: profile_id.into(),
             port: listener
@@ -244,8 +284,9 @@ impl MappingManager {
                 .map_err(|_| fail("claude_mapping_unavailable"))?
                 .port(),
             upstream_model_id: model_id.into(),
-            aliases: aliases(model_id),
+            aliases: aliases(model_id, roles),
             created_at: chrono::Utc::now().to_rfc3339(),
+            roles: roles.cloned(),
         };
         plan.validate()?;
         let mut slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
@@ -689,6 +730,7 @@ mod tests {
                 &crate::identity::uuid(),
                 &crate::identity::uuid(),
                 "gpt-6-luna",
+                None,
                 Duration::from_millis(20),
             )
             .unwrap();
@@ -699,6 +741,7 @@ mod tests {
                 &crate::identity::uuid(),
                 &crate::identity::uuid(),
                 "gpt-6-luna",
+                None,
                 Duration::from_millis(20),
             )
             .unwrap();
@@ -716,6 +759,7 @@ mod tests {
                 &crate::identity::uuid(),
                 &crate::identity::uuid(),
                 "gpt-6-luna",
+                None,
             )
             .unwrap();
         let ticket = manager.ticket(&plan);
@@ -727,6 +771,7 @@ mod tests {
                     &crate::identity::uuid(),
                     &crate::identity::uuid(),
                     "gpt-6-luna",
+                    None,
                 )
                 .unwrap();
         }
@@ -735,7 +780,8 @@ mod tests {
                 .reserve(
                     &crate::identity::uuid(),
                     &crate::identity::uuid(),
-                    "gpt-6-luna"
+                    "gpt-6-luna",
+                    None,
                 )
                 .is_err()
         );
@@ -746,7 +792,9 @@ mod tests {
         let manager = MappingManager::default();
         let binding = crate::identity::uuid();
         let profile = crate::identity::uuid();
-        let plan = manager.reserve(&binding, &profile, "gpt-6-luna").unwrap();
+        let plan = manager
+            .reserve(&binding, &profile, "gpt-6-luna", None)
+            .unwrap();
         assert_eq!(
             plan.base_url(),
             format!(

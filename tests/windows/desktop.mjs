@@ -159,21 +159,24 @@ async function waitForImages(page, count) {
     .toEqual({ images: count, reconciled: count });
 }
 
+async function choose(page, id, label) {
+  await page.locator(`#${id}`).click();
+  await page.getByRole("option", { name: label, exact: true }).click();
+}
+
 async function exerciseImages(page, navigation) {
   await page
     .locator(".topbar")
-    .getByRole("button", { name: "刷新", exact: true })
+    .getByRole("button", { name: "刷新数据", exact: true })
     .click();
   await page.waitForFunction(
     () => !document.querySelector(".topbar button")?.disabled,
   );
   assert((fixture.requests.get("GET /api/v1/orbit/bootstrap") ?? 0) >= 2);
   await navigation.getByRole("link", { name: "接入", exact: true }).click();
-  await page.locator("#access-node").selectOption(fixture.nodeId);
-  await page.locator("#model-codex").selectOption(fixture.textModelId);
-  await page.locator("#model-claude").selectOption(fixture.textModelId);
+  await choose(page, "access-node", fixture.nodeLabel);
   const configPreviews = page.getByRole("button", {
-    name: "预览配置",
+    name: "接入 Orbit",
     exact: true,
   });
   assert.equal(await configPreviews.count(), 2);
@@ -183,7 +186,7 @@ async function exerciseImages(page, navigation) {
   await navigation
     .getByRole("link", { name: "图片工作台", exact: true })
     .click();
-  await page.locator("#image-model").selectOption(fixture.modelId);
+  await choose(page, "image-model", fixture.modelLabel);
   await page.locator("#image-prompt").fill("Orbit Windows fixture generation");
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
   await waitForImages(page, 1);
@@ -252,22 +255,7 @@ async function exerciseImages(page, navigation) {
   );
 }
 
-async function revokeAndLogout(page, navigation) {
-  await navigation.getByRole("link", { name: "接入", exact: true }).click();
-  await page
-    .getByRole("button", { name: "撤销本安装推理 key", exact: true })
-    .click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "确认", exact: true })
-    .click();
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
-  assert.equal(
-    fixture.requests.get(
-      "POST /api/v1/orbit/installations/current/inference-key/revoke",
-    ),
-    1,
-  );
+async function logout(page, navigation) {
   await navigation.getByRole("link", { name: "设置", exact: true }).click();
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await page
@@ -280,15 +268,7 @@ async function revokeAndLogout(page, navigation) {
     fixture.requests.get("POST /api/v1/orbit/sessions/current/revoke"),
     1,
   );
-  await page.getByRole("button", { name: "忘记此安装", exact: true }).click();
-  const forget = page.getByRole("dialog");
-  await forget.getByRole("checkbox").check();
-  await forget.getByRole("button", { name: "确认", exact: true }).click();
-  await forget.waitFor({ state: "hidden" });
-  assert.deepEqual((await invoke(page, "bootstrap")).installations, []);
-  console.log(
-    "Inference credential revocation, logout and installation cleanup verified.",
-  );
+  console.log("Local logout and server session revocation verified.");
 }
 
 let browser;
@@ -323,21 +303,25 @@ try {
   );
   await authorizeAccount(page);
   await exerciseImages(page, navigation);
-  await revokeAndLogout(page, navigation);
+  await logout(page, navigation);
 
   const nextTheme = initial.settings.theme === "dark" ? "light" : "dark";
-  await page.locator("#setting-theme").selectOption(nextTheme);
+  await choose(page, "setting-theme", nextTheme === "dark" ? "深色" : "浅色");
   await expect
     .poll(async () => (await invoke(page, "bootstrap")).settings.theme, {
       timeout: 15_000,
     })
     .toBe(nextTheme);
-  await page.locator("#setting-locale").selectOption("en");
+  await choose(page, "setting-locale", "English");
   await navigation
     .getByRole("link", { name: "Settings", exact: true })
     .waitFor();
   assert.equal((await invoke(page, "bootstrap")).settings.locale, "en");
-  assert.equal((await invoke(page, "check_update")).status, "disabled");
+  const update = await invoke(page, "check_update");
+  assert.equal(update.status, "disabled");
+  await expect(page.locator(".settings-current-version strong")).toHaveText(
+    update.current_version,
+  );
 
   await page.getByRole("button", { name: "Preview diagnostic report" }).click();
   assert.match(

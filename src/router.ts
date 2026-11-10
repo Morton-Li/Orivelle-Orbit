@@ -6,6 +6,14 @@ import SettingsPage from "./pages/SettingsPage.vue";
 
 export const router = createRouter({
   history: createWebHashHistory(),
+  scrollBehavior(to, _from, saved) {
+    return (
+      saved ??
+      (/^#client-(codex|claude)$/.test(to.hash)
+        ? { el: to.hash, top: 66 }
+        : { top: 0 })
+    );
+  },
   routes: [
     { path: "/", name: "home", component: HomePage },
     { path: "/images", name: "images", component: ImagesPage },

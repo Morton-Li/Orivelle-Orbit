@@ -3,6 +3,8 @@ import { computed } from "vue";
 import type { ClientView, ConnectionView } from "../shared/contracts";
 import { clientStatus, evidenceMatches } from "../shared/format";
 import { t } from "../shared/i18n";
+import codexIcon from "../assets/codex-app.png";
+import claudeIcon from "../assets/claude-desktop.png";
 import StatusBadge from "./StatusBadge.vue";
 import OrbitIcon from "./OrbitIcon.vue";
 const props = defineProps<{
@@ -46,12 +48,11 @@ const verified = computed(
 </script>
 <template>
   <div class="client-row" :class="{ 'client-row-compact': compact }">
-    <span
+    <img
       class="client-symbol"
-      :class="`client-${client.client}`"
-      aria-hidden="true"
-      >{{ client.client === "codex" ? "C" : "✳" }}</span
-    >
+      :src="client.client === 'codex' ? codexIcon : claudeIcon"
+      alt=""
+    />
     <div class="client-info">
       <div class="client-title-line">
         <h2>
@@ -87,8 +88,9 @@ const verified = computed(
     </div>
     <StatusBadge :text="status.text" :tone="status.tone" /><slot
       ><RouterLink
+        v-if="!compact"
         class="button secondary"
-        :to="{ path: '/access', query: { client: client.client } }"
+        :to="{ path: '/access', hash: `#client-${client.client}` }"
         >{{ t("action.manage") }}<OrbitIcon name="arrow" /></RouterLink
     ></slot>
   </div>

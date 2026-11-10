@@ -978,6 +978,113 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
 }
 
 #[tokio::test]
+async fn role_switch_routes_each_alias_and_restores_original() {
+    let f = mapping_fixture();
+    let mut cache = f.service.account_cache(&f.record).unwrap();
+    let roles = ClaudeRoleModels {
+        primary: f.model.clone(),
+        fallback: "synthetic-fallback".into(),
+        auxiliary: "synthetic-auxiliary".into(),
+    };
+    let original = cache
+        .models
+        .iter()
+        .find(|model| model.id == roles.primary)
+        .unwrap()
+        .clone();
+    for id in [&roles.fallback, &roles.auxiliary] {
+        let mut model = original.clone();
+        model.id = id.clone();
+        cache.models.push(model);
+    }
+    f.service
+        .store
+        .put(
+            "account-cache",
+            &f.record.view.id,
+            &f.record.view.account_id,
+            &cache,
+        )
+        .unwrap();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let captured = observed.clone();
+    f.service.http.scripted_mapping(Arc::new(move |request| {
+        captured.lock().unwrap().push(
+            serde_json::from_slice::<Value>(&request.body).unwrap()["model"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+        Box::pin(async {
+            Ok(crate::network::MappingResponse {
+                status: 200,
+                headers: Default::default(),
+                stream: Box::pin(futures_util::stream::empty()),
+            })
+        })
+    }));
+    let preview = f
+        .service
+        .preview_claude_config(
+            &f.record.view.id,
+            f.record.view.revision,
+            &roles.primary,
+            Some(&roles),
+        )
+        .unwrap();
+    let context = mapping_context(&f.service, &preview);
+    let plan = context.mapping.as_ref().unwrap();
+    let before = preview
+        .paths
+        .iter()
+        .map(|path| read_file(Path::new(path)).unwrap())
+        .collect::<Vec<_>>();
+    f.service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let local = crate::claude_mapping::mapped_helper_token(
+        &plan.binding_id,
+        &f.service.store,
+        f.vault.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for alias in [
+        "claude-sonnet-5",
+        "claude-opus-5",
+        "claude-haiku-4-5-20251001",
+    ] {
+        let response = client.post(format!("{}/v1/messages", plan.base_url()))
+            .bearer_auth(local.as_str())
+            .json(&json!({"model":alias,"messages":[{"role":"user","content":"synthetic"}],"max_tokens":1}))
+            .send().await.unwrap();
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+    }
+    assert_eq!(*observed.lock().unwrap(), roles.ids());
+    let state = f.service.bootstrap().unwrap();
+    let snapshot = state
+        .backups
+        .iter()
+        .find(|backup| backup.kind == Some(BackupKind::Switch))
+        .unwrap();
+    let restore = f.service.preview_restore(&snapshot.id).unwrap();
+    f.service
+        .apply_client_config(&restore.id, true, true)
+        .unwrap();
+    assert_eq!(
+        preview
+            .paths
+            .iter()
+            .map(|path| read_file(Path::new(path)).unwrap())
+            .collect::<Vec<_>>(),
+        before
+    );
+    assert!(f.service.bootstrap().unwrap().backups.is_empty());
+}
+
+#[tokio::test]
 async fn claude_mapping_activation_restart_reuses_only_original_port_and_preserves_files_on_conflict()
  {
     let f = mapping_fixture();
@@ -1276,7 +1383,9 @@ async fn claude_mapping_activation_vault_return_rechecks_epoch_target_node_model
         let (entered, waiting) = std::sync::mpsc::channel();
         let (resume, released) = std::sync::mpsc::channel();
         *f.vault.pause.lock().unwrap() = Some((entered, released));
-        let worker = std::thread::spawn(move || authority.authorize_messages(access));
+        let worker = std::thread::spawn(move || {
+            authority.authorize_messages(access, "claude-sonnet-5".into())
+        });
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         match fault {
             "epoch" => f
@@ -1702,105 +1811,6 @@ async fn claude_mapping_activation_active_token_outlives_backup_prune_and_cleanu
             .as_deref(),
         Some("1")
     );
-
-    for denied in [false, true] {
-        let pending = mapping_fixture();
-        let preview = automatic_preview(&pending.service, &pending);
-        let context = mapping_context(&pending.service, &preview);
-        let plan = context.mapping.as_ref().unwrap();
-        let install = pending.service.installation(&pending.record).unwrap();
-        let signing = pending.vault.get(&install.signing_reference).unwrap();
-        let backup = pending.vault.get(&install.backup_reference).unwrap();
-        let denied_vault = Arc::new(MappingReadFailureVault {
-            inner: pending.vault.clone(),
-            reference: plan.token_reference(),
-            error: "vault_unavailable",
-            puts: AtomicU64::new(0),
-            deleted: Mutex::new(Vec::new()),
-        });
-        let vault: Arc<dyn Vault> = if denied {
-            denied_vault.clone()
-        } else {
-            pending.vault.clone()
-        };
-        let service = Service::new(
-            pending.service.store.clone(),
-            vault,
-            pending.service.paths.clone(),
-        )
-        .unwrap();
-        // Synthetic logout prevents even a scripted remote-revocation attempt.
-        service.commit_logout(&pending.record.view.id).unwrap();
-        let requests = Arc::new(AtomicU64::new(0));
-        let calls = requests.clone();
-        service.http.scripted(Arc::new(move |_| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Err(fail("synthetic_unexpected_upstream_send")) })
-        }));
-        let preview = service.preview_forget_installation(&install.id).unwrap();
-        let result = service.forget_installation(&preview.id, true, true).await;
-        assert_eq!(requests.load(Ordering::SeqCst), 0);
-        assert_eq!(denied_vault.puts.load(Ordering::SeqCst), 0);
-        if denied {
-            assert_eq!(result.unwrap_err().code, "vault_unavailable");
-            assert!(
-                pending
-                    .vault
-                    .get(&install.signing_reference)
-                    .unwrap()
-                    .as_slice()
-                    == signing.as_slice()
-            );
-            assert!(
-                pending
-                    .vault
-                    .get(&install.backup_reference)
-                    .unwrap()
-                    .as_slice()
-                    == backup.as_slice()
-            );
-            assert!(
-                !denied_vault
-                    .deleted
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|reference| [
-                        install.signing_reference.as_str(),
-                        install.backup_reference.as_str(),
-                        plan.token_reference().as_str()
-                    ]
-                    .contains(&reference.as_str()))
-            );
-            assert!(
-                service
-                    .store
-                    .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                !service
-                    .store
-                    .get::<HelperBinding>("binding", &plan.binding_id)
-                    .unwrap()
-                    .unwrap()
-                    .enabled
-            );
-        } else {
-            assert!(
-                result.is_ok(),
-                "a never-confirmed preview cannot block forgetting its synthetic installation"
-            );
-            assert!(
-                service
-                    .store
-                    .get::<crate::claude_mapping::MappingRecord>("claude-mapping", &plan.binding_id)
-                    .unwrap()
-                    .is_none()
-            );
-        }
-    }
 }
 
 #[test]
@@ -1877,7 +1887,7 @@ fn claude_mapping_helper_modes_and_late_epoch_never_expose_the_upstream_key() {
     let mut context = frozen(&f);
     let manager = MappingManager::default();
     let mapping = manager
-        .reserve(&context.binding_id, &context.profile_id, &f.model)
+        .reserve(&context.binding_id, &context.profile_id, &f.model, None)
         .unwrap();
     let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
         app_version: &target.app_version,

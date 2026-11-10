@@ -5,9 +5,16 @@ import { useOrbitStore } from "./stores/orbit";
 import { locale, t } from "./shared/i18n";
 import OrbitIcon from "./components/OrbitIcon.vue";
 import OrbitDialog from "./components/OrbitDialog.vue";
+import WindowControls from "./components/WindowControls.vue";
 const store = useOrbitStore();
 const router = useRouter();
 const systemDark = ref(false);
+const windowChrome = computed(() => {
+  if (!store.native) return "";
+  if (navigator.userAgent.includes("Windows")) return "windows";
+  if (navigator.userAgent.includes("Macintosh")) return "macos";
+  return "";
+});
 const dark = computed(
   () =>
     store.state.settings.theme === "dark" ||
@@ -68,6 +75,27 @@ onUnmounted(() => {
 });
 </script>
 <template>
+  <header
+    class="topbar"
+    :class="`topbar-${windowChrome || 'web'}`"
+    data-tauri-drag-region
+  >
+    <span class="topbar-subtitle" data-tauri-drag-region>{{
+      t("app.subtitle")
+    }}</span>
+    <div class="topbar-drag" data-tauri-drag-region></div>
+    <button
+      type="button"
+      class="button ghost topbar-refresh"
+      :title="t('app.refreshHint')"
+      :disabled="!store.native || store.busy.has('refresh')"
+      :aria-busy="store.busy.has('refresh')"
+      @click="store.refresh(true)"
+    >
+      <OrbitIcon name="refresh" />{{ t("action.refresh") }}
+    </button>
+    <WindowControls v-if="windowChrome === 'windows'" />
+  </header>
   <div class="app-shell">
     <aside class="sidebar">
       <RouterLink to="/" class="brand" aria-label="Orivelle Orbit"
@@ -94,6 +122,7 @@ onUnmounted(() => {
           store.account?.label ?? t("home.loggedOut")
         }}</span
         ><button
+          v-if="store.canLogin"
           class="icon-button"
           :aria-label="t('action.login')"
           @click="store.loginOpen = true"
@@ -103,20 +132,6 @@ onUnmounted(() => {
       </div>
     </aside>
     <div class="main-shell">
-      <header class="topbar">
-        <span class="topbar-subtitle">{{ t("app.subtitle") }}</span
-        ><span class="topbar-account truncate">{{
-          store.activeConnection?.node_label ?? "Orivelle Orbit"
-        }}</span
-        ><button
-          class="icon-button"
-          :aria-label="t('action.refresh')"
-          :disabled="!store.native || store.busy.has('refresh')"
-          @click="store.refresh(true)"
-        >
-          <OrbitIcon name="refresh" />
-        </button>
-      </header>
       <div
         v-if="store.state.source === 'synthetic'"
         class="context-banner"
@@ -155,11 +170,6 @@ onUnmounted(() => {
       :description="t('login.description')"
     >
       <form class="dialog-form" @submit.prevent="login">
-        <div>
-          <p class="field-label">{{ t("login.service") }}</p>
-          <p class="mono">https://orivelle.powerbyte.io</p>
-          <p class="field-hint">{{ t("login.hint") }}</p>
-        </div>
         <p v-if="store.loginPending" class="info-box" role="status">
           {{ t("login.waiting") }}
         </p>
@@ -175,7 +185,10 @@ onUnmounted(() => {
             type="submit"
             class="button primary"
             :disabled="
-              !store.native || store.busy.has('login') || store.loginPending
+              !store.native ||
+              !store.canLogin ||
+              store.busy.has('login') ||
+              store.loginPending
             "
           >
             <OrbitIcon name="external" />{{ t("action.continue") }}

@@ -3,7 +3,11 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import type { ConfigPreview } from "../shared/contracts";
 import { t } from "../shared/i18n";
-import { configPolicyMessage } from "../shared/format";
+import {
+  configPolicyMessage,
+  nodeName,
+  redactServiceUrls,
+} from "../shared/format";
 import OrbitDialog from "./OrbitDialog.vue";
 import OrbitIcon from "./OrbitIcon.vue";
 const props = defineProps<{ preview: ConfigPreview | null }>();
@@ -14,6 +18,15 @@ const rejectedPreviewIds = ref(new Set<string>());
 const targetClient = computed(() =>
   store.state.clients.find((item) => item.client === props.preview?.client),
 );
+const previewNodeName = computed(() => {
+  const preview = props.preview;
+  if (preview?.operation !== "apply") return "";
+  const index = store.state.nodes.findIndex(
+    (node) => node.id === preview.context.node_id,
+  );
+  const node = store.state.nodes[index];
+  return node ? nodeName(node, index) : t("access.node");
+});
 const timer = window.setInterval(() => {
   now.value = Date.now();
 }, 1000);
@@ -78,13 +91,15 @@ const current = computed(() => {
     const source = preview.restore_source;
     if (
       !source?.backup_group_id ||
-      !Number.isFinite(Date.parse(source.expires_at)) ||
-      Date.parse(source.expires_at) <= now.value
+      (source.kind !== "switch" &&
+        (!Number.isFinite(Date.parse(source.expires_at)) ||
+          Date.parse(source.expires_at) <= now.value))
     )
       return false;
     return store.state.backups.some(
       (backup) =>
         backup.id === source.backup_group_id &&
+        backup.kind === source.kind &&
         backup.account_id === preview.restore_owner.account_id &&
         backup.panel_origin === preview.restore_owner.panel_origin &&
         backup.installation_id === preview.restore_owner.installation_id &&
@@ -238,15 +253,7 @@ async function confirm() {
         </div>
         <div v-if="preview.operation === 'apply'">
           <dt>{{ t("access.node") }}</dt>
-          <dd>{{ preview.context.node_label }}</dd>
-        </div>
-        <div v-if="preview.operation === 'apply'">
-          <dt>{{ t("access.model") }}</dt>
-          <dd>{{ preview.model_id }}</dd>
-        </div>
-        <div v-else>
-          <dt>{{ t("login.panel") }}</dt>
-          <dd>{{ preview.restore_owner.panel_origin }}</dd>
+          <dd>{{ previewNodeName }}</dd>
         </div>
         <div>
           <dt>{{ t("common.version") }}</dt>
@@ -363,10 +370,14 @@ async function confirm() {
       </ul>
       <h3>{{ t("access.impact") }}</h3>
       <ul class="impact-list">
-        <li v-for="impact in preview.impact" :key="impact">{{ impact }}</li>
+        <li v-for="impact in preview.impact" :key="impact">
+          {{ redactServiceUrls(impact) }}
+        </li>
       </ul>
       <h3>{{ t("access.changes") }}</h3>
-      <pre class="diff-preview">{{ preview.redacted_diff }}</pre>
+      <pre class="diff-preview">{{
+        redactServiceUrls(preview.redacted_diff)
+      }}</pre>
       <p v-if="!current" class="error-text" role="alert">
         {{
           t(

@@ -14,12 +14,14 @@ import { CAPABILITIES } from "../shared/contracts";
 import {
   formatBytes,
   formatMoney,
+  nodeName,
   safePreviewUrl,
   utf8Bytes,
 } from "../shared/format";
 import { t, type MessageKey } from "../shared/i18n";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import OrbitDialog from "../components/OrbitDialog.vue";
+import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import PriceDetails from "../components/PriceDetails.vue";
 const store = useOrbitStore();
@@ -28,6 +30,7 @@ const prompt = ref("");
 const modelId = ref("");
 const inputs = ref<ImageInput[]>([]);
 const parameters = ref<ImageParameters>({});
+const advanced = ref(false);
 const activeTaskId = ref<string | null>(null);
 const enlarged = ref<HistoryImage | null>(null);
 const deleteImageIds = ref<string[]>([]);
@@ -39,6 +42,60 @@ const model = computed(
   () => store.imageModels.find((item) => item.id === modelId.value) ?? null,
 );
 const constraints = computed(() => model.value?.image_parameters ?? null);
+const currentNode = computed(() => {
+  const index = store.state.nodes.findIndex(
+    (node) => node.id === store.activeConnection?.node_id,
+  );
+  const node = store.state.nodes[index];
+  return node
+    ? nodeName(node, index)
+    : t(store.account ? "access.noNode" : "access.noConnection");
+});
+const parameterFields = computed(() => {
+  const caps = constraints.value;
+  if (!caps) return [];
+  const fields = [
+    {
+      key: "n",
+      label: "images.count",
+      values:
+        caps.max_results > 1
+          ? Array.from({ length: Math.min(5, caps.max_results) }, (_, index) =>
+              String(index + 1),
+            )
+          : [],
+    },
+    { key: "size", label: "images.size", values: caps.sizes },
+    { key: "quality", label: "images.quality", values: caps.qualities },
+    { key: "background", label: "images.background", values: caps.backgrounds },
+  ] as const;
+  return fields.filter((field) => field.values.length > 0);
+});
+const parameterLabels: Partial<Record<string, MessageKey>> = {
+  auto: "images.auto",
+  low: "images.low",
+  medium: "images.medium",
+  high: "images.high",
+  opaque: "images.opaque",
+  transparent: "images.transparent",
+};
+function parameterLabel(value: string) {
+  const key = parameterLabels[value];
+  return key ? t(key) : value;
+}
+function supportedParameters(values: ImageParameters): ImageParameters {
+  const result = { ...values };
+  for (const key of ["n", "size", "quality", "background"] as const) {
+    if (
+      !parameterFields.value
+        .find((field) => field.key === key)
+        ?.values.some((value) => value === String(values[key]))
+    )
+      delete result[key];
+  }
+  return result;
+}
+const currentParameters = computed(() => supportedParameters(parameters.value));
 const promptBytes = computed(() => utf8Bytes(prompt.value));
 const promptLimit = computed(() =>
   Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
@@ -130,6 +187,7 @@ watch(
     inputs.value = [];
     modelId.value = "";
     parameters.value = {};
+    advanced.value = false;
     activeTaskId.value = null;
     enlarged.value = null;
     deleteImageIds.value = [];
@@ -196,7 +254,7 @@ async function submit() {
     expected_revision: connection.revision,
     model_id: modelId.value,
     prompt: prompt.value,
-    parameters: { ...parameters.value },
+    parameters: advanced.value ? currentParameters.value : {},
     input_ids: inputs.value.map((input) => input.id),
   });
   if (result && captured === store.scope) {
@@ -274,7 +332,8 @@ async function reuse(task: TaskView) {
     await Promise.resolve();
     if (captured !== store.scope) return;
     prompt.value = result.prompt;
-    parameters.value = { ...result.parameters };
+    parameters.value = supportedParameters(result.parameters);
+    advanced.value = Object.keys(parameters.value).length > 0;
     inputs.value = result.inputs;
     tab.value = "create";
   }
@@ -293,10 +352,9 @@ async function deleteHistory() {
 }
 function setParameter(
   key: "quality" | "size" | "background" | "n",
-  event: Event,
+  value: string,
 ) {
-  const value = (event.target as HTMLSelectElement).value;
-  if (!value) {
+  if (value === "default") {
     const next = { ...parameters.value };
     delete next[key];
     parameters.value = next;
@@ -330,9 +388,7 @@ function setParameter(
           <span
             class="connection-dot"
             :class="{ connected: store.ready }"
-          /><span class="truncate">{{
-            store.activeConnection?.node_label ?? t("access.noConnection")
-          }}</span
+          /><span class="truncate">{{ currentNode }}</span
           ><RouterLink to="/access" class="text-button">{{
             t("action.manage")
           }}</RouterLink>
@@ -341,20 +397,20 @@ function setParameter(
           <label for="image-model" class="field-label">{{
             t("access.model")
           }}</label
-          ><select
+          ><OrbitSelect
             id="image-model"
             v-model="modelId"
-            :disabled="store.modelsLoading || active"
-          >
-            <option value="" disabled>{{ t("access.selectModel") }}</option>
-            <option
-              v-for="item in store.imageModels"
-              :key="item.id"
-              :value="item.id"
-            >
-              {{ item.label }}
-            </option>
-          </select>
+            :options="
+              store.imageModels.map((item) => ({
+                value: item.id,
+                label: item.label,
+              }))
+            "
+            :placeholder="t('access.selectModel')"
+            :disabled="
+              store.modelsLoading || active || !store.imageModels.length
+            "
+          />
         </div>
         <div class="field prompt-field">
           <label for="image-prompt" class="field-label">{{
@@ -426,94 +482,55 @@ function setParameter(
             </li>
           </ul>
         </div>
-        <details v-if="constraints" class="parameter-details" open>
-          <summary>{{ t("images.params") }}</summary>
-          <div class="parameter-grid">
-            <div v-if="constraints.max_results > 1" class="field">
-              <label for="image-n" class="field-label">{{
-                t("images.count")
-              }}</label
-              ><select
-                id="image-n"
-                :value="parameters.n ?? ''"
-                :disabled="active"
-                @change="setParameter('n', $event)"
+        <section v-if="constraints" class="parameter-details">
+          <button
+            type="button"
+            class="advanced-trigger"
+            :aria-expanded="advanced"
+            aria-controls="image-parameters"
+            :disabled="active"
+            @click="advanced = !advanced"
+          >
+            <OrbitIcon name="settings" :size="17" />
+            {{ t("images.params") }}
+            <OrbitIcon name="chevron-down" :size="16" />
+          </button>
+          <div v-if="advanced" id="image-parameters">
+            <div v-if="parameterFields.length" class="parameter-grid">
+              <div
+                v-for="field in parameterFields"
+                :key="field.key"
+                class="field"
               >
-                <option value="">{{ t("images.default") }}</option>
-                <option
-                  v-for="count in Math.min(5, constraints.max_results)"
-                  :key="count"
-                  :value="count"
-                >
-                  {{ count }}
-                </option>
-              </select>
+                <label :for="`image-${field.key}`" class="field-label">{{
+                  t(field.label)
+                }}</label>
+                <OrbitSelect
+                  :id="`image-${field.key}`"
+                  :model-value="
+                    String(currentParameters[field.key] ?? 'default')
+                  "
+                  :disabled="active"
+                  :options="[
+                    { value: 'default', label: t('images.default') },
+                    ...field.values.map((value) => ({
+                      value,
+                      label: parameterLabel(value),
+                    })),
+                  ]"
+                  @update:model-value="setParameter(field.key, $event)"
+                />
+              </div>
             </div>
-            <div v-if="constraints.qualities.length" class="field">
-              <label for="image-quality" class="field-label">{{
-                t("images.quality")
-              }}</label
-              ><select
-                id="image-quality"
-                :value="parameters.quality ?? ''"
-                :disabled="active"
-                @change="setParameter('quality', $event)"
-              >
-                <option value="">{{ t("images.default") }}</option>
-                <option
-                  v-for="quality in constraints.qualities"
-                  :key="quality"
-                  :value="quality"
-                >
-                  {{ quality }}
-                </option>
-              </select>
-            </div>
-            <div v-if="constraints.sizes.length" class="field">
-              <label for="image-size" class="field-label">{{
-                t("images.size")
-              }}</label
-              ><select
-                id="image-size"
-                :value="parameters.size ?? ''"
-                :disabled="active"
-                @change="setParameter('size', $event)"
-              >
-                <option value="">{{ t("images.default") }}</option>
-                <option
-                  v-for="size in constraints.sizes"
-                  :key="size"
-                  :value="size"
-                >
-                  {{ size }}
-                </option>
-              </select>
-            </div>
-            <div v-if="constraints.backgrounds.length" class="field">
-              <label for="image-background" class="field-label">{{
-                t("images.background")
-              }}</label
-              ><select
-                id="image-background"
-                :value="parameters.background ?? ''"
-                :disabled="active"
-                @change="setParameter('background', $event)"
-              >
-                <option value="">{{ t("images.default") }}</option>
-                <option
-                  v-for="background in constraints.backgrounds"
-                  :key="background"
-                  :value="background"
-                >
-                  {{ background }}
-                </option>
-              </select>
-            </div>
+            <p v-else class="field-hint">{{ t("images.noAdvancedOptions") }}</p>
+            <p
+              v-if="parameterFields.length && !constraints.verified"
+              class="field-hint"
+            >
+              {{ t("images.unverified") }}
+            </p>
           </div>
-          <p v-if="!constraints.verified" class="field-hint">
-            {{ t("images.unverified") }}
-          </p>
-        </details>
+        </section>
         <PriceDetails v-if="model" :model="model" /><button
           type="submit"
           class="button primary generate-button"
