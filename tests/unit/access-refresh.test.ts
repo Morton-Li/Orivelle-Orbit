@@ -20,6 +20,7 @@ import {
 } from "../../src/shared/contracts";
 import {
   bootstrap,
+  orbitSelectStub,
   imageModel,
   syntheticClaudeConfigurationTarget,
 } from "../fixtures";
@@ -120,6 +121,7 @@ async function showAccess() {
   wrapper = mount(AccessPage, {
     global: {
       stubs: {
+        OrbitSelect: orbitSelectStub,
         ClientRow: true,
         OrbitDialog: {
           props: ["open"],
@@ -128,7 +130,9 @@ async function showAccess() {
       },
     },
   });
-  await wrapper.get("#model-claude").setValue(claudeModel().id);
+  for (const role of ["primary", "fallback", "auxiliary"]) {
+    await wrapper.get(`#claude-${role}`).setValue(claudeModel().id);
+  }
   return wrapper.get<HTMLButtonElement>(".access-client .button.primary");
 }
 function writes() {

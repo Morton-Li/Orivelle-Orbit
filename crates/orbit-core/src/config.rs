@@ -20,6 +20,10 @@ use std::{
 };
 use toml_edit::{DocumentMut, Item, Table, value};
 
+#[path = "config_manual.rs"]
+mod manual;
+pub(crate) use manual::ManualTarget;
+
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CodexModelInput {
@@ -209,7 +213,26 @@ struct Operation {
     claude_context: Option<ClaudeContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_main_preferences_restore_v1: Option<ClaudeMainPreferencesRestoreV1>,
+    #[zeroize(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manual_target: Option<ManualTarget>,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JournalPurpose {
+    #[default]
+    Historical,
+    Switch,
+    SwitchRestore,
+    ManualBackup,
+    ManualRestore,
+}
+impl JournalPurpose {
+    fn is_historical(&self) -> bool {
+        *self == Self::Historical
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Journal {
     pub id: String,
@@ -221,6 +244,8 @@ pub struct Journal {
     pub created_at: String,
     pub expires_at: String,
     pub phase: String,
+    #[serde(default, skip_serializing_if = "JournalPurpose::is_historical")]
+    pub(crate) purpose: JournalPurpose,
     pub paths: Vec<String>,
     #[serde(default)]
     pub target_version: Option<String>,
@@ -231,6 +256,34 @@ pub struct Journal {
     pub nonce: String,
     #[serde(default)]
     pub ciphertext: String,
+}
+impl Journal {
+    pub(crate) fn requires_recovery(&self, store: &Store) -> Result<bool> {
+        Ok(matches!(self.phase.as_str(), "publishing" | "conflict")
+            || self.phase == "committed"
+                && self.purpose == JournalPurpose::Historical
+                && store.get::<Self>("backup", &self.id)?.is_none())
+    }
+    pub(crate) fn backup_kind(&self) -> Option<crate::dto::BackupKind> {
+        use crate::dto::BackupKind;
+        match self.purpose {
+            JournalPurpose::Switch | JournalPurpose::SwitchRestore => Some(BackupKind::Switch),
+            JournalPurpose::ManualBackup | JournalPurpose::ManualRestore => {
+                Some(BackupKind::Manual)
+            }
+            JournalPurpose::Historical => None,
+        }
+    }
+    pub(crate) fn require_unexpired(&self) -> Result<()> {
+        if self.purpose != JournalPurpose::Switch
+            && chrono::DateTime::parse_from_rfc3339(&self.expires_at)
+                .map_err(|_| fail("backup_invalid"))?
+                <= chrono::Utc::now()
+        {
+            return Err(fail("backup_expired"));
+        }
+        Ok(())
+    }
 }
 impl std::fmt::Debug for Journal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,6 +354,15 @@ impl ConfigEngine<'_> {
         operation: &Operation,
         restoring: bool,
     ) -> Result<()> {
+        if let Some(target) = &operation.manual_target {
+            return self.check_manual_context(journal, operation, target);
+        }
+        if matches!(
+            journal.purpose,
+            JournalPurpose::ManualBackup | JournalPurpose::ManualRestore
+        ) {
+            return Err(fail("backup_invalid"));
+        }
         if journal.client == ClientKind::Claude {
             return self.check_claude_context(journal, operation, restoring);
         }
@@ -866,8 +928,8 @@ impl ConfigEngine<'_> {
         XChaCha20Poly1305::new_from_slice(&key).map_err(|_| fail("vault_unavailable"))
     }
     fn aad(journal: &Journal) -> String {
-        if let Some(revision) = &journal.target_policy_revision {
-            return format!(
+        let mut aad = if let Some(revision) = &journal.target_policy_revision {
+            format!(
                 "orbit-config-v3\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                 journal.id,
                 journal.installation.origin,
@@ -877,18 +939,29 @@ impl ConfigEngine<'_> {
                 journal.target_version.as_deref().unwrap_or(""),
                 journal.target_bundle_id.as_deref().unwrap_or(""),
                 revision
-            );
+            )
+        } else {
+            format!(
+                "orbit-config-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                journal.id,
+                journal.installation.origin,
+                journal.installation.id,
+                journal.client.as_str(),
+                journal.account_id,
+                journal.target_version.as_deref().unwrap_or(""),
+                journal.target_bundle_id.as_deref().unwrap_or("")
+            )
+        };
+        if !journal.purpose.is_historical() {
+            aad.push_str(match journal.purpose {
+                JournalPurpose::Switch => "switch",
+                JournalPurpose::SwitchRestore => "switch_restore",
+                JournalPurpose::ManualBackup => "manual_backup",
+                JournalPurpose::ManualRestore => "manual_restore",
+                JournalPurpose::Historical => unreachable!(),
+            });
         }
-        format!(
-            "orbit-config-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
-            journal.id,
-            journal.installation.origin,
-            journal.installation.id,
-            journal.client.as_str(),
-            journal.account_id,
-            journal.target_version.as_deref().unwrap_or(""),
-            journal.target_bundle_id.as_deref().unwrap_or("")
-        )
+        aad
     }
     fn decrypt(&self, journal: &Journal) -> Result<Operation> {
         let nonce = URL_SAFE_NO_PAD
@@ -1034,6 +1107,7 @@ impl ConfigEngine<'_> {
             created_at: now.to_rfc3339(),
             expires_at: (now + chrono::Duration::days(retention as i64)).to_rfc3339(),
             phase: "prepared".into(),
+            purpose: JournalPurpose::Historical,
             paths: files.iter().map(|f| f.path.clone()).collect(),
             target_version: claude_context
                 .as_ref()
@@ -1060,6 +1134,7 @@ impl ConfigEngine<'_> {
             codex_context,
             claude_context,
             claude_main_preferences_restore_v1: None,
+            manual_target: None,
         };
         let mut operation = operation;
         for id in operation
@@ -1109,6 +1184,11 @@ impl ConfigEngine<'_> {
         Ok(journal)
     }
     fn persist_operation(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
+        self.seal_operation(journal, operation)?;
+        self.store
+            .put("journal", &journal.id, &journal.account_id, journal)
+    }
+    fn seal_operation(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
         // A rewritten encrypted operation always gets a fresh nonce.
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
         journal.nonce = URL_SAFE_NO_PAD.encode(nonce);
@@ -1127,8 +1207,6 @@ impl ConfigEngine<'_> {
                 .map_err(|_| fail("backup_invalid"))?,
         );
         self.check_policy()?;
-        self.store
-            .put("journal", &journal.id, &journal.account_id, journal)?;
         Ok(())
     }
     pub fn freeze_target(
@@ -1140,6 +1218,15 @@ impl ConfigEngine<'_> {
         let operation = self.decrypt(journal)?;
         journal.target_version = version;
         journal.target_bundle_id = bundle_id;
+        self.persist_operation(journal, &operation)
+    }
+    pub(crate) fn mark_switch(&self, journal: &mut Journal) -> Result<()> {
+        let operation = self.decrypt(journal)?;
+        journal.purpose = if operation.restore {
+            JournalPurpose::SwitchRestore
+        } else {
+            JournalPurpose::Switch
+        };
         self.persist_operation(journal, &operation)
     }
     pub(crate) fn freeze_policy(&self, journal: &mut Journal, revision: &str) -> Result<()> {
@@ -1212,7 +1299,8 @@ impl ConfigEngine<'_> {
         self.persist_operation(journal, &operation)
     }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
-        if journal.client == ClientKind::Claude {
+        let manual = operation.manual_target.as_ref();
+        if journal.client == ClientKind::Claude && manual.is_none() {
             let result = self.publish_claude(journal, operation);
             if result
                 .as_ref()
@@ -1227,7 +1315,11 @@ impl ConfigEngine<'_> {
 
         self.check_policy()?;
         self.check_context(journal, operation)?;
-        if let Some(id) = &operation.source_journal_id {
+        let source = operation
+            .source_journal_id
+            .as_deref()
+            .filter(|_| manual.is_none());
+        if let Some(id) = source {
             let source = self
                 .store
                 .get::<Journal>("journal", id)?
@@ -1286,7 +1378,9 @@ impl ConfigEngine<'_> {
         }
         // Inspect every file before any repair write. External changes stop the whole recovery.
         for file in &operation.files {
-            self.validate_path(Path::new(&file.path), operation.codex_context.as_ref())?;
+            if manual.is_none() {
+                self.validate_path(Path::new(&file.path), operation.codex_context.as_ref())?;
+            }
             if !equal_current(file, &file.before)? && !equal_current(file, &file.after)? {
                 journal.phase = "conflict".into();
                 self.store
@@ -1299,7 +1393,12 @@ impl ConfigEngine<'_> {
         self.store
             .put("journal", &journal.id, &journal.account_id, journal)?;
         if operation.files.iter().any(|file| file.after.is_some()) {
-            if let Some(target) = operation
+            if let Some(target) = manual {
+                target.ensure_root(&|| {
+                    self.check_policy()?;
+                    self.check_context(journal, operation)
+                })?;
+            } else if let Some(target) = operation
                 .codex_context
                 .as_ref()
                 .and_then(|context| context.configuration_target.as_ref())
@@ -1365,8 +1464,7 @@ impl ConfigEngine<'_> {
         journal.phase = "committed".into();
         self.check_policy()?;
         self.check_context(journal, operation)?;
-        self.store
-            .commit_configuration(journal, operation.source_journal_id.as_deref())?;
+        self.store.commit_configuration(journal, source)?;
         self.prune_backups_locked(journal.client)?;
         Ok(())
     }
@@ -1442,12 +1540,7 @@ impl ConfigEngine<'_> {
         // A new restore cannot outlive its selected source. Once publication
         // starts, elapsed retention must not strand a partial restoration.
         if journal.phase == "prepared" {
-            if chrono::DateTime::parse_from_rfc3339(&source.expires_at)
-                .map_err(|_| fail("backup_invalid"))?
-                <= chrono::Utc::now()
-            {
-                return Err(fail("backup_expired"));
-            }
+            source.require_unexpired()?;
         }
         Ok(())
     }
@@ -1667,7 +1760,7 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         if journal.phase == "committed" {
-            if journal.client == ClientKind::Claude {
+            if journal.client == ClientKind::Claude && operation.manual_target.is_none() {
                 self.claude_boundary(&journal, &operation, true)?;
             } else {
                 for file in &operation.files {
@@ -1678,8 +1771,13 @@ impl ConfigEngine<'_> {
                 self.check_policy()?;
                 self.check_context(&journal, &operation)?;
             }
-            self.store
-                .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
+            self.store.commit_configuration(
+                &journal,
+                operation
+                    .source_journal_id
+                    .as_deref()
+                    .filter(|_| operation.manual_target.is_none()),
+            )?;
             return Ok(journal);
         }
         if journal.phase != "publishing" {
@@ -1697,12 +1795,7 @@ impl ConfigEngine<'_> {
                     ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
                 }))
                 .ok_or_else(|| fail("backup_invalid"))?;
-        if chrono::DateTime::parse_from_rfc3339(&journal.expires_at)
-            .map_err(|_| fail("backup_invalid"))?
-            <= chrono::Utc::now()
-        {
-            return Err(fail("backup_expired"));
-        }
+        journal.require_unexpired()?;
         let original = self.decrypt(&journal)?;
         self.check_context_for(&journal, &original, true)?;
         let mut files = Vec::new();
@@ -1771,6 +1864,9 @@ impl ConfigEngine<'_> {
         restored.account_label = journal.account_label;
         restored.target_version = journal.target_version;
         restored.target_bundle_id = journal.target_bundle_id;
+        if journal.purpose == JournalPurpose::Switch {
+            restored.purpose = JournalPurpose::SwitchRestore;
+        }
         if journal.client == ClientKind::Claude {
             restored.target_policy_revision = journal.target_policy_revision;
             self.check_context(&restored, &operation)?;
@@ -1799,12 +1895,7 @@ impl ConfigEngine<'_> {
         if selected.client != ClientKind::Claude || selected.phase != "committed" {
             return Err(fail("configuration_conflict"));
         }
-        if chrono::DateTime::parse_from_rfc3339(&selected.expires_at)
-            .map_err(|_| fail("backup_invalid"))?
-            <= chrono::Utc::now()
-        {
-            return Err(fail("backup_expired"));
-        }
+        selected.require_unexpired()?;
         let source = self
             .store
             .get::<Journal>("journal", id)?
@@ -1849,7 +1940,7 @@ impl ConfigEngine<'_> {
             });
         }
         files.reverse();
-        let restored = self.prepare_operation(
+        let mut restored = self.prepare_operation(
             ClientKind::Claude,
             &selected.account_id,
             &selected.installation,
@@ -1867,6 +1958,9 @@ impl ConfigEngine<'_> {
                 },
             }),
         )?;
+        if selected.purpose == JournalPurpose::Switch {
+            self.mark_switch(&mut restored)?;
+        }
         // Authenticate the complete newly frozen operation and recheck its
         // source and current bytes after the final backup-key return.
         let operation = self.decrypt(&restored)?;

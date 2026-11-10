@@ -1,5 +1,10 @@
 /** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
 export type ClientKind = "codex" | "claude";
+export type ClaudeRoleModels = {
+  primary: string;
+  fallback: string;
+  auxiliary: string;
+};
 export type Theme = "system" | "light" | "dark";
 export type Locale = "zh-CN" | "en";
 export const CAPABILITIES = {
@@ -272,6 +277,7 @@ export type InstallationView = {
 };
 export type BackupGroup = RestoreOwner & {
   id: string;
+  kind?: "switch" | "manual";
   client: ClientKind;
   created_at: string;
   expires_at: string;
@@ -368,7 +374,11 @@ export type ConfigPreview = ConfigPreviewBase &
         model_id: null;
         context: null;
         restore_owner: RestoreOwner;
-        restore_source: { backup_group_id: string; expires_at: string };
+        restore_source: {
+          backup_group_id: string;
+          expires_at: string;
+          kind?: BackupGroup["kind"];
+        };
         restore_coordination?: ClaudeRestoreCoordination | null;
       }
   );
@@ -420,7 +430,6 @@ export interface IpcCommands {
     result: BootstrapView;
   };
   logout: { args: { connection_id: string }; result: BootstrapView };
-  select_connection: { args: { connection_id: string }; result: BootstrapView };
   select_node: {
     args: { connection_id: string; node_id: string; expected_revision: number };
     result: BootstrapView;
@@ -449,7 +458,7 @@ export interface IpcCommands {
       connection_id: string;
       expected_revision: number;
       client: ClientKind;
-      model_id: string;
+      claude_models?: ClaudeRoleModels;
     };
     result: ConfigPreview;
   };
@@ -468,6 +477,7 @@ export interface IpcCommands {
     };
     result: ConfigPreview;
   };
+  backup_client_config: { args: { client: ClientKind }; result: BootstrapView };
   restore_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;

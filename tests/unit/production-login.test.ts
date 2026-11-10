@@ -35,6 +35,8 @@ afterEach(() => {
 
 it("connects only to the fixed official service despite a legacy connection origin", async () => {
   const state = bootstrap();
+  state.session.status = "expired";
+  state.session.account = null;
   state.connections[0]!.panel_origin = "https://legacy-panel.invalid";
   bridge.call.mockImplementation(async (command) => {
     if (command === "bootstrap") return state;
@@ -70,7 +72,7 @@ it("connects only to the fixed official service despite a legacy connection orig
   useOrbitStore().loginOpen = true;
   await flushPromises();
   const dialog = view.get('[role="dialog"]');
-  expect(dialog.text()).toContain("https://orivelle.powerbyte.io");
+  expect(dialog.text()).not.toContain("https://orivelle.powerbyte.io");
   expect(dialog.text()).not.toContain("legacy-panel.invalid");
   expect(dialog.findAll("input, textarea, select")).toHaveLength(0);
   await dialog.get("form").trigger("submit");

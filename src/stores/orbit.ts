@@ -127,6 +127,12 @@ export const useOrbitStore = defineStore("orbit", () => {
       ? `${activeConnection.value.account_id}/${activeConnection.value.id}/${activeConnection.value.revision}/${activeConnection.value.credential_revision ?? ""}/${activeConnection.value.node_id ?? ""}`
       : "none",
   );
+  const canLogin = computed(
+    () =>
+      !["authenticated", "refreshing", "authorizing"].includes(
+        state.value.session.status,
+      ),
+  );
   const ready = computed(
     () =>
       state.value.session.status === "authenticated" &&
@@ -380,7 +386,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     unsubscribeAuthorization = undefined;
   }
   async function login() {
-    if (loginAttempt || loginPending.value) return undefined;
+    if (!native.value || !canLogin.value || loginAttempt || loginPending.value)
+      return undefined;
     const attempt = {
       terminalEvents: new Map<
         string,
@@ -420,12 +427,6 @@ export const useOrbitStore = defineStore("orbit", () => {
       acceptState(result);
     }
     loginOpen.value = false;
-  }
-  async function selectConnection(id: string) {
-    const result = await perform("connection", "select_connection", {
-      connection_id: id,
-    });
-    if (result) acceptState(result);
   }
   async function selectNode(id: string) {
     const connection = activeConnection.value;
@@ -479,6 +480,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     loginRequestId,
     account,
     activeConnection,
+    canLogin,
     scope,
     ready,
     tasks,
@@ -498,7 +500,6 @@ export const useOrbitStore = defineStore("orbit", () => {
     dispose,
     login,
     cancelLogin,
-    selectConnection,
     selectNode,
     saveSettings,
     acceptTask,

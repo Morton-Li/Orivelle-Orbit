@@ -222,3 +222,14 @@ export function task(state: TaskView["state"] = "completed"): TaskView {
     error: null,
   };
 }
+
+// Unit tests exercise the consumer's selection state. Browser tests exercise the real combobox.
+export const orbitSelectStub = {
+  props: ["id", "modelValue", "options", "disabled"],
+  emits: ["update:modelValue"],
+  template: `<select :id="id" :value="modelValue" :disabled="disabled"
+    @change="$emit('update:modelValue', $event.target.value)">
+    <option value=""></option>
+    <option v-for="option in options" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
+  </select>`,
+};

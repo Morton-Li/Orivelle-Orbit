@@ -416,6 +416,7 @@ impl Store {
         journal: &crate::config::Journal,
         source: Option<&str>,
     ) -> Result<()> {
+        use crate::config::JournalPurpose;
         let payload = serde_json::to_string(journal).map_err(|_| fail("serialization_failed"))?;
         if journal.phase != "committed" || payload.len() > 24 * 1024 * 1024 {
             return Err(fail("backup_invalid"));
@@ -423,6 +424,9 @@ impl Store {
         let mut db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
         let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
         for kind in ["journal", "backup"] {
+            if kind == "backup" && journal.purpose != JournalPurpose::Historical {
+                continue;
+            }
             tx.execute("INSERT INTO records(kind,id,scope,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET scope=excluded.scope,payload=excluded.payload",params![kind,journal.id,journal.account_id,payload]).map_err(|_|fail("database_unavailable"))?;
         }
         if let Some(source) = source {
@@ -430,6 +434,35 @@ impl Store {
             if changed != 1 {
                 return Err(fail("backup_invalid"));
             }
+        }
+        if journal.purpose != JournalPurpose::Historical {
+            let state = if journal.purpose == JournalPurpose::Switch {
+                "saved"
+            } else {
+                "not_configured"
+            };
+            tx.execute(
+                "UPDATE records SET payload=json_set(payload,'$.configuration_state',?2,
+                 '$.configuration_revision',NULL,'$.loaded_state','restart_required',
+                 '$.connection_state','not_tested','$.loaded_evidence',NULL,'$.connection_evidence',NULL)
+                 WHERE kind='client-state' AND id=?1",
+                params![journal.client.as_str(), state],
+            ).map_err(|_| fail("database_unavailable"))?;
+        }
+        if journal.purpose == JournalPurpose::Switch {
+            tx.execute(
+                "DELETE FROM records WHERE kind='journal' AND json_extract(payload,'$.client')=?1
+                 AND ((json_extract(payload,'$.purpose')='switch' AND json_extract(payload,'$.phase')='restored')
+                   OR (json_extract(payload,'$.purpose')='switch_restore' AND json_extract(payload,'$.phase')='committed'))",
+                [journal.client.as_str()],
+            ).map_err(|_| fail("database_unavailable"))?;
+        }
+        if journal.purpose == JournalPurpose::ManualRestore {
+            tx.execute(
+                "DELETE FROM records WHERE kind='journal' AND id<>?1 AND json_extract(payload,'$.client')=?2
+                 AND json_extract(payload,'$.purpose')='manual_restore' AND json_extract(payload,'$.phase')='committed'",
+                params![journal.id, journal.client.as_str()],
+            ).map_err(|_| fail("database_unavailable"))?;
         }
         Self::advance(&tx)?;
         tx.commit().map_err(|_| fail("database_unavailable"))

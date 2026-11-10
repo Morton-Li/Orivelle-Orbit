@@ -362,7 +362,7 @@ async fn handle(
         Ok(Err(error)) => return local_error(StatusCode::PAYLOAD_TOO_LARGE, &error.code),
         Err(_) => return local_error(StatusCode::REQUEST_TIMEOUT, "claude_mapping_body_timeout"),
     };
-    let object = match RawObject::parse(&body, &state.route) {
+    let (object, alias) = match RawObject::parse(&body, &state.route) {
         Ok(object) => object,
         Err(error) => return local_error(StatusCode::BAD_REQUEST, &error.code),
     };
@@ -377,7 +377,7 @@ async fn handle(
     let authority = state.authority.clone();
     let native_work = work.clone();
     let permit = match tokio::task::spawn_blocking(move || {
-        (authority.authorize_messages(access), native_work)
+        (authority.authorize_messages(access, alias), native_work)
     })
     .await
     {
@@ -478,7 +478,7 @@ impl<'de> Deserialize<'de> for RawObject {
     }
 }
 impl RawObject {
-    fn parse(body: &[u8], route: &LocalRoute) -> Result<Self> {
+    fn parse(body: &[u8], route: &LocalRoute) -> Result<(Self, String)> {
         let object: Self =
             serde_json::from_slice(body).map_err(|_| fail("claude_mapping_json_invalid"))?;
         let model = object
@@ -491,7 +491,7 @@ impl RawObject {
         if !allowed_alias(route, &model) {
             return Err(fail("claude_mapping_model_invalid"));
         }
-        Ok(object)
+        Ok((object, model))
     }
     fn rewrite(self, model: &str) -> Result<Vec<u8>> {
         let replacement =
@@ -806,7 +806,11 @@ mod tests {
                 _lease: Box::new(Lease(self.leases.clone())),
             })
         }
-        fn authorize_messages(&self, access: MappingAccess) -> Result<ForwardPermit> {
+        fn authorize_messages(
+            &self,
+            access: MappingAccess,
+            alias: String,
+        ) -> Result<ForwardPermit> {
             self.block.wait(2);
             if self.reject_at.load(Ordering::SeqCst) == 1 {
                 return Err(fail("binding_disabled"));
@@ -816,6 +820,7 @@ mod tests {
                 messages_url: url::Url::parse("https://edge.example.test/anthropic/v1/messages")
                     .unwrap(),
                 upstream_model_id: MODEL.into(),
+                requested_alias: alias,
                 api_key: Zeroizing::new(REMOTE.into()),
             })
         }
@@ -1060,6 +1065,7 @@ mod tests {
         );
         let rewritten = RawObject::parse(input.as_bytes(), &route)
             .unwrap()
+            .0
             .rewrite(MODEL)
             .unwrap();
         let rewritten = String::from_utf8(rewritten).unwrap();

@@ -9,10 +9,11 @@ import type {
   Theme,
   UpdateView,
 } from "../shared/contracts";
-import { formatBytes } from "../shared/format";
+import { formatBytes, redactServiceUrls } from "../shared/format";
 import { t } from "../shared/i18n";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
+import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 const store = useOrbitStore();
 const diagnostics = ref<DiagnosticsPreview | null>(null);
@@ -142,38 +143,30 @@ async function installUpdate() {
       </div>
       <div class="settings-row">
         <label for="setting-theme">{{ t("settings.theme") }}</label
-        ><select
+        ><OrbitSelect
           id="setting-theme"
-          :value="store.state.settings.theme"
+          :model-value="store.state.settings.theme"
           :disabled="settingsDisabled"
-          @change="
-            setting(
-              'theme',
-              ($event.target as HTMLSelectElement).value as Theme,
-            )
-          "
-        >
-          <option value="system">{{ t("settings.system") }}</option>
-          <option value="light">{{ t("settings.light") }}</option>
-          <option value="dark">{{ t("settings.dark") }}</option>
-        </select>
+          :options="[
+            { value: 'system', label: t('settings.system') },
+            { value: 'light', label: t('settings.light') },
+            { value: 'dark', label: t('settings.dark') },
+          ]"
+          @update:model-value="setting('theme', $event as Theme)"
+        />
       </div>
       <div class="settings-row">
         <label for="setting-locale">{{ t("settings.language") }}</label
-        ><select
+        ><OrbitSelect
           id="setting-locale"
-          :value="store.state.settings.locale"
+          :model-value="store.state.settings.locale"
           :disabled="settingsDisabled"
-          @change="
-            setting(
-              'locale',
-              ($event.target as HTMLSelectElement).value as Locale,
-            )
-          "
-        >
-          <option value="zh-CN">简体中文</option>
-          <option value="en">English</option>
-        </select>
+          :options="[
+            { value: 'zh-CN', label: '简体中文' },
+            { value: 'en', label: 'English' },
+          ]"
+          @update:model-value="setting('locale', $event as Locale)"
+        />
       </div>
     </section>
     <section class="settings-section">
@@ -183,54 +176,37 @@ async function installUpdate() {
       </div>
       <div class="settings-row">
         <label for="setting-disk">{{ t("settings.disk") }}</label
-        ><select
+        ><OrbitSelect
           id="setting-disk"
-          :value="store.state.settings.image_disk_limit_bytes"
+          :model-value="String(store.state.settings.image_disk_limit_bytes)"
           :disabled="settingsDisabled"
-          @change="
-            setting(
-              'image_disk_limit_bytes',
-              Number(($event.target as HTMLSelectElement).value),
-            )
+          :options="
+            [1, 2, 5, 10].map((gib) => ({
+              value: String(gib * 1024 ** 3),
+              label: `${gib} GiB`,
+            }))
           "
-        >
-          <option
-            v-for="gib in [1, 2, 5, 10]"
-            :key="gib"
-            :value="gib * 1024 ** 3"
-          >
-            {{ gib }} GiB
-          </option>
-        </select>
+          @update:model-value="
+            setting('image_disk_limit_bytes', Number($event))
+          "
+        />
       </div>
       <div class="settings-row">
         <label for="setting-cache">{{ t("settings.cache") }}</label
-        ><select
+        ><OrbitSelect
           id="setting-cache"
-          :value="store.state.settings.preview_cache_limit_bytes"
+          :model-value="String(store.state.settings.preview_cache_limit_bytes)"
           :disabled="settingsDisabled"
-          @change="
-            setting(
-              'preview_cache_limit_bytes',
-              Number(($event.target as HTMLSelectElement).value),
-            )
+          :options="
+            [64, 128, 256].map((mib) => ({
+              value: String(mib * 1024 ** 2),
+              label: `${mib} MiB`,
+            }))
           "
-        >
-          <option
-            v-for="mib in [64, 128, 256]"
-            :key="mib"
-            :value="mib * 1024 ** 2"
-          >
-            {{ mib }} MiB
-          </option>
-        </select>
-      </div>
-      <div class="settings-row">
-        <span>{{ t("settings.backups") }}</span
-        ><span class="muted"
-          >{{ store.state.settings.backup_retention_days }} d ·
-          {{ store.state.settings.backup_max_groups }}</span
-        >
+          @update:model-value="
+            setting('preview_cache_limit_bytes', Number($event))
+          "
+        />
       </div>
       <p class="field-hint">{{ t("settings.diskHint") }}</p>
     </section>
@@ -246,20 +222,23 @@ async function installUpdate() {
       </div>
       <p class="muted">{{ t("settings.securityHint") }}</p>
       <p class="field-hint">{{ t("settings.logoutHint") }}</p>
-      <div v-if="store.state.installations.length" class="settings-row">
-        <label for="forget-installation-origin">{{
+      <div v-if="store.state.installations.length > 1" class="settings-row">
+        <label for="forget-installation">{{
           t("settings.installation")
-        }}</label
-        ><select id="forget-installation-origin" v-model="installationId">
-          <option value="" disabled>{{ t("login.panel") }}</option>
-          <option
-            v-for="installation in store.state.installations"
-            :key="installation.id"
-            :value="installation.id"
-          >
-            {{ installation.panel_origin }}
-          </option>
-        </select>
+        }}</label>
+        <OrbitSelect
+          id="forget-installation"
+          v-model="installationId"
+          :placeholder="t('settings.installation')"
+          :options="
+            store.state.installations.map((installation, index) => ({
+              value: installation.id,
+              label:
+                installation.account_labels.join(' · ') ||
+                `${t('settings.installation')} ${index + 1}`,
+            }))
+          "
+        />
       </div>
       <div class="settings-actions">
         <button
@@ -291,26 +270,21 @@ async function installUpdate() {
       </div>
       <div class="settings-row">
         <label for="setting-close">{{ t("settings.close") }}</label
-        ><select
+        ><OrbitSelect
           id="setting-close"
-          :value="store.state.settings.close_behavior"
+          :model-value="store.state.settings.close_behavior"
           :disabled="settingsDisabled"
-          @change="
-            setting(
-              'close_behavior',
-              ($event.target as HTMLSelectElement)
-                .value as SettingsView['close_behavior'],
-            )
+          :options="[
+            { value: 'platform_default', label: t('settings.platformDefault') },
+            ...(store.state.platform === 'macos'
+              ? [{ value: 'keep_running', label: t('settings.keepRunning') }]
+              : []),
+            { value: 'quit', label: t('settings.quit') },
+          ]"
+          @update:model-value="
+            setting('close_behavior', $event as SettingsView['close_behavior'])
           "
-        >
-          <option value="platform_default">
-            {{ t("settings.platformDefault") }}
-          </option>
-          <option v-if="store.state.platform === 'macos'" value="keep_running">
-            {{ t("settings.keepRunning") }}
-          </option>
-          <option value="quit">{{ t("settings.quit") }}</option>
-        </select>
+        />
       </div>
       <p class="field-hint">{{ t("settings.quitHint") }}</p>
     </section>
@@ -396,7 +370,9 @@ async function installUpdate() {
       }
     "
   >
-    <pre class="diagnostics-preview">{{ diagnostics?.text }}</pre>
+    <pre class="diagnostics-preview">{{
+      redactServiceUrls(diagnostics?.text ?? "")
+    }}</pre>
     <div class="dialog-actions">
       <button class="button secondary" @click="diagnostics = null">
         {{ t("action.close") }}</button
@@ -418,8 +394,7 @@ async function installUpdate() {
         if (!value) forget = null;
       }
     "
-    ><template v-if="forget"
-      ><p class="mono">{{ forget.panel_origin }}</p>
+    ><template v-if="forget">
       <p>
         {{ forget.affected_account_labels.join(" · ") }} ·
         {{ forget.backup_group_count }} {{ t("access.backups") }}

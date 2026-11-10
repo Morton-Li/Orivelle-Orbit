@@ -1,8 +1,8 @@
 use crate::{
     clipboard::{ClipboardImage, ImageClipboardSink},
     config::{
-        CodexContext, CodexModelInput, ConfigEngine, FileChange, Journal, codex_catalog_patch,
-        codex_configuration_revision, read_file,
+        CodexContext, CodexModelInput, ConfigEngine, FileChange, Journal, JournalPurpose,
+        codex_catalog_patch, codex_configuration_revision, read_file,
     },
     dto::*,
     error::{PublicError, Result, fail},
@@ -43,6 +43,8 @@ mod claude;
 #[cfg(all(test, target_os = "macos"))]
 #[path = "service_claude_tests.rs"]
 mod claude_authority_tests;
+#[path = "service_config_backup.rs"]
+mod config_backup;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ConnectionRecord {
@@ -380,6 +382,12 @@ impl Service {
             network_locks: Mutex::new(HashMap::new()),
             received_memory: Mutex::new(HashMap::new()),
         });
+        let active = service.store.meta("active_connection")?;
+        for record in service.store.list::<ConnectionRecord>("connection", None)? {
+            if Some(&record.view.id) != active.as_ref() && record.session_status != "logged_out" {
+                let _ = service.retire_account(record)?;
+            }
+        }
         service.coordinate_configuration_recovery()?;
         Ok(service)
     }
@@ -838,6 +846,10 @@ impl Service {
         let mut backup_candidates = snapshot.list::<Journal>("backup", None)?;
         for j in snapshot.list::<Journal>("journal", None)? {
             if ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
+                && matches!(
+                    j.purpose,
+                    JournalPurpose::Historical | JournalPurpose::Switch
+                )
                 && !backup_candidates.iter().any(|b| b.id == j.id)
             {
                 backup_candidates.push(j);
@@ -848,8 +860,17 @@ impl Service {
                 .iter()
                 .any(|i| i.id == j.installation.id && i.origin == j.installation.origin)
             {
+                let kind = j.backup_kind();
+                let state = if ["publishing", "conflict"].contains(&j.phase.as_str()) {
+                    "conflict"
+                } else if j.require_unexpired().is_ok() {
+                    "available"
+                } else {
+                    "unavailable"
+                };
                 backups.push(BackupGroup {
                     id: j.id,
+                    kind,
                     client: j.client,
                     owner: RestoreOwner {
                         account_id: j.account_id.clone(),
@@ -864,16 +885,7 @@ impl Service {
                     created_at: j.created_at,
                     expires_at: j.expires_at.clone(),
                     file_count: j.paths.len() as u32,
-                    state: if ["publishing", "conflict"].contains(&j.phase.as_str()) {
-                        "conflict"
-                    } else if chrono::DateTime::parse_from_rfc3339(&j.expires_at)
-                        .is_ok_and(|at| at > chrono::Utc::now())
-                    {
-                        "available"
-                    } else {
-                        "unavailable"
-                    }
-                    .into(),
+                    state: state.into(),
                 });
             }
         }
@@ -970,6 +982,19 @@ impl Service {
                 .account_gate
                 .lock()
                 .map_err(|_| fail("state_unavailable"))?;
+            if let Some(installation) = self.store.installation(&origin)? {
+                self.ensure_installation_available(&installation.id)?;
+            }
+            if self.active_record()?.is_some_and(|record| {
+                matches!(
+                    record.session_status.as_str(),
+                    "authenticated" | "refreshing" | "authorizing"
+                ) && record
+                    .session_expires_at
+                    .is_none_or(|at| at > chrono::Utc::now().timestamp())
+            }) {
+                return Err(fail("account_already_connected"));
+            }
             self.abort_pending_locked()?;
             self.login_epoch.load(Ordering::SeqCst)
         };
@@ -1280,6 +1305,13 @@ impl Service {
             .list::<ConnectionRecord>("connection", Some(&account_id))?
             .into_iter()
             .find(|r| r.view.panel_origin == installation.origin);
+        if let Some(previous) = self.active_record()?
+            && (previous.view.account_id != account_id
+                || previous.view.panel_origin != installation.origin)
+            && previous.session_status != "logged_out"
+        {
+            let _ = self.retire_account(previous)?;
+        }
         let id = existing
             .as_ref()
             .map(|r| r.view.id.clone())
@@ -1816,6 +1848,7 @@ impl Service {
         }
         self.bootstrap()
     }
+    #[cfg(test)]
     pub fn select_connection(&self, id: &str) -> Result<BootstrapView> {
         let _operation = self.begin_mutation()?;
         let _gate = self
@@ -1931,8 +1964,12 @@ impl Service {
         record.view.node_label = Some(node.label.clone());
         record.view.edge_base_url = Some(node.base_url.clone());
         record.view.revision += 1;
-        self.store
-            .put("connection", id, &record.view.account_id, &record)?;
+        self.store.put(
+            "connection",
+            &record.view.id,
+            &record.view.account_id,
+            &record,
+        )?;
         self.invalidate_evidence()?;
         self.changed();
         self.bootstrap()
@@ -1995,7 +2032,14 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
-        let mut record = self.record(id)?;
+        let secret_failure = self.retire_account(self.record(id)?)?;
+        self.invalidate_evidence()?;
+        if secret_failure {
+            return Err(fail("vault_unavailable"));
+        }
+        Ok(())
+    }
+    fn retire_account(&self, mut record: ConnectionRecord) -> Result<bool> {
         record.authorization_epoch = self.advance_authorization_epoch(&record)?;
         if record.session_status != "logged_out"
             && !record
@@ -2018,17 +2062,16 @@ impl Service {
         record.view.revision += 1;
         record.refresh_attempt = None;
         record.session_status = "logged_out".into();
-        self.store
-            .put("connection", id, &record.view.account_id, &record)?;
+        self.store.put(
+            "connection",
+            &record.view.id,
+            &record.view.account_id,
+            &record,
+        )?;
         self.store
             .disable_bindings(&record.view.account_id, &record.view.panel_origin)?;
         self.stop_claude_mappings_for(&record.view.account_id, &record.view.panel_origin)?;
-        let secret_failure = self.cleanup_pending(&mut record)?;
-        self.invalidate_evidence()?;
-        if secret_failure {
-            return Err(fail("vault_unavailable"));
-        }
-        Ok(())
+        self.cleanup_pending(&mut record)
     }
     pub async fn logout(&self, id: &str) -> Result<BootstrapView> {
         let _operation = self.begin_mutation()?;
@@ -2649,11 +2692,7 @@ impl Service {
     }
     fn pending_configuration_recovery(&self, client: ClientKind) -> Result<bool> {
         for journal in self.store.list::<Journal>("journal", None)? {
-            if journal.client == client
-                && (["publishing", "conflict"].contains(&journal.phase.as_str())
-                    || journal.phase == "committed"
-                        && self.store.get::<Journal>("backup", &journal.id)?.is_none())
-            {
+            if journal.client == client && journal.requires_recovery(&self.store)? {
                 return Ok(true);
             }
         }
@@ -2661,14 +2700,17 @@ impl Service {
     }
     fn coordinate_configuration_recovery(&self) -> Result<()> {
         for journal in self.store.list::<Journal>("journal", None)? {
+            if journal.purpose == JournalPurpose::ManualRestore {
+                if journal.requires_recovery(&self.store)? {
+                    self.recover_manual_restore(&journal)?;
+                }
+                continue;
+            }
             if journal.client == ClientKind::Claude {
                 self.coordinate_claude_journal(&journal)?;
                 continue;
             }
-            if !["publishing", "conflict", "committed"].contains(&journal.phase.as_str())
-                || journal.phase == "committed"
-                    && self.store.get::<Journal>("backup", &journal.id)?.is_some()
-            {
+            if !journal.requires_recovery(&self.store)? {
                 continue;
             }
             let observation = self.observe_configuration(journal.client)?;
@@ -2722,7 +2764,14 @@ impl Service {
                 .iter_mut()
                 .filter(|c| c.client == journal.client)
             {
-                client.configuration_state = if recovered { "saved" } else { "conflict" }.into();
+                client.configuration_state = if !recovered {
+                    "conflict"
+                } else if journal.purpose == JournalPurpose::SwitchRestore {
+                    "not_configured"
+                } else {
+                    "saved"
+                }
+                .into();
                 if recovered {
                     client.configuration_revision = revision.clone();
                 }
@@ -2765,9 +2814,72 @@ impl Service {
         model_id: &str,
     ) -> Result<ConfigPreview> {
         if client == ClientKind::Claude {
-            return self.preview_claude_config(id, revision, model_id);
+            return self.preview_claude_config(id, revision, model_id, None);
         }
         self.preview_client_config_legacy(id, revision, client, model_id)
+    }
+    pub async fn preview_switch_config(
+        &self,
+        id: &str,
+        revision: u64,
+        client: ClientKind,
+        roles: Option<&ClaudeRoleModels>,
+    ) -> Result<ConfigPreview> {
+        self.configuration_preflight(client)?;
+        self.refresh_account_cache(id, false).await?;
+        self.configuration_preflight(client)?;
+        let _ = self.list_models(id).await?;
+        match (client, roles) {
+            (ClientKind::Codex, None) => {
+                self.preview_client_config_legacy(id, revision, client, "")
+            }
+            (ClientKind::Claude, Some(roles)) => {
+                self.preview_claude_config(id, revision, &roles.primary, Some(roles))
+            }
+            _ => Err(fail("model_unavailable")),
+        }
+    }
+    fn has_switch_snapshot(&self, client: ClientKind) -> Result<bool> {
+        Ok(self
+            .store
+            .list::<Journal>("journal", None)?
+            .into_iter()
+            .any(|journal| {
+                journal.client == client
+                    && journal.purpose == JournalPurpose::Switch
+                    && matches!(
+                        journal.phase.as_str(),
+                        "publishing" | "conflict" | "committed"
+                    )
+            }))
+    }
+    fn require_original_configuration(&self, client: ClientKind) -> Result<()> {
+        if self.has_switch_snapshot(client)? {
+            return Err(fail("original_configuration_required"));
+        }
+        Ok(())
+    }
+    fn check_switch_confirmation(&self, entry: &PreviewEntry, restore: bool) -> Result<()> {
+        let journal: Journal = self
+            .store
+            .get(
+                "journal",
+                entry
+                    .journal_id
+                    .as_deref()
+                    .ok_or_else(|| fail("preview_expired"))?,
+            )?
+            .ok_or_else(|| fail("preview_expired"))?;
+        if journal.purpose == JournalPurpose::Switch {
+            self.require_original_configuration(journal.client)?;
+        }
+        if restore
+            && journal.purpose == JournalPurpose::Historical
+            && self.has_switch_snapshot(journal.client)?
+        {
+            return Err(fail("original_configuration_required"));
+        }
+        Ok(())
     }
     #[cfg(test)]
     fn preview_claude_diagnostic(
@@ -2793,6 +2905,18 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
         let (record, cache) = self.current_connection(id, revision)?;
+        let switching = client == ClientKind::Codex && model_id.is_empty();
+        if switching {
+            self.require_original_configuration(client)?;
+        }
+        let planned = if client == ClientKind::Codex {
+            Some(self.plan_codex(&record, &cache, model_id)?)
+        } else {
+            None
+        };
+        let model_id = planned
+            .as_ref()
+            .map_or(model_id, |plan| plan.catalog().default_alias());
         let model = cache
             .models
             .iter()
@@ -2801,11 +2925,6 @@ impl Service {
             })
             .ok_or_else(|| fail("model_unavailable"))?;
         let context = self.context(&record, &cache, model)?;
-        let planned = if client == ClientKind::Codex {
-            Some(self.plan_codex(&record, &cache, model_id)?)
-        } else {
-            None
-        };
         let catalog_context = planned
             .as_ref()
             .zip(observation.configuration_target.as_ref())
@@ -3013,6 +3132,9 @@ impl Service {
                     target.bundle_id.clone(),
                 )?;
                 engine.freeze_policy(&mut journal, &policy.revision)?;
+                if switching {
+                    engine.mark_switch(&mut journal)?;
+                }
                 journal_id = Some(journal.id);
                 preview.can_apply = true;
             }
@@ -3219,6 +3341,16 @@ impl Service {
             return Err(fail("integration_authorization_required"));
         }
         let entry = self.take_preview(id, if restore { "restore" } else { "apply" })?;
+        if restore
+            && entry
+                .view
+                .restore_source
+                .as_ref()
+                .and_then(|source| source.kind)
+                == Some(BackupKind::Manual)
+        {
+            return self.apply_manual_restore(entry);
+        }
         if entry.view.client == ClientKind::Claude {
             return self.apply_claude_entry(entry, restore);
         }
@@ -3234,6 +3366,7 @@ impl Service {
             )
         };
         guard()?;
+        self.check_switch_confirmation(&entry, restore)?;
         // Compare all scoped candidates and output after refresh, under the actor lock.
         if entry.view.client == ClientKind::Codex && !restore {
             let frozen = entry
@@ -3420,8 +3553,22 @@ impl Service {
             .or(self
                 .store
                 .get::<Journal>("journal", backup_id)?
-                .filter(|j| ["publishing", "conflict", "committed"].contains(&j.phase.as_str())))
+                .filter(|j| {
+                    matches!(
+                        j.purpose,
+                        JournalPurpose::Historical | JournalPurpose::Switch
+                    ) && ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
+                }))
             .ok_or_else(|| fail("backup_invalid"))?;
+        if backup.purpose != JournalPurpose::Switch && self.has_switch_snapshot(backup.client)? {
+            return Err(fail("original_configuration_required"));
+        }
+        if backup.purpose == JournalPurpose::ManualBackup {
+            if coordination.is_some() {
+                return Err(fail("backup_invalid"));
+            }
+            return self.preview_manual_restore(backup);
+        }
         if coordination.is_some()
             && (backup.client != ClientKind::Claude
                 || backup.phase != "committed"
@@ -3484,6 +3631,7 @@ impl Service {
         } else {
             None
         };
+        let kind = backup.backup_kind();
         let preview = ConfigPreview {
             id: uuid(),
             client: backup.client,
@@ -3495,6 +3643,7 @@ impl Service {
             restore_source: Some(RestoreSource {
                 backup_group_id: backup_id.into(),
                 expires_at: backup.expires_at.clone(),
+                kind,
             }),
             restore_coordination: None,
             restore_owner: Some(RestoreOwner {
@@ -5285,6 +5434,81 @@ mod tests {
             .as_ref()
             .unwrap();
         f.service.store.get("journal", id).unwrap().unwrap()
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn switch_restores_original_and_leaves_manual_backup_independent() {
+        let f = policy_fixture(ClientKind::Codex);
+        catalog_menu(&f);
+        let service = &f.service;
+        let original = read_file(&service.paths.codex_config).unwrap();
+        let state = service.backup_client_config(ClientKind::Codex).unwrap();
+        let manual = &state.backups[0];
+        assert_eq!(manual.kind, Some(BackupKind::Manual));
+        let preview = service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        let catalog = preview.codex_catalog.unwrap();
+        assert_eq!(catalog.aliases, [f.model.as_str(), "menu-alias"]);
+        assert_eq!(catalog.default_alias, f.model);
+        service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let state = service.bootstrap().unwrap();
+        let snapshot = state
+            .backups
+            .iter()
+            .find(|item| item.kind == Some(BackupKind::Switch))
+            .unwrap();
+        assert!(
+            service
+                .store
+                .get::<Journal>("backup", &snapshot.id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service
+                .backup_client_config(ClientKind::Codex)
+                .unwrap_err()
+                .code,
+            "original_configuration_required"
+        );
+        service.commit_logout(&f.record.view.id).unwrap();
+        let restore = service.preview_restore(&snapshot.id).unwrap();
+        service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(read_file(&service.paths.codex_config).unwrap(), original);
+        assert!(!service.paths.codex_catalog().exists());
+        let state = service.bootstrap().unwrap();
+        assert_eq!(state.backups.len(), 1);
+        assert_eq!(state.backups[0].id, manual.id);
+        std::fs::write(&service.paths.codex_config, b"model='updated'\n").unwrap();
+        let restore = service.preview_restore(&manual.id).unwrap();
+        std::fs::write(
+            &service.paths.codex_config,
+            b"model='edited-after-preview'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .apply_client_config(&restore.id, true, true)
+                .unwrap_err()
+                .code,
+            "configuration_conflict"
+        );
+        let restore = service.preview_restore(&manual.id).unwrap();
+        service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(read_file(&service.paths.codex_config).unwrap(), original);
+        assert_eq!(service.bootstrap().unwrap().backups[0].id, manual.id);
     }
     #[cfg(not(windows))]
     #[test]
@@ -8680,7 +8904,21 @@ mod tests {
     #[tokio::test]
     async fn pending_login_cancel_terminal_events_and_late_callbacks_keep_existing_actor() {
         for mode in ["cancelled", "connected", "denied", "expired", "failed"] {
-            let (_dir, service, vault, record, install) = setup();
+            let (_dir, service, vault, mut record, install) = setup();
+            assert_eq!(
+                service.start_login(&install.origin).await.unwrap_err().code,
+                "account_already_connected"
+            );
+            record.session_status = "expired".into();
+            service
+                .store
+                .put(
+                    "connection",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &record,
+                )
+                .unwrap();
             let events = Arc::new(Mutex::new(Vec::<AuthorizationEvent>::new()));
             let collected = events.clone();
             let finished = Arc::new(tokio::sync::Notify::new());
@@ -8731,12 +8969,13 @@ mod tests {
                 view.pending_authorization.unwrap().request_id,
                 start.request_id
             );
-            assert_eq!(view.session.status, "authenticated");
-            assert_eq!(view.session.account.unwrap().id, record.view.account_id);
+            assert_eq!(view.session.status, "expired");
+            assert!(view.session.account.is_none());
             if mode == "cancelled" {
                 let view = service.cancel_login(&start.request_id).unwrap();
                 assert!(view.pending_authorization.is_none());
-                assert_eq!(view.session.account.unwrap().id, record.view.account_id);
+                assert_eq!(view.session.status, "expired");
+                assert!(view.session.account.is_none());
                 let (_, session) = serde_json::from_value::<TokenResponse>(
                     golden()["token_reply"]["data"].clone(),
                 )

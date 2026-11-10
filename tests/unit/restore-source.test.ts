@@ -14,7 +14,11 @@ import ConfigReviewDialog from "../../src/components/ConfigReviewDialog.vue";
 import AccessPage from "../../src/pages/AccessPage.vue";
 import { useOrbitStore } from "../../src/stores/orbit";
 import type { BackupGroup, ConfigPreview } from "../../src/shared/contracts";
-import { bootstrap, syntheticClaudeConfigurationTarget } from "../fixtures";
+import {
+  bootstrap,
+  orbitSelectStub,
+  syntheticClaudeConfigurationTarget,
+} from "../fixtures";
 
 let view: VueWrapper | undefined;
 function backup(id = "selected-backup"): BackupGroup {
@@ -205,6 +209,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
       view = mount(AccessPage, {
         global: {
           stubs: {
+            OrbitSelect: orbitSelectStub,
             ClientRow: true,
             ConfigReviewDialog: true,
             OrbitDialog: true,
@@ -238,7 +243,12 @@ describe("Claude restore confirmation binds the selected backup", () => {
     );
     view = mount(AccessPage, {
       global: {
-        stubs: { ClientRow: true, ConfigReviewDialog: true, OrbitDialog: true },
+        stubs: {
+          OrbitSelect: orbitSelectStub,
+          ClientRow: true,
+          ConfigReviewDialog: true,
+          OrbitDialog: true,
+        },
       },
     });
     await view
@@ -272,6 +282,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
     view = mount(AccessPage, {
       global: {
         stubs: {
+          OrbitSelect: orbitSelectStub,
           ClientRow: true,
           OrbitDialog: {
             props: ["open"],
@@ -312,7 +323,12 @@ describe("Claude restore confirmation binds the selected backup", () => {
     bridge.call.mockResolvedValueOnce(result);
     view = mount(AccessPage, {
       global: {
-        stubs: { ClientRow: true, ConfigReviewDialog: true, OrbitDialog: true },
+        stubs: {
+          OrbitSelect: orbitSelectStub,
+          ClientRow: true,
+          ConfigReviewDialog: true,
+          OrbitDialog: true,
+        },
       },
     });
     await view
@@ -356,6 +372,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
       view = mount(AccessPage, {
         global: {
           stubs: {
+            OrbitSelect: orbitSelectStub,
             ClientRow: true,
             ConfigReviewDialog: true,
             OrbitDialog: true,
@@ -432,7 +449,12 @@ describe("Claude restore confirmation binds the selected backup", () => {
     useOrbitStore().state.backups = [other, unavailable];
     view = mount(AccessPage, {
       global: {
-        stubs: { ClientRow: true, ConfigReviewDialog: true, OrbitDialog: true },
+        stubs: {
+          OrbitSelect: orbitSelectStub,
+          ClientRow: true,
+          ConfigReviewDialog: true,
+          OrbitDialog: true,
+        },
       },
     });
     await view

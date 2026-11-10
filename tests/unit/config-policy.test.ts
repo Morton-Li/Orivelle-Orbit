@@ -20,6 +20,7 @@ import type { ClientView, ConfigPreview } from "../../src/shared/contracts";
 import { useOrbitStore } from "../../src/stores/orbit";
 import {
   bootstrap,
+  orbitSelectStub,
   syntheticClaudeConfigurationTarget,
   syntheticCodexCatalog,
   syntheticCodexConfigurationTarget,
@@ -351,13 +352,18 @@ describe("Codex catalog confirmation", () => {
       wrapper = mount(AccessPage, {
         global: {
           stubs: {
+            OrbitSelect: orbitSelectStub,
             ConfigReviewDialog: true,
             OrbitDialog: true,
             ClientRow: true,
           },
         },
       });
-      await wrapper.get(`#model-${kind}`).setValue(model.id);
+      if (kind === "claude") {
+        for (const role of ["primary", "fallback", "auxiliary"]) {
+          await wrapper.get(`#claude-${role}`).setValue(model.id);
+        }
+      }
       const button = wrapper
         .findAll(".access-client")
         [kind === "codex" ? 0 : 1]!.get<HTMLButtonElement>(".button.primary");
@@ -389,7 +395,15 @@ describe("Codex catalog confirmation", () => {
         connection_id: store.activeConnection!.id,
         expected_revision: store.activeConnection!.revision,
         client: kind,
-        model_id: model.id,
+        ...(kind === "claude"
+          ? {
+              claude_models: {
+                primary: model.id,
+                fallback: model.id,
+                auxiliary: model.id,
+              },
+            }
+          : {}),
       });
     },
   );
