@@ -412,20 +412,6 @@ async function backupNow(client: ClientKind) {
           </button>
         </template>
       </div>
-      <details
-        v-if="client.manual_steps.length || client.config_paths.length"
-        class="client-technical"
-      >
-        <summary>{{ t("access.technicalDetails") }}</summary>
-        <p v-for="step in client.manual_steps" :key="step" class="manual-step">
-          {{ step }}
-        </p>
-        <div v-if="client.config_paths.length" class="client-paths">
-          <OrbitIcon name="folder" /><span>{{
-            client.config_paths.join(" · ")
-          }}</span>
-        </div>
-      </details>
     </article>
   </section>
   <section class="section-block">
