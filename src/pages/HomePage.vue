@@ -11,39 +11,31 @@ const store = useOrbitStore();
     <h1>{{ t("home.title") }}</h1>
     <p class="page-description">{{ t("home.description") }}</p>
   </section>
-  <p v-if="store.account" class="field-hint account-updated">
+  <p v-if="store.account" class="field-hint">
     {{ t("home.updatedAt") }} · {{ formatUpdatedAt(store.account.updated_at) }}
     <span v-if="store.state.session.status === 'refreshing'">
       · {{ t("login.refreshing") }}</span
     >
   </p>
   <section class="account-strip" :aria-label="t('home.account')">
-    <div class="home-account-identity">
-      <span class="account-avatar" aria-hidden="true">
-        <OrbitIcon name="account" />
-      </span>
-      <div class="account-summary">
-        <h2>{{ store.account?.label ?? t("home.loggedOut") }}</h2>
-        <p class="muted">
-          {{ store.account?.email ?? t("home.loggedOutHint") }}
-        </p>
-      </div>
+    <span class="account-avatar" aria-hidden="true"
+      ><OrbitIcon name="account"
+    /></span>
+    <div class="account-summary">
+      <h2>{{ store.account?.label ?? t("home.loggedOut") }}</h2>
+      <p class="muted">{{ store.account?.email ?? t("home.loggedOutHint") }}</p>
     </div>
-    <dl
-      v-if="store.account && (!store.account.member || store.account.budget)"
-      class="account-balances"
-    >
-      <div v-if="!store.account.member" class="account-balance">
-        <dt>{{ t("home.wallet") }}</dt>
-        <dd>{{ formatMoney(store.account.wallet, 4) }}</dd>
+    <template v-if="store.account"
+      ><div v-if="!store.account.member" class="balance-inline">
+        <span>{{ t("home.wallet") }}</span
+        ><strong>{{ formatMoney(store.account.wallet, 4) }}</strong>
       </div>
-      <div v-if="store.account.budget" class="account-balance">
-        <dt>{{ t("home.budget") }}</dt>
-        <dd>{{ formatMoney(store.account.budget.available) }}</dd>
-      </div>
-    </dl>
-    <button
-      v-else-if="!store.account && store.canLogin"
+      <div v-if="store.account.budget" class="balance-inline">
+        <span>{{ t("home.budget") }}</span
+        ><strong>{{ formatMoney(store.account.budget.available) }}</strong>
+      </div></template
+    ><button
+      v-else-if="store.canLogin"
       class="button primary"
       @click="store.loginOpen = true"
     >

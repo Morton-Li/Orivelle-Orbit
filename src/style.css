@@ -416,28 +416,11 @@ pre {
 .account-strip {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 18px clamp(16px, 3vw, 26px);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
+  gap: 14px;
+  padding: 20px 0 23px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   margin-bottom: 30px;
-}
-.account-updated {
-  margin-bottom: 8px;
-}
-.home-account-identity {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  gap: 12px;
-}
-.home-account-identity .account-summary {
-  overflow-wrap: anywhere;
-}
-.home-account-identity .account-summary h2 {
-  font-size: 16px;
 }
 .account-avatar {
   width: 36px;
@@ -460,32 +443,24 @@ pre {
 .account-summary p {
   font-size: 12px;
 }
-.account-balances {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(155px, 100%), 1fr));
-  flex: 0 1 46%;
-  max-width: 465px;
-  min-width: 0;
-  gap: 8px;
-  margin: 0;
+.balance-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 24px;
+  border-left: 1px solid var(--line);
+  flex-shrink: 0;
 }
-.account-balance {
-  padding: 12px 16px;
-  background: var(--soft);
-  border-radius: 8px;
+.balance-inline:last-child {
+  margin-inline-end: 24px;
 }
-.account-balance dt {
+.balance-inline span {
   color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 4px;
+  font-size: 11px;
 }
-.account-balance dd {
-  font-size: clamp(19px, 2.1vw, 24px);
-  font-variant-numeric: tabular-nums;
-  font-weight: 630;
-  line-height: 1.25;
-  margin: 0;
-  overflow-wrap: anywhere;
+.balance-inline strong {
+  font-size: 15px;
+  font-weight: 580;
 }
 .client-list {
   border: 1px solid var(--line);
@@ -1460,6 +1435,23 @@ textarea::placeholder {
   }
 }
 @container (max-width: 720px) {
+  .account-strip {
+    flex-wrap: wrap;
+  }
+  .account-strip .account-summary {
+    min-width: calc(100% - 60px);
+  }
+  .account-strip > .button {
+    margin-left: 50px;
+  }
+  .balance-inline {
+    margin-left: 50px;
+    padding-left: 0;
+    border-left: 0;
+  }
+  .balance-inline + .balance-inline {
+    margin-left: 15px;
+  }
   .client-row {
     display: grid;
     grid-template-columns: 40px minmax(0, 1fr);
@@ -1502,19 +1494,6 @@ textarea::placeholder {
   }
   .image-empty {
     min-height: 320px;
-  }
-}
-@container (max-width: 560px) {
-  .account-strip {
-    flex-wrap: wrap;
-    gap: 14px;
-  }
-  .home-account-identity {
-    flex-basis: 100%;
-  }
-  .account-balances {
-    flex-basis: 100%;
-    max-width: none;
   }
 }
 @container (max-width: 430px) {
