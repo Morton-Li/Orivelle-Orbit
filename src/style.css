@@ -754,39 +754,11 @@ textarea::placeholder {
 .claude-connect {
   justify-self: end;
 }
-.client-technical {
-  margin: 15px 23px 0 83px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.client-technical > summary {
-  cursor: pointer;
-}
 .manual-backup-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 18px;
-}
-.client-paths {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 10px;
-  color: var(--muted);
-  padding-top: 9px;
-  overflow-wrap: anywhere;
-}
-.client-paths .icon {
-  width: 13px;
-  height: 13px;
-  margin-top: 1px;
-}
-.manual-step {
-  font-size: 11px;
-  line-height: 1.75;
-  color: var(--muted);
-  padding-top: 9px;
 }
 .section-block {
   margin-top: 30px;
@@ -1482,9 +1454,6 @@ textarea::placeholder {
   }
   .access-client-controls {
     padding-left: 20px;
-  }
-  .client-technical {
-    margin-left: 20px;
   }
   .image-workbench {
     grid-template-columns: 1fr;
