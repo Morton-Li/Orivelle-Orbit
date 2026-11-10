@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
+import { version } from "../../package.json";
 import { useOrbitStore } from "../stores/orbit";
 import type {
   DiagnosticsPreview,
-  ForgetInstallationPreview,
   Locale,
   SettingsView,
   Theme,
   UpdateView,
 } from "../shared/contracts";
-import { formatBytes, redactServiceUrls } from "../shared/format";
+import { redactServiceUrls } from "../shared/format";
 import { t } from "../shared/i18n";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
@@ -17,8 +17,6 @@ import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 const store = useOrbitStore();
 const diagnostics = ref<DiagnosticsPreview | null>(null);
-const forget = ref<ForgetInstallationPreview | null>(null);
-const acknowledgeLoss = ref(false);
 const logoutConnectionId = ref<string | null>(null);
 const update = ref<UpdateView | null>(null);
 const installOpen = ref(false);
@@ -28,25 +26,6 @@ const settingsDisabled = computed(
     !store.native ||
     store.state.maintenance_active ||
     store.busy.has("settings"),
-);
-const installationId = ref("");
-watch(
-  () => [store.scope, store.state.installations],
-  () => {
-    if (
-      !store.state.installations.some(
-        (item) => item.id === installationId.value,
-      )
-    )
-      installationId.value =
-        store.state.installations.find(
-          (item) => item.panel_origin === store.activeConnection?.panel_origin,
-        )?.id ??
-        (store.state.installations.length === 1
-          ? store.state.installations[0]!.id
-          : "");
-  },
-  { immediate: true },
 );
 async function setting<K extends keyof SettingsView>(
   key: K,
@@ -66,30 +45,6 @@ async function logout() {
   if (result) {
     store.acceptState(result);
     logoutConnectionId.value = null;
-  }
-}
-async function previewForget() {
-  if (!installationId.value) return;
-  const result = await store.perform(
-    "forget-preview",
-    "preview_forget_installation",
-    { installation_id: installationId.value },
-  );
-  if (result) {
-    acknowledgeLoss.value = false;
-    forget.value = result;
-  }
-}
-async function forgetInstallation() {
-  if (!forget.value || !acknowledgeLoss.value) return;
-  const result = await store.perform("forget", "forget_installation", {
-    preview_id: forget.value.id,
-    acknowledged_backup_loss: true,
-    confirmed: true,
-  });
-  if (result) {
-    store.acceptState(result);
-    forget.value = null;
   }
 }
 async function prepareDiagnostics() {
@@ -222,24 +177,6 @@ async function installUpdate() {
       </div>
       <p class="muted">{{ t("settings.securityHint") }}</p>
       <p class="field-hint">{{ t("settings.logoutHint") }}</p>
-      <div v-if="store.state.installations.length > 1" class="settings-row">
-        <label for="forget-installation">{{
-          t("settings.installation")
-        }}</label>
-        <OrbitSelect
-          id="forget-installation"
-          v-model="installationId"
-          :placeholder="t('settings.installation')"
-          :options="
-            store.state.installations.map((installation, index) => ({
-              value: installation.id,
-              label:
-                installation.account_labels.join(' · ') ||
-                `${t('settings.installation')} ${index + 1}`,
-            }))
-          "
-        />
-      </div>
       <div class="settings-actions">
         <button
           class="button secondary"
@@ -251,15 +188,7 @@ async function installUpdate() {
           "
           @click="logoutConnectionId = store.activeConnection?.id ?? null"
         >
-          {{ t("action.logout") }}</button
-        ><button
-          class="text-button danger"
-          :disabled="
-            !store.native || !installationId || store.busy.has('forget-preview')
-          "
-          @click="previewForget"
-        >
-          {{ t("settings.forget") }}
+          {{ t("action.logout") }}
         </button>
       </div>
     </section>
@@ -292,9 +221,10 @@ async function installUpdate() {
       <div class="settings-section-title">
         <OrbitIcon name="download" />
         <h2>{{ t("settings.updates") }}</h2>
-        <span v-if="update" class="version-label">{{
-          update.current_version
-        }}</span>
+        <p class="settings-current-version">
+          <span>{{ t("settings.currentVersion") }}</span>
+          <strong>{{ version }}</strong>
+        </p>
       </div>
       <label class="checkbox-row"
         ><input
@@ -386,43 +316,6 @@ async function installUpdate() {
     </div></OrbitDialog
   >
   <OrbitDialog
-    :open="forget !== null"
-    :title="t('settings.forgetTitle')"
-    :description="t('settings.forgetHint')"
-    @update:open="
-      (value) => {
-        if (!value) forget = null;
-      }
-    "
-    ><template v-if="forget">
-      <p>
-        {{ forget.affected_account_labels.join(" · ") }} ·
-        {{ forget.backup_group_count }} {{ t("access.backups") }}
-      </p>
-      <ul class="impact-list">
-        <li v-for="consequence in forget.consequences" :key="consequence">
-          {{ consequence }}
-        </li>
-      </ul>
-      <label class="checkbox-row"
-        ><input v-model="acknowledgeLoss" type="checkbox" />{{
-          t("settings.ackLoss")
-        }}</label
-      >
-      <div class="dialog-actions">
-        <button class="button secondary" @click="forget = null">
-          {{ t("action.cancel") }}</button
-        ><button
-          class="button danger-button"
-          :disabled="!acknowledgeLoss || store.busy.has('forget')"
-          @click="forgetInstallation"
-        >
-          {{ t("common.confirm") }}
-        </button>
-      </div></template
-    ></OrbitDialog
-  >
-  <OrbitDialog
     :open="logoutConnectionId !== null"
     :title="t('action.logout')"
     :description="t('settings.logoutHint')"
@@ -462,8 +355,4 @@ async function installUpdate() {
       </button>
     </div></OrbitDialog
   >
-  <p class="settings-footnote muted">
-    Orivelle Orbit ·
-    {{ formatBytes(store.state.settings.image_disk_limit_bytes) }}
-  </p>
 </template>

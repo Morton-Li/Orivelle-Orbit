@@ -149,8 +149,6 @@ pub fn run() {
             cancel_login,
             logout,
             select_node,
-            delete_connection,
-            revoke_inference_key,
             list_models,
             preview_client_config,
             apply_client_config,
@@ -170,8 +168,6 @@ pub fn run() {
             update_settings,
             prepare_diagnostics,
             export_diagnostics,
-            preview_forget_installation,
-            forget_installation,
             check_update,
             download_update,
             install_update

@@ -136,13 +136,6 @@ fn configuration_target_view(
         ),
     })
 }
-struct ForgetEntry {
-    view: ForgetInstallationPreview,
-    installation_id: String,
-    account_ids: Vec<String>,
-    backup_ids: Vec<String>,
-    expires_at: i64,
-}
 type Observer = Arc<dyn Fn(BootstrapView) + Send + Sync>;
 type AuthorizationObserver = Arc<dyn Fn(AuthorizationEvent) + Send + Sync>;
 struct PendingAuthorization {
@@ -274,7 +267,6 @@ pub struct Service {
     account_gate: Mutex<()>,
     clients: Mutex<Vec<ClientView>>,
     previews: Mutex<HashMap<String, PreviewEntry>>,
-    forgets: Mutex<HashMap<String, ForgetEntry>>,
     diagnostics: Mutex<HashMap<String, DiagnosticsPreview>>,
     observer: Mutex<Option<Observer>>,
     authorization_observer: Mutex<Option<AuthorizationObserver>>,
@@ -370,7 +362,6 @@ impl Service {
             account_gate: Mutex::new(()),
             clients: Mutex::new(clients),
             previews: Mutex::new(HashMap::new()),
-            forgets: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
             observer: Mutex::new(None),
             authorization_observer: Mutex::new(None),
@@ -615,6 +606,7 @@ impl Service {
         Ok(install)
     }
     fn ensure_installation_available(&self, id: &str) -> Result<()> {
+        // An older build may have stopped partway through removing this identity.
         if self
             .store
             .meta(&format!("installation_forgetting/{id}"))?
@@ -889,29 +881,6 @@ impl Service {
                 });
             }
         }
-        let installations = installation_records
-            .into_iter()
-            .map(|i| {
-                let mut labels = records
-                    .iter()
-                    .filter(|r| r.installation_id == i.id)
-                    .map(|r| r.view.label.clone())
-                    .chain(
-                        backups
-                            .iter()
-                            .filter(|b| b.owner.installation_id == i.id)
-                            .map(|b| b.owner.account_label.clone()),
-                    )
-                    .collect::<Vec<_>>();
-                labels.sort();
-                labels.dedup();
-                InstallationView {
-                    id: i.id,
-                    panel_origin: i.origin,
-                    account_labels: labels,
-                }
-            })
-            .collect();
         let mut clients = snapshot.list::<ClientView>("client-state", Some("local"))?;
         for client in &mut clients {
             let (mut observed, policy) = self.observe_client_policy(client.clone());
@@ -963,7 +932,6 @@ impl Service {
                 .is_some_and(|v| v == "1"),
             session,
             connections: records.into_iter().map(|r| r.view).collect(),
-            installations,
             nodes,
             active_connection_id: active.map(|r| r.view.id),
             clients,
@@ -2104,110 +2072,6 @@ impl Service {
                 )
                 .await;
         }
-        self.bootstrap()
-    }
-    pub async fn revoke_inference_key(
-        &self,
-        id: &str,
-        expected: &str,
-        confirmed: bool,
-    ) -> Result<BootstrapView> {
-        let _operation = self.begin_mutation()?;
-        if !confirmed {
-            return Err(fail("confirmation_required"));
-        }
-        if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(fail("invalid_credential_revision"));
-        }
-        let initial = self.record(id)?;
-        if initial.view.credential_revision.as_deref() != Some(expected) {
-            return Err(fail("connection_conflict"));
-        }
-        let (record, installation, session) = self.fresh_session(id).await?;
-        if record.view.permission_state != "allowed" {
-            return Err(fail("permission_denied"));
-        }
-        if record.view.credential_revision.as_deref() != Some(expected) {
-            return Err(fail("connection_conflict"));
-        }
-        let body = serde_json::to_vec(&json!({"expected_key_revision":expected}))
-            .map_err(|_| fail("serialization_failed"))?;
-        let response: Value = self
-            .http
-            .panel(
-                &record.view.panel_origin,
-                "/api/v1/orbit/installations/current/inference-key/revoke",
-                Method::POST,
-                body,
-                Some((&installation, &session, self.vault.as_ref())),
-                true,
-            )
-            .await?;
-        if response["revoked"] != true {
-            return Err(fail("invalid_panel_response"));
-        }
-        let _gate = self
-            .account_gate
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?;
-        let mut current = self.record(id)?;
-        if current.view.credential_revision.as_deref() != Some(expected) {
-            return Err(fail("connection_conflict"));
-        }
-        self.disable_inference_before_cleanup(&mut current, "revoked")?;
-        self.changed();
-        self.bootstrap()
-    }
-    pub async fn delete_connection(
-        &self,
-        id: &str,
-        expected_revision: u64,
-        expected_credential: Option<&str>,
-        revoke: bool,
-        confirmed: bool,
-    ) -> Result<BootstrapView> {
-        let _operation = self.begin_mutation()?;
-        if !confirmed {
-            return Err(fail("confirmation_required"));
-        }
-        let initial = self.record(id)?;
-        if initial.view.revision != expected_revision
-            || initial.view.credential_revision.as_deref() != expected_credential
-        {
-            return Err(fail("connection_conflict"));
-        }
-        if revoke {
-            self.revoke_inference_key(
-                id,
-                expected_credential.ok_or_else(|| fail("credential_missing"))?,
-                true,
-            )
-            .await?;
-        } else {
-            let current = self.record(id)?;
-            if current.view.revision != expected_revision
-                || current.view.credential_revision.as_deref() != expected_credential
-            {
-                return Err(fail("connection_conflict"));
-            }
-        }
-        self.logout(id).await?;
-        let _gate = self
-            .account_gate
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?;
-        let after = self.record(id)?;
-        if after.session_status != "logged_out"
-            || after.view.revision != expected_revision + 1 + u64::from(revoke)
-        {
-            return Err(fail("connection_conflict"));
-        }
-        self.store.delete("connection", id)?;
-        self.store.delete("account-cache", id)?;
-        if self.store.meta("active_connection")?.as_deref() == Some(id) {
-            self.store.set_meta("active_connection", "")?;
-        }
-        self.changed();
         self.bootstrap()
     }
     fn current_connection(
@@ -4538,205 +4402,6 @@ impl Service {
             .remove(id)
             .ok_or_else(|| fail("preview_expired"))?;
         crate::config::atomic_write(path, diagnostics.text.as_bytes())
-    }
-    fn installation_journals(&self, installation: &Installation) -> Result<Vec<Journal>> {
-        let mut groups = HashMap::new();
-        for kind in ["journal", "backup"] {
-            for journal in self.store.list::<Journal>(kind, None)? {
-                if journal.installation.id == installation.id
-                    && journal.installation.origin == installation.origin
-                    && (kind == "backup"
-                        || ["publishing", "conflict", "committed"]
-                            .contains(&journal.phase.as_str()))
-                {
-                    groups.insert(journal.id.clone(), journal);
-                }
-            }
-        }
-        Ok(groups.into_values().collect())
-    }
-    pub fn preview_forget_installation(&self, id: &str) -> Result<ForgetInstallationPreview> {
-        let _operation = self.begin_mutation()?;
-        validate_uuid(id)?;
-        let _gate = self
-            .account_gate
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?;
-        let installation = self
-            .store
-            .list::<Installation>("installation", None)?
-            .into_iter()
-            .find(|i| i.id == id)
-            .ok_or_else(|| fail("installation_identity_mismatch"))?;
-        let backup_records = self.installation_journals(&installation)?;
-        let mut accounts = self
-            .store
-            .list::<ConnectionRecord>("connection", None)?
-            .into_iter()
-            .filter(|r| r.installation_id == id && r.view.panel_origin == installation.origin)
-            .map(|r| r.view.label)
-            .chain(backup_records.iter().map(|b| b.account_label.clone()))
-            .collect::<Vec<_>>();
-        accounts.sort();
-        accounts.dedup();
-        let mut account_ids = self
-            .store
-            .list::<ConnectionRecord>("connection", None)?
-            .into_iter()
-            .filter(|r| r.installation_id == id && r.view.panel_origin == installation.origin)
-            .map(|r| r.view.account_id)
-            .chain(backup_records.iter().map(|b| b.account_id.clone()))
-            .collect::<Vec<_>>();
-        account_ids.sort();
-        account_ids.dedup();
-        let mut backup_ids = backup_records
-            .iter()
-            .map(|b| b.id.clone())
-            .collect::<Vec<_>>();
-        backup_ids.sort();
-        let preview = ForgetInstallationPreview {
-            id: uuid(),
-            panel_origin: installation.origin,
-            affected_account_labels: accounts,
-            backup_group_count: backup_records.len() as u32,
-            consequences: vec![
-                "删除此 Panel origin 的安装签名密钥、备份加密密钥和本地账户/推理凭据。".into(),
-                "现有加密备份将永久失去恢复能力。".into(),
-                "不撤销服务器推理 key，不修改原客户端配置，不保证缓存客户端立即退出。".into(),
-            ],
-        };
-        self.forgets
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .insert(
-                preview.id.clone(),
-                ForgetEntry {
-                    view: preview.clone(),
-                    installation_id: id.into(),
-                    account_ids,
-                    backup_ids,
-                    expires_at: chrono::Utc::now().timestamp() + 300,
-                },
-            );
-        Ok(preview)
-    }
-    pub async fn forget_installation(
-        &self,
-        id: &str,
-        acknowledged: bool,
-        confirmed: bool,
-    ) -> Result<BootstrapView> {
-        let _operation = self.begin_mutation()?;
-        if !confirmed || !acknowledged {
-            return Err(fail("confirmation_required"));
-        }
-        let entry = self
-            .forgets
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .remove(id)
-            .ok_or_else(|| fail("preview_expired"))?;
-        if entry.expires_at <= chrono::Utc::now().timestamp() {
-            return Err(fail("preview_expired"));
-        }
-        let (installation, records) = {
-            let _gate = self
-                .account_gate
-                .lock()
-                .map_err(|_| fail("state_unavailable"))?;
-            let installation = self
-                .store
-                .installation(&entry.view.panel_origin)?
-                .ok_or_else(|| fail("installation_identity_mismatch"))?;
-            if installation.id != entry.installation_id {
-                return Err(fail("installation_identity_mismatch"));
-            }
-            let records = self
-                .store
-                .list::<ConnectionRecord>("connection", None)?
-                .into_iter()
-                .filter(|r| {
-                    r.installation_id == installation.id
-                        && r.view.panel_origin == entry.view.panel_origin
-                })
-                .collect::<Vec<_>>();
-            let current_backups = self.installation_journals(&installation)?;
-            let mut backup_ids = current_backups
-                .iter()
-                .map(|b| b.id.clone())
-                .collect::<Vec<_>>();
-            backup_ids.sort();
-            let mut current_accounts = records
-                .iter()
-                .map(|r| r.view.account_id.clone())
-                .chain(current_backups.iter().map(|b| b.account_id.clone()))
-                .collect::<Vec<_>>();
-            current_accounts.sort();
-            current_accounts.dedup();
-            if current_accounts != entry.account_ids || backup_ids != entry.backup_ids {
-                return Err(fail("connection_conflict"));
-            }
-            self.store
-                .set_meta(&format!("installation_forgetting/{}", installation.id), "1")?;
-            self.abort_pending_locked()?;
-            (installation, records)
-        };
-        for record in records {
-            self.logout(&record.view.id).await?;
-            self.store.delete("connection", &record.view.id)?;
-            self.store.delete("account-cache", &record.view.id)?;
-            if self.store.meta("active_connection")?.as_deref() == Some(&record.view.id) {
-                self.store.set_meta("active_connection", "")?;
-            }
-        }
-        let _gate = self
-            .account_gate
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?;
-        for mut binding in self.store.list::<HelperBinding>("binding", None)? {
-            if binding.installation_id == installation.id && binding.origin == installation.origin {
-                binding.enabled = false;
-                self.store
-                    .put("binding", &binding.id, &binding.account_id, &binding)?;
-                self.vault.delete(&binding.secret_reference)?;
-            }
-        }
-        for mapping in self
-            .store
-            .list::<crate::claude_mapping::MappingRecord>("claude-mapping", None)?
-        {
-            if mapping.context.installation_id == installation.id
-                && mapping.context.panel_origin == installation.origin
-            {
-                let plan = mapping.plan()?;
-                self.claude_mappings.stop(&plan.binding_id);
-                if matches!(
-                    crate::claude_mapping::verify_context_secret(&mapping, self.vault.as_ref())?,
-                    crate::claude_mapping::LocalSecretPresence::Authenticated
-                ) {
-                    self.vault.delete(&plan.token_reference())?;
-                }
-                self.store.delete("claude-mapping", &plan.binding_id)?;
-                self.store
-                    .delete("claude-mapping-outcome", &plan.binding_id)?;
-            }
-        }
-        // Keep recovery identity intact if a mapped secret cannot be read or
-        // authenticated. All matching inference grants are already disabled.
-        self.vault.delete(&installation.signing_reference)?;
-        self.vault.delete(&installation.backup_reference)?;
-        for kind in ["backup", "journal"] {
-            for journal in self.store.list::<Journal>(kind, None)? {
-                if journal.installation.id == installation.id {
-                    self.store.delete(kind, &journal.id)?;
-                }
-            }
-        }
-        self.store
-            .delete("installation", &sha256(installation.origin.as_bytes()))?;
-        self.invalidate_evidence()?;
-        self.changed();
-        self.bootstrap()
     }
 }
 
@@ -9372,8 +9037,8 @@ mod tests {
         }
         thread.join().unwrap();
     }
-    #[tokio::test]
-    async fn forget_last_connection_installation_still_retained_backup_only() {
+    #[test]
+    fn legacy_backups_remain_available_after_the_connection_was_removed() {
         for phase in ["committed", "publishing", "conflict"] {
             let (_d, service, vault, record, install) = setup();
             let path = service.paths.codex_config.clone();
@@ -9405,17 +9070,9 @@ mod tests {
             service.store.delete("connection", &record.view.id).unwrap();
             service.store.set_meta("active_connection", "").unwrap();
             let bootstrap = service.bootstrap().unwrap();
-            assert_eq!(bootstrap.installations.len(), 1);
             assert_eq!(bootstrap.backups.len(), 1);
-            let preview = service.preview_forget_installation(&install.id).unwrap();
-            assert_eq!(preview.backup_group_count, 1);
-            let after = service
-                .forget_installation(&preview.id, true, true)
-                .await
-                .unwrap();
-            assert!(after.installations.is_empty());
-            assert!(after.backups.is_empty());
-            assert!(vault.get(&install.backup_reference).is_err());
+            assert_eq!(bootstrap.backups[0].owner.installation_id, install.id);
+            assert!(vault.get(&install.backup_reference).is_ok());
         }
     }
 }

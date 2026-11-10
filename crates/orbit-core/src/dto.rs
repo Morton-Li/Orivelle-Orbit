@@ -265,12 +265,6 @@ pub struct RestoreOwner {
     pub installation_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallationView {
-    pub id: String,
-    pub panel_origin: String,
-    pub account_labels: Vec<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupGroup {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -318,7 +312,6 @@ pub struct BootstrapView {
     pub maintenance_active: bool,
     pub session: SessionView,
     pub connections: Vec<ConnectionView>,
-    pub installations: Vec<InstallationView>,
     pub nodes: Vec<NodeView>,
     pub active_connection_id: Option<String>,
     pub clients: Vec<ClientView>,
@@ -458,12 +451,4 @@ pub struct UpdateView {
     pub current_version: String,
     pub version: Option<String>,
     pub reason: Option<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ForgetInstallationPreview {
-    pub id: String,
-    pub panel_origin: String,
-    pub affected_account_labels: Vec<String>,
-    pub backup_group_count: u32,
-    pub consequences: Vec<String>,
 }

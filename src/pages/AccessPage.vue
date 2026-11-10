@@ -12,7 +12,6 @@ import type {
 import { CAPABILITIES } from "../shared/contracts";
 import ClientRow from "../components/ClientRow.vue";
 import ConfigReviewDialog from "../components/ConfigReviewDialog.vue";
-import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import StatusBadge from "../components/StatusBadge.vue";
@@ -36,11 +35,6 @@ let previewGeneration = 0;
 onUnmounted(() => {
   previewGeneration++;
 });
-const manageAction = ref<"revoke" | "delete" | null>(null);
-const revokeOnDelete = ref(false);
-const manageConnectionId = ref<string | null>(null);
-const manageRevision = ref<number | null>(null);
-const manageCredentialRevision = ref<string | null>(null);
 const recoveryScope = ref("");
 function configurationAllowed(kind: ClientKind): boolean {
   const client = store.state.clients.find((item) => item.client === kind);
@@ -98,6 +92,9 @@ const claudeModels = computed(() =>
       model.capabilities.includes(CAPABILITIES.messages),
   ),
 );
+const claudeOptions = computed(() =>
+  claudeModels.value.map((model) => ({ value: model.id, label: model.label })),
+);
 const codexModelsAvailable = computed(() =>
   store.textModels.some(
     (model) =>
@@ -109,14 +106,6 @@ const rolesReady = computed(() =>
   claudeRoles.every(({ key }) =>
     claudeModels.value.some((model) => model.id === selectedRoles.value[key]),
   ),
-);
-const manageCurrent = computed(
-  () =>
-    !!manageConnectionId.value &&
-    manageConnectionId.value === store.activeConnection?.id &&
-    manageRevision.value === store.activeConnection.revision &&
-    manageCredentialRevision.value ===
-      store.activeConnection.credential_revision,
 );
 watch(
   () => store.scope,
@@ -247,43 +236,6 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   }
   preview.value = result;
 }
-function manage(action: "revoke" | "delete") {
-  const connection = store.activeConnection;
-  manageConnectionId.value = connection?.id ?? null;
-  manageRevision.value = connection?.revision ?? null;
-  manageCredentialRevision.value = connection?.credential_revision ?? null;
-  revokeOnDelete.value = false;
-  manageAction.value = action;
-}
-async function confirmManage() {
-  if (
-    !manageAction.value ||
-    !manageCurrent.value ||
-    !manageConnectionId.value ||
-    manageRevision.value === null ||
-    ((manageAction.value === "revoke" || revokeOnDelete.value) &&
-      !manageCredentialRevision.value)
-  )
-    return;
-  const result =
-    manageAction.value === "revoke"
-      ? await store.perform("manage-connection", "revoke_inference_key", {
-          connection_id: manageConnectionId.value,
-          expected_credential_revision: manageCredentialRevision.value!,
-          confirmed: true,
-        })
-      : await store.perform("manage-connection", "delete_connection", {
-          connection_id: manageConnectionId.value,
-          expected_revision: manageRevision.value,
-          expected_credential_revision: manageCredentialRevision.value,
-          revoke_inference_key: revokeOnDelete.value,
-          confirmed: true,
-        });
-  if (result) {
-    store.acceptState(result);
-    manageAction.value = null;
-  }
-}
 async function backupNow(client: ClientKind) {
   const result = await store.perform(
     `backup-${client}`,
@@ -405,22 +357,26 @@ async function backupNow(client: ClientKind) {
           <p v-if="client.client === 'codex'" class="muted">
             {{ t("access.allCodexModels") }}
           </p>
-          <template v-else>
+          <section
+            v-else
+            class="claude-model-config"
+            aria-labelledby="claude-model-heading"
+          >
+            <h3 id="claude-model-heading">{{ t("access.roleModels") }}</h3>
             <p class="muted">{{ t("access.claudeRolesHint") }}</p>
             <div class="claude-roles">
-              <div v-for="role in claudeRoles" :key="role.key" class="field">
+              <div
+                v-for="role in claudeRoles"
+                :key="role.key"
+                class="claude-role"
+              >
                 <label :for="`claude-${role.key}`" class="field-label">{{
                   t(role.label)
                 }}</label>
                 <OrbitSelect
                   :id="`claude-${role.key}`"
                   v-model="selectedRoles[role.key]"
-                  :options="
-                    claudeModels.map((model) => ({
-                      value: model.id,
-                      label: model.label,
-                    }))
-                  "
+                  :options="claudeOptions"
                   :placeholder="
                     t(
                       store.modelsLoading
@@ -430,15 +386,16 @@ async function backupNow(client: ClientKind) {
                   "
                   :disabled="
                     store.modelsLoading ||
-                    !claudeModels.length ||
+                    !claudeOptions.length ||
                     previewing.claude
                   "
                 />
               </div>
             </div>
-          </template>
+          </section>
           <button
             class="button primary"
+            :class="{ 'claude-connect': client.client === 'claude' }"
             :disabled="
               !store.ready ||
               !previewAllowed(client.client) ||
@@ -560,57 +517,9 @@ async function backupNow(client: ClientKind) {
       </button>
     </div>
   </section>
-  <details v-if="store.activeConnection" class="connection-actions">
-    <summary>{{ t("action.more") }}</summary>
-    <button
-      class="text-button danger"
-      :disabled="!store.activeConnection.credential_revision"
-      @click="manage('revoke')"
-    >
-      {{ t("access.revoke") }}</button
-    ><button class="text-button" @click="manage('delete')">
-      {{ t("access.remove") }}
-    </button>
-  </details>
   <ConfigReviewDialog
     :preview="preview"
     @close="preview = null"
     @applied="preview = null"
   />
-  <OrbitDialog
-    :open="manageAction !== null"
-    :title="t(manageAction === 'revoke' ? 'access.revoke' : 'access.remove')"
-    :description="
-      t(manageAction === 'revoke' ? 'access.revokeHint' : 'access.removeHint')
-    "
-    @update:open="
-      (value) => {
-        if (!value) manageAction = null;
-      }
-    "
-    ><label v-if="manageAction === 'delete'" class="checkbox-row"
-      ><input v-model="revokeOnDelete" type="checkbox" />{{
-        t("access.revoke")
-      }}</label
-    >
-    <p v-if="!manageCurrent" class="error-text">
-      {{ t("access.previewExpired") }}
-    </p>
-    <div class="dialog-actions">
-      <button class="button secondary" @click="manageAction = null">
-        {{ t("action.cancel") }}</button
-      ><button
-        class="button danger-button"
-        :disabled="
-          !manageCurrent ||
-          ((manageAction === 'revoke' || revokeOnDelete) &&
-            !manageCredentialRevision) ||
-          store.busy.has('manage-connection')
-        "
-        @click="confirmManage"
-      >
-        {{ t("common.confirm") }}
-      </button>
-    </div></OrbitDialog
-  >
 </template>
