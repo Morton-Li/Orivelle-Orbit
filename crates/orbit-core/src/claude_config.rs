@@ -1051,7 +1051,9 @@ mod tests {
     fn claude_mapping_compiler_is_explicit_and_preserves_https_authority() {
         let fixture = Fixture::new();
         let manager = crate::claude_mapping::MappingManager::default();
-        let mapping = manager.reserve(BINDING, NEW_ID, "gpt-6-luna").unwrap();
+        let mapping = manager
+            .reserve(BINDING, NEW_ID, "gpt-6-luna", None)
+            .unwrap();
         let mut plan = fixture.plan();
         plan.model_id = "gpt-6-luna";
         plan.mapping = Some(&mapping);

@@ -285,11 +285,8 @@ export async function startPanelFixture() {
   await once(server, "listening");
   return {
     authorizationUrl,
-    nodeId: node.id,
-    modelId: model.id,
-    textModelId: wire.models_reply.data.find(
-      (item) => item.model_category === "text",
-    ).id,
+    nodeLabel: node.name,
+    modelLabel: model.display_name,
     png,
     requests,
     failures,

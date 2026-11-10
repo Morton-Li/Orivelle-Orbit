@@ -18,6 +18,12 @@ import type {
   LoginStart,
   ModelView,
 } from "../../src/shared/contracts";
+function expiredAccount(revision = 1) {
+  const state = bootstrap("synthetic-account-a", revision);
+  state.session.status = "expired";
+  state.session.account = null;
+  return state;
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -42,16 +48,19 @@ describe("account and revision isolation", () => {
     async ({ terminal, pendingSeen }) => {
       const store = useOrbitStore();
       const acknowledgement = deferred<LoginStart>();
-      const finished = bootstrap("synthetic-account-a", 3);
+      const finished =
+        terminal === "connected"
+          ? bootstrap("synthetic-account-a", 3)
+          : expiredAccount(3);
       bridge.call.mockImplementation((command) => {
         if (command === "start_login") return acknowledgement.promise;
         return command === "bootstrap" ? finished : [];
       });
-      store.acceptState(bootstrap());
+      store.acceptState(expiredAccount());
       store.loginOpen = true;
       const starting = store.login();
       if (pendingSeen) {
-        const pending = bootstrap("synthetic-account-a", 2);
+        const pending = expiredAccount(2);
         pending.pending_authorization = {
           request_id: "current-login",
           expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -116,7 +125,7 @@ describe("account and revision isolation", () => {
     const store = useOrbitStore();
     const first = deferred<LoginStart>();
     const second = deferred<LoginStart>();
-    const pending = bootstrap("synthetic-account-a", 2);
+    const pending = expiredAccount(2);
     pending.pending_authorization = {
       request_id: "first-login",
       expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -128,7 +137,7 @@ describe("account and revision isolation", () => {
         return ++starts === 1 ? first.promise : second.promise;
       return command === "bootstrap" ? current : [];
     });
-    store.acceptState(bootstrap());
+    store.acceptState(expiredAccount());
     store.loginOpen = true;
     const startingFirst = store.login();
     expect(await store.login()).toBeUndefined();
@@ -151,7 +160,7 @@ describe("account and revision isolation", () => {
     store.acceptAuthorization({ ...denied, state: "connected" });
     expect(store.notice).toEqual(notice);
     expect(store.loginOpen).toBe(true);
-    current = bootstrap("synthetic-account-a", 3);
+    current = expiredAccount(3);
     store.acceptState(current);
     const startingSecond = store.login();
     store.acceptAuthorization({

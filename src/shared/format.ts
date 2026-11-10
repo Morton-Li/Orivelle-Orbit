@@ -3,10 +3,14 @@ import type {
   ClientView,
   ConnectionView,
   Money,
+  NodeView,
 } from "./contracts";
 import { locale, t } from "./i18n";
 
 export function configPolicyMessage(code: string): string | null {
+  if (code === "account_already_connected") return t("login.alreadyConnected");
+  if (code === "original_configuration_required")
+    return t("access.originalRequired");
   if (code === "configuration_conflict")
     return t("access.configurationConflict");
   if (code === "claude_mapping_unavailable")
@@ -70,6 +74,20 @@ export function configPolicyMessage(code: string): string | null {
   return null;
 }
 
+export function nodeName(node: NodeView, index: number): string {
+  const label = node.label.trim();
+  return !label ||
+    /https?:\/\/|\b(?:[\w-]+\.)+[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b/i.test(
+      label,
+    )
+    ? `${t("access.node")} ${index + 1}`
+    : label;
+}
+
+export function redactServiceUrls(value: string): string {
+  return value.replace(/https?:\/\/[^\s"'<>,)]+/gi, t("common.serviceAddress"));
+}
+
 export function formatUpdatedAt(value: string | null): string {
   if (!value || value.length > 64 || !Number.isFinite(Date.parse(value)))
     return t("common.unknown");
@@ -83,19 +101,41 @@ export function formatUpdatedAt(value: string | null): string {
   }).format(new Date(value));
 }
 
-export function formatDecimal(amount: string): string | null {
+export function formatDecimal(
+  amount: string,
+  fractionDigits?: number,
+): string | null {
   if (amount.length > 96 || !/^-?\d+(?:\.\d+)?$/.test(amount)) return null;
   const negative = amount.startsWith("-");
-  const [rawWhole = "0", rawFraction = ""] = (
+  let [rawWhole = "0", rawFraction = ""] = (
     negative ? amount.slice(1) : amount
   ).split(".");
+  if (fractionDigits !== undefined) {
+    const units = BigInt(
+      rawWhole +
+        rawFraction.slice(0, fractionDigits).padEnd(fractionDigits, "0"),
+    );
+    const rounded = (
+      units + (Number(rawFraction[fractionDigits]) >= 5 ? 1n : 0n)
+    )
+      .toString()
+      .padStart(fractionDigits + 1, "0");
+    rawWhole = rounded.slice(0, rounded.length - fractionDigits);
+    rawFraction = rounded.slice(rawWhole.length);
+  }
   const whole = rawWhole
     .replace(/^0+(?=\d)/, "")
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  const fraction = rawFraction.replace(/0+$/, "").padEnd(2, "0");
+  const fraction =
+    fractionDigits === undefined
+      ? rawFraction.replace(/0+$/, "").padEnd(2, "0")
+      : rawFraction;
   return `${negative ? "-" : ""}${whole}.${fraction}`;
 }
-export function formatMoney(value: Money | null | undefined): string {
+export function formatMoney(
+  value: Money | null | undefined,
+  fractionDigits?: number,
+): string {
   if (
     !value ||
     value.status === "unknown" ||
@@ -105,7 +145,8 @@ export function formatMoney(value: Money | null | undefined): string {
   if (value.status === "unlimited") return t("common.unlimited");
   if (value.status === "pending") return t("common.pending");
   if (value.status === "conflict") return t("common.conflict");
-  const amount = value.amount === null ? null : formatDecimal(value.amount);
+  const amount =
+    value.amount === null ? null : formatDecimal(value.amount, fractionDigits);
   if (amount === null) return t("common.unknown");
   return `${value.currency ?? t("common.unknown")} ${amount}`;
 }

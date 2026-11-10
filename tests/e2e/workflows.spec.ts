@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { bootstrap, task } from "../fixtures";
 import {
   calls,
@@ -6,6 +6,16 @@ import {
   pushState,
   type FixtureControl,
 } from "./native-fixture";
+
+async function choose(page: Page, id: string, label: string) {
+  await page.locator(`#${id}`).click();
+  await page.getByRole("option", { name: label, exact: true }).click();
+}
+async function chooseClaudeRoles(page: Page) {
+  for (const role of ["primary", "fallback", "auxiliary"]) {
+    await choose(page, `claude-${role}`, "synthetic-text");
+  }
+}
 
 test("unconnected UI, navigation, keyboard, modal focus and narrow container", async ({
   page,
@@ -29,7 +39,7 @@ test("unconnected UI, navigation, keyboard, modal focus and narrow container", a
   await expect(login).toBeFocused();
   await page.keyboard.press("Control+3");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    "选择工具，确认每次切换",
+    "管理桌面接入",
   );
   await page.setViewportSize({ width: 390, height: 844 });
   for (const name of ["首页", "图片工作台", "接入", "设置"]) {
@@ -54,20 +64,24 @@ test("real capability names populate client models and image edit options", asyn
 }) => {
   await fixture(page);
   await page.goto("/#/access");
-  await expect(page.locator("#model-codex option")).toHaveCount(2);
-  await expect(page.locator("#model-claude option")).toHaveCount(2);
+  await expect(page.locator("#model-codex")).toHaveCount(0);
+  await page.locator("#claude-primary").click();
+  await expect(
+    page.getByRole("option", { name: "synthetic-text", exact: true }),
+  ).toHaveCount(1);
+  await page.keyboard.press("Escape");
   await expect(
     page.getByText("合成测试数据 · 不代表真实接入或结算"),
   ).toBeVisible();
   await expect(
     page.getByText("待重启 / 载入未确认", { exact: true }),
   ).toHaveCount(2);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: ".cache/evidence/access-light.png",
     fullPage: true,
   });
-  await page.locator("#model-codex").selectOption("synthetic-text");
-  await page.getByRole("button", { name: "预览配置" }).first().click();
+  await page.getByRole("button", { name: "接入 Orbit" }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("/fixture/config")).toBeVisible();
   await expect(
@@ -87,13 +101,13 @@ test("changing accounts clears prompt and drafts before another submit", async (
 }) => {
   await fixture(page);
   await page.goto("/#/images");
-  await page.locator("#image-model").selectOption("synthetic-image");
+  await choose(page, "image-model", "synthetic-image");
   await page
     .locator("#image-prompt")
     .fill("Private synthetic account A prompt");
   await pushState(page, bootstrap("synthetic-account-b", 2));
   await expect(page.locator("#image-prompt")).toHaveValue("");
-  await expect(page.locator("#image-model")).toHaveValue("");
+  await expect(page.locator("#image-model")).toHaveText("选择获准的模型");
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
@@ -102,7 +116,7 @@ test("healthy session rotation preserves a draft while disabling submission, and
 }) => {
   await fixture(page);
   await page.goto("/#/images");
-  await page.locator("#image-model").selectOption("synthetic-image");
+  await choose(page, "image-model", "synthetic-image");
   await page.locator("#image-prompt").fill("Same actor draft during rotation");
   const rotating = bootstrap("synthetic-account-a", 2);
   rotating.session.status = "refreshing";
@@ -110,7 +124,7 @@ test("healthy session rotation preserves a draft while disabling submission, and
   await expect(page.locator("#image-prompt")).toHaveValue(
     "Same actor draft during rotation",
   );
-  await expect(page.locator("#image-model")).toHaveValue("synthetic-image");
+  await expect(page.locator("#image-model")).toHaveText("synthetic-image");
   await expect(
     page.getByRole("button", { name: "生成图片", exact: true }),
   ).toBeDisabled();
@@ -125,7 +139,7 @@ test("healthy session rotation preserves a draft while disabling submission, and
   expired.session.status = "expired";
   await pushState(page, expired);
   await expect(page.locator("#image-prompt")).toHaveValue("");
-  await expect(page.locator("#image-model")).toHaveValue("");
+  await expect(page.locator("#image-model")).toHaveText("选择获准的模型");
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
@@ -134,6 +148,19 @@ test("browser authorization remains pending and supports explicit denial and can
 }) => {
   await fixture(page);
   await page.goto("/");
+  await expect(page.locator(".account-summary h2")).toHaveText(
+    "Synthetic synthetic-account-a",
+  );
+  await expect(
+    page.getByText("USD 123,456,789.1235", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "连接账户", exact: true }),
+  ).toHaveCount(0);
+  const expired = bootstrap("synthetic-account-a", 2);
+  expired.session.status = "expired";
+  expired.session.account = null;
+  await pushState(page, expired);
   await page
     .getByRole("button", { name: "连接账户", exact: true })
     .last()
@@ -141,7 +168,7 @@ test("browser authorization remains pending and supports explicit denial and can
   const dialog = page.getByRole("dialog");
   await expect(
     dialog.getByText("https://orivelle.powerbyte.io", { exact: true }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(dialog.locator("input, textarea, select")).toHaveCount(0);
   await dialog.getByRole("button", { name: "继续", exact: true }).click();
   await expect(
@@ -186,7 +213,7 @@ test("browser authorization remains pending and supports explicit denial and can
     }),
   );
   await expect(page.locator(".account-summary h2")).toHaveText(
-    "Synthetic synthetic-account-a",
+    "连接账户后开始",
   );
   expect(await calls(page, "create_image_task")).toBe(0);
 });
@@ -198,10 +225,11 @@ test("synthetic Windows capabilities never offer an inaccessible hidden backgrou
   state.platform = "windows";
   await fixture(page, { state });
   await page.goto("/#/settings");
+  await page.locator("#setting-close").click();
   await expect(
-    page.locator('#setting-close option[value="keep_running"]'),
+    page.getByRole("option", { name: "保留进程继续当前任务" }),
   ).toHaveCount(0);
-  await expect(page.locator("#setting-close option")).toHaveCount(2);
+  await expect(page.getByRole("option")).toHaveCount(2);
 });
 
 test("update maintenance disables image submission and settings without losing a same-account draft", async ({
@@ -209,7 +237,7 @@ test("update maintenance disables image submission and settings without losing a
 }) => {
   await fixture(page);
   await page.goto("/#/images");
-  await page.locator("#image-model").selectOption("synthetic-image");
+  await choose(page, "image-model", "synthetic-image");
   await page
     .locator("#image-prompt")
     .fill("Draft retained through maintenance");
@@ -262,9 +290,7 @@ for (const client of ["codex", "claude"] as const) {
         restoreMode: recoverable ? "recoverable" : "blocked",
       });
       await page.goto("/#/access");
-      await page
-        .locator("#backup-account")
-        .selectOption("https://panel.invalid/synthetic-account-a");
+      await choose(page, "backup-account", "Fixture A");
       await page.getByRole("button", { name: "预览恢复", exact: true }).click();
       const apply = page
         .getByRole("dialog")
@@ -308,8 +334,8 @@ test("Claude diagnostic export requires confirmation and never claims configurat
   state.clients[1]!.configuration_access_revision = null;
   await fixture(page, { state, claudeImport: true });
   await page.goto("/#/access");
-  await page.locator("#model-claude").selectOption("synthetic-text");
-  await page.getByRole("button", { name: "预览配置" }).last().click();
+  await chooseClaudeRoles(page);
+  await page.getByRole("button", { name: "接入 Orbit" }).last().click();
   const dialog = page.getByRole("dialog");
   await expect(
     dialog.getByRole("button", { name: "确认保存本地配置" }),
@@ -353,8 +379,8 @@ test("Claude local configuration save shows the complete impact without claiming
   state.clients[1]!.loaded_state = "unconfirmed";
   await fixture(page, { state });
   await page.goto("/#/access");
-  await page.locator("#model-claude").selectOption("synthetic-text");
-  await page.getByRole("button", { name: "预览配置" }).last().click();
+  await chooseClaudeRoles(page);
+  await page.getByRole("button", { name: "接入 Orbit" }).last().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.locator(".path-list li")).toHaveCount(3);
   await expect(dialog.getByText(/包括 Chat、Code 与 Cowork/)).toBeVisible();
@@ -388,6 +414,18 @@ test("Claude local configuration save shows the complete impact without claiming
     0,
   );
   await expect(row.getByText("连接验证通过", { exact: true })).toHaveCount(0);
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "接入", exact: true })
+    .click();
+  await expect(page.locator(".backup-row")).toHaveCount(0);
+  await page.getByRole("button", { name: "切回原配置", exact: true }).click();
+  await dialog.getByRole("button", { name: "确认恢复配置" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "切回原配置", exact: true }),
+  ).toHaveCount(0);
+  expect(await calls(page, "restore_client_config")).toBe(1);
 });
 
 test("Claude qualification changes permanently retire the old confirmation", async ({
@@ -397,8 +435,8 @@ test("Claude qualification changes permanently retire the old confirmation", asy
   state.clients[1]!.managed = "unknown";
   await fixture(page, { state });
   await page.goto("/#/access");
-  await page.locator("#model-claude").selectOption("synthetic-text");
-  await page.getByRole("button", { name: "预览配置" }).last().click();
+  await chooseClaudeRoles(page);
+  await page.getByRole("button", { name: "接入 Orbit" }).last().click();
   const button = page
     .getByRole("dialog")
     .getByRole("button", { name: "确认保存本地配置" });
@@ -418,18 +456,30 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
 }) => {
   await fixture(page, { paidFailure: true });
   await page.goto("/#/images");
-  await page.locator("#image-model").selectOption("synthetic-image");
+  await choose(page, "image-model", "synthetic-image");
   await page.locator("#image-prompt").fill("中".repeat(10923));
   await expect(
     page.getByRole("button", { name: "生成图片", exact: true }),
   ).toBeDisabled();
   expect(await calls(page, "create_image_task")).toBe(0);
+  await expect(page.locator("#image-quality")).toHaveCount(0);
+  await page.getByRole("button", { name: "高级模式" }).click();
+  await choose(page, "image-quality", "高");
+  await choose(page, "image-n", "2");
   await page.locator("#image-prompt").fill("Synthetic image prompt");
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(
     page.getByText("结果待确认", { exact: true }).first(),
   ).toBeVisible();
   await expect(page.getByText("费用待确认", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.create_image_task?.parameters,
+    ),
+  ).toEqual({ quality: "high", n: 2 });
+
   await expect(
     page.getByText("SYNTHETIC_SECRET_SHOULD_NOT_RENDER"),
   ).toHaveCount(0);
@@ -510,6 +560,7 @@ test("old revocation confirmation is disabled after credential replacement", asy
 }) => {
   await fixture(page);
   await page.goto("/#/access");
+  await page.locator(".connection-actions summary").click();
   await page
     .getByRole("button", { name: "撤销本安装推理 key", exact: true })
     .click();
@@ -532,9 +583,9 @@ test("theme, language, wide window and accessible image tabs", async ({
 }) => {
   await fixture(page);
   await page.goto("/#/settings");
-  await page.locator("#setting-theme").selectOption("dark");
+  await choose(page, "setting-theme", "深色");
   await expect(page.locator("html")).toHaveClass("dark");
-  await page.locator("#setting-locale").selectOption("en");
+  await choose(page, "setting-locale", "English");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
     "Make Orbit fit your workflow",
   );

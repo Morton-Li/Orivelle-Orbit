@@ -1,0 +1,16 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Orivelle Orbit",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 640,
+        "minHeight": 560,
+        "resizable": true,
+        "decorations": false
+      }
+    ]
+  }
+}

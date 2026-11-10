@@ -22,6 +22,10 @@ const paths: Record<string, string> = {
   node: "M5 5h14v6H5ZM5 15h14v6H5ZM8 8h.01M8 18h.01M12 11v4",
   key: "M7 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM11 11l10 10M17 17l3-3",
   chevron: "m9 5 7 7-7 7",
+  "chevron-down": "m6 9 6 6 6-6",
+  minimize: "M5 12h14",
+  maximize: "M5 5h14v14H5Z",
+  unmaximize: "M4 8h12v12H4ZM8 8V4h12v12h-4",
   more: "M5 12h.01M12 12h.01M19 12h.01",
   account:
     "M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM4 21v-3a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v3",

@@ -4,12 +4,10 @@ import { t } from "../shared/i18n";
 import { formatMoney, formatUpdatedAt } from "../shared/format";
 import ClientRow from "../components/ClientRow.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
-import StatusBadge from "../components/StatusBadge.vue";
 const store = useOrbitStore();
 </script>
 <template>
   <section class="page-heading">
-    <p class="eyebrow">{{ t("home.eyebrow") }}</p>
     <h1>{{ t("home.title") }}</h1>
     <p class="page-description">{{ t("home.description") }}</p>
   </section>
@@ -30,13 +28,17 @@ const store = useOrbitStore();
     <template v-if="store.account"
       ><div v-if="!store.account.member" class="balance-inline">
         <span>{{ t("home.wallet") }}</span
-        ><strong>{{ formatMoney(store.account.wallet) }}</strong>
+        ><strong>{{ formatMoney(store.account.wallet, 4) }}</strong>
       </div>
       <div v-if="store.account.budget" class="balance-inline">
         <span>{{ t("home.budget") }}</span
         ><strong>{{ formatMoney(store.account.budget.available) }}</strong>
       </div></template
-    ><button v-else class="button primary" @click="store.loginOpen = true">
+    ><button
+      v-else-if="store.canLogin"
+      class="button primary"
+      @click="store.loginOpen = true"
+    >
       <OrbitIcon name="plus" />{{ t("action.login") }}
     </button>
   </section>
@@ -69,9 +71,4 @@ const store = useOrbitStore();
       ><span class="muted">{{ t("home.imagesHint") }}</span></span
     ><OrbitIcon name="arrow"
   /></RouterLink>
-  <div class="home-platform-note">
-    <StatusBadge text="macOS 15+ · Apple Silicon" /><StatusBadge
-      text="Windows 11 25H2 · x64"
-    /><span class="muted">{{ t("common.pending") }}</span>
-  </div>
 </template>

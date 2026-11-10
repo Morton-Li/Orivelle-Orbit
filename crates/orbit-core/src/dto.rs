@@ -273,6 +273,8 @@ pub struct InstallationView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupGroup {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BackupKind>,
     pub client: ClientKind,
     #[serde(flatten)]
     pub owner: RestoreOwner,
@@ -340,6 +342,27 @@ pub struct PreviewContext {
 pub struct RestoreSource {
     pub backup_group_id: String,
     pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BackupKind>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupKind {
+    Switch,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeRoleModels {
+    pub primary: String,
+    pub fallback: String,
+    pub auxiliary: String,
+}
+impl ClaudeRoleModels {
+    pub(crate) fn ids(&self) -> [&str; 3] {
+        [&self.primary, &self.fallback, &self.auxiliary]
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClaudeRestoreCoordination {

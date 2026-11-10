@@ -46,6 +46,7 @@ impl crate::claude_mapping::MappingAuthority for MappingAuthority {
     fn authorize_messages(
         &self,
         access: crate::claude_mapping::MappingAccess,
+        alias: String,
     ) -> Result<crate::claude_mapping::ForwardPermit> {
         let service = self
             .service
@@ -74,7 +75,13 @@ impl crate::claude_mapping::MappingAuthority for MappingAuthority {
         Ok(crate::claude_mapping::ForwardPermit {
             access,
             messages_url,
-            upstream_model_id: self.record.context.selected_model_id.clone(),
+            upstream_model_id: self
+                .record
+                .plan()?
+                .upstream_model(&alias)
+                .ok_or_else(|| fail("binding_disabled"))?
+                .into(),
+            requested_alias: alias,
             api_key: key,
         })
     }
@@ -92,7 +99,8 @@ impl crate::claude_mapping::MappingAuthority for MappingAuthority {
         ))?;
         if permit.access.binding_id != self.record.context.binding_id
             || permit.access.route_revision != self.record.plan()?.revision()?
-            || permit.upstream_model_id != self.record.context.selected_model_id
+            || self.record.plan()?.upstream_model(&permit.requested_alias)
+                != Some(permit.upstream_model_id.as_str())
             || permit.messages_url != expected_url
         {
             return Err(fail("binding_disabled"));
@@ -481,9 +489,7 @@ impl Service {
         for journal in self.store.list::<Journal>("journal", None)? {
             if journal.client == ClientKind::Claude
                 && journal.id != own_journal_id
-                && (["publishing", "conflict"].contains(&journal.phase.as_str())
-                    || journal.phase == "committed"
-                        && self.store.get::<Journal>("backup", &journal.id)?.is_none())
+                && journal.requires_recovery(&self.store)?
             {
                 return Err(fail("configuration_recovery_required"));
             }
@@ -561,6 +567,7 @@ impl Service {
         id: &str,
         revision: u64,
         model_id: &str,
+        roles: Option<&ClaudeRoleModels>,
     ) -> Result<ConfigPreview> {
         let _operation = self.begin_mutation()?;
         let observation = self.observe_configuration(ClientKind::Claude)?;
@@ -572,6 +579,17 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
         let (record, cache) = self.current_connection(id, revision)?;
+        if let Some(roles) = roles {
+            self.require_original_configuration(ClientKind::Claude)?;
+            let eligible = self.claude_inputs(&record, &cache);
+            if !roles.ids().into_iter().all(|id| {
+                eligible
+                    .iter()
+                    .any(|model| model.id == id && model.support_status != "unsupported")
+            }) {
+                return Err(fail("model_unavailable"));
+            }
+        }
         let model = cache
             .models
             .iter()
@@ -620,10 +638,10 @@ impl Service {
             let main = read_file(&target.config_root.join("claude_desktop_config.json"))?;
             let profile_id = uuid();
             let binding_id = uuid();
-            let mapping = if crate::claude_mapping::requires_mapping(model_id) {
-                let plan = self
-                    .claude_mappings
-                    .reserve(&binding_id, &profile_id, model_id)?;
+            let mapping = if roles.is_some() || crate::claude_mapping::requires_mapping(model_id) {
+                let plan =
+                    self.claude_mappings
+                        .reserve(&binding_id, &profile_id, model_id, roles)?;
                 mapping_reservation = Some(self.claude_mappings.ticket(&plan));
                 Some(plan)
             } else {
@@ -682,14 +700,25 @@ impl Service {
                     "inferenceCredentialHelper": context.helper_path,
                     "inferenceCredentialHelperArgs": [if mapping.is_some(){"claude-map"}else{"claude"}, binding_id],
                     "inferenceModels": mapping.as_ref().map(|plan|json!(plan.aliases)).unwrap_or_else(||json!([{"name": model_id}])), "modelDiscoveryEnabled": false},
-                "localModelMapping": mapping.as_ref().map(|plan|json!({"actualModel":model_id,"roles":plan.aliases,"loopback":plan.base_url(),"upstreamHttps":context.claude_base_url,"requiresOrbitRunning":true})),
+                "localModelMapping": mapping.as_ref().map(|plan|json!({"roles":plan.aliases,"loopback":plan.base_url(),"requiresOrbitRunning":true})),
                 "metadata": {"appliedId": profile_id, "appendEntry": "Orivelle Orbit"},
                 "main": {"deploymentMode": "3p"},
             }))
             .map_err(|_| fail("serialization_failed"))?;
-            if let Some(plan) = mapping.as_ref() {
-                view.impact.push(format!("实际推理模型为 {model_id}；Claude 主模型、备用主模型与辅助角色均映射至同一个获准模型，不代表具有 Claude 的同等能力。"));
-                view.impact.push(format!("仅通过本机 {} 转发到所选 HTTPS 节点；Orbit 必须保持运行，切换账户或节点后需要重新应用接入。",plan.base_url()));
+            if mapping.is_some() {
+                if let Some(roles) = roles {
+                    view.impact.push(format!(
+                        "主模型 {}，备用主模型 {}，辅助模型 {}。",
+                        roles.primary, roles.fallback, roles.auxiliary
+                    ));
+                } else {
+                    view.impact.push(format!(
+                        "Claude 主模型、备用主模型与辅助角色均映射至同一个获准模型 {model_id}。"
+                    ));
+                }
+                view.impact.push(
+                    "Claude Desktop 通过本机 Orbit 转发请求，使用时请保持 Orbit 运行。".into(),
+                );
                 view.impact.push("真正退出 Orbit 会中断本机转发；已发出的请求可能仍在服务端执行并计费，结果与费用需由 Panel 确认。".into());
             }
             let installation = self.installation(&record)?;
@@ -729,13 +758,17 @@ impl Service {
                 .put("binding", &binding_id, &context.account_id, &binding)?;
             let previous = self.claude_previous_bindings(&context)?;
             let previous_mapping_ids = previous.clone();
-            let mut journal = self.claude_engine(&guard, &context_guard).prepare_claude(
+            let engine = self.claude_engine(&guard, &context_guard);
+            let mut journal = engine.prepare_claude(
                 &context.account_id,
                 &installation,
                 compiled.into_files(),
                 previous,
                 context.clone(),
             )?;
+            if roles.is_some() {
+                engine.mark_switch(&mut journal)?;
+            }
             journal.account_label = cache.account.label.clone();
             self.validate_claude_context(&context, false)?;
             self.store
@@ -805,6 +838,7 @@ impl Service {
             .account_gate
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
+        self.check_switch_confirmation(&entry, restore)?;
         let frozen = entry
             .claude_context
             .as_ref()
@@ -991,9 +1025,13 @@ impl Service {
         let engine = self.claude_engine(&guard, &context_guard);
         let source_expiry = chrono::DateTime::parse_from_rfc3339(&backup.expires_at)
             .map_err(|_| fail("backup_invalid"))?;
-        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5))
-            .min(source_expiry.with_timezone(&chrono::Utc))
-            .to_rfc3339();
+        let preview_deadline = chrono::Utc::now() + chrono::Duration::minutes(5);
+        let expires_at = if backup.purpose == JournalPurpose::Switch {
+            preview_deadline
+        } else {
+            preview_deadline.min(source_expiry.with_timezone(&chrono::Utc))
+        }
+        .to_rfc3339();
         let mut frozen = None;
         let mut original_mode = None;
         let mut paths = backup.paths.clone();
@@ -1031,6 +1069,7 @@ impl Service {
             restore_source: Some(RestoreSource {
                 backup_group_id: backup_id.into(),
                 expires_at: backup.expires_at.clone(),
+                kind: backup.backup_kind(),
             }),
             restore_coordination: coordination,
             restore_owner: Some(RestoreOwner {
@@ -1092,11 +1131,7 @@ impl Service {
             return Ok(());
         };
         let journal = &current;
-        if journal.client != ClientKind::Claude
-            || !["publishing", "conflict", "committed"].contains(&journal.phase.as_str())
-            || journal.phase == "committed"
-                && self.store.get::<Journal>("backup", &journal.id)?.is_some()
-        {
+        if journal.client != ClientKind::Claude || !journal.requires_recovery(&self.store)? {
             return Ok(());
         }
         let observation = self.observe_configuration(ClientKind::Claude)?;
