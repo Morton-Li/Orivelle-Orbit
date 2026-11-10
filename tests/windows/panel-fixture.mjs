@@ -241,13 +241,6 @@ export async function startPanelFixture() {
             assert.equal(url.searchParams.get("node_id"), node.id);
             reply(response, wire.models_reply);
             break;
-          case "POST " + api + "/installations/current/inference-key/revoke":
-            assert.equal(
-              JSON.parse(body).expected_key_revision,
-              credential.key_revision,
-            );
-            reply(response, wire.key_revoke_reply);
-            break;
           case "POST " + api + "/sessions/current/revoke":
             revoked = true;
             reply(response, wire.logout_reply);

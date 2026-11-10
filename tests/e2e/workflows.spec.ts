@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import manifest from "../../package.json" with { type: "json" };
 import { bootstrap, task } from "../fixtures";
 import {
   calls,
@@ -555,27 +556,34 @@ test("deleting one local image never deletes other results of the same task", as
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
-test("old revocation confirmation is disabled after credential replacement", async ({
+test("access and settings show the supported controls and the installed version", async ({
   page,
 }) => {
   await fixture(page);
   await page.goto("/#/access");
-  await page.locator(".connection-actions summary").click();
+  await expect(
+    page.getByRole("heading", { name: "角色模型", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("更多操作", { exact: true })).toHaveCount(0);
   await page
-    .getByRole("button", { name: "撤销本安装推理 key", exact: true })
+    .getByRole("navigation")
+    .getByRole("link", { name: "设置", exact: true })
     .click();
-  const dialog = page.getByRole("dialog");
+  const currentVersion = page.locator(".settings-current-version");
   await expect(
-    dialog.getByRole("button", { name: "确认", exact: true }),
+    currentVersion.getByText("当前版本", { exact: true }),
+  ).toBeVisible();
+  await expect(currentVersion.locator("strong")).toHaveText(manifest.version);
+  expect(await calls(page, "check_update")).toBe(0);
+  await expect(
+    page.getByRole("button", { name: "退出登录", exact: true }),
   ).toBeEnabled();
-  const changed = bootstrap("synthetic-account-a", 2);
-  changed.connections[0]!.revision = 2;
-  changed.connections[0]!.credential_revision = "new-credential";
-  await pushState(page, changed);
   await expect(
-    dialog.getByRole("button", { name: "确认", exact: true }),
-  ).toBeDisabled();
-  expect(await calls(page, "revoke_inference_key")).toBe(0);
+    page.getByRole("button", { name: "忘记此安装", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Orivelle Orbit · 2 GiB", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("theme, language, wide window and accessible image tabs", async ({

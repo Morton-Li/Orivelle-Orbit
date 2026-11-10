@@ -30,7 +30,6 @@ const zh = {
   "action.retrySave": "重试本地保存",
   "action.refresh": "刷新数据",
   "action.manage": "管理接入",
-  "action.more": "更多操作",
   "login.title": "连接 Orivelle",
   "login.description":
     "在系统浏览器登录并授权 Orbit，接入凭据将由授权流程安全取得。",
@@ -90,6 +89,7 @@ const zh = {
     "接入当前账户和节点可用的全部兼容模型。在 Codex 内切换使用。",
   "access.claudeRolesHint":
     "为三个角色分别选模型。使用 Claude Desktop 时需保持 Orbit 运行。",
+  "access.roleModels": "角色模型",
   "access.rolePrimary": "主模型",
   "access.roleFallback": "备用主模型",
   "access.roleAuxiliary": "辅助模型",
@@ -204,12 +204,6 @@ const zh = {
     "模型目录、权限或连接状态已变化，本次预览已失效。请刷新后重新预览。",
   "access.codexCatalogUnavailable":
     "当前模型目录无法安全生成。请核对模板声明、版本及推理档位后重新预览。",
-  "access.removeHint":
-    "删除连接会清除此连接的本地会话和推理凭据，保留本地历史、安装证明与备份恢复密钥。服务器推理 key 仅在你另行选择撤销时撤销。",
-  "access.revoke": "撤销本安装推理 key",
-  "access.remove": "删除本地连接",
-  "access.revokeHint":
-    "影响此安装的桌面工具和图片调用；其他 key 保持原状态，已接收的请求可能继续结算。",
   "images.eyebrow": "本地图片工作台",
   "images.title": "把想法变成图像",
   "images.description": "选择获准模型，输入提示词，或加入参考图进行编辑。",
@@ -308,14 +302,8 @@ const zh = {
   "settings.security": "安全存储",
   "settings.securityHint":
     "账户会话、推理凭据、安装身份和备份密钥分别保存在原生系统安全存储。拒绝访问时操作会明确失败。",
-  "settings.installation": "安装记录",
   "settings.logoutHint":
     "退出清除账户和推理凭据，保留安装证明和备份恢复密钥。目标应用可能缓存凭据。",
-  "settings.forget": "忘记此安装",
-  "settings.forgetTitle": "清除安装身份与恢复密钥",
-  "settings.forgetHint":
-    "这会失去原安装证明并使相关旧备份不可解密。服务器 key 不会因此自动撤销。",
-  "settings.ackLoss": "我理解相关旧备份将无法恢复",
   "settings.window": "窗口行为",
   "settings.close": "关闭窗口时",
   "settings.platformDefault": "遵循系统习惯",
@@ -324,6 +312,7 @@ const zh = {
   "settings.quitHint":
     "真正退出与崩溃后不承诺继续生成，未确认的任务会保留待确认状态。",
   "settings.updates": "更新",
+  "settings.currentVersion": "当前版本",
   "settings.autoCheck": "启动时检查更新",
   "settings.check": "检查更新",
   "settings.download": "下载并验证",
@@ -388,7 +377,6 @@ const en: Record<keyof typeof zh, string> = {
   "action.retrySave": "Retry local saving",
   "action.refresh": "Refresh data",
   "action.manage": "Manage access",
-  "action.more": "More actions",
   "login.title": "Connect to Orivelle",
   "login.description":
     "Sign in and authorize Orbit in your system browser. The authorization flow obtains inference credentials securely.",
@@ -459,6 +447,7 @@ const en: Record<keyof typeof zh, string> = {
     "Connect all compatible models available to this account and node. Choose a model in Codex.",
   "access.claudeRolesHint":
     "Choose a model for each role. Keep Orbit running while using Claude Desktop.",
+  "access.roleModels": "Role models",
   "access.rolePrimary": "Primary model",
   "access.roleFallback": "Fallback model",
   "access.roleAuxiliary": "Auxiliary model",
@@ -577,12 +566,6 @@ const en: Record<keyof typeof zh, string> = {
     "The model catalog, permissions or connection changed. Refresh and create a new preview.",
   "access.codexCatalogUnavailable":
     "The model catalog cannot be generated safely. Check the template declaration, version and reasoning policy, then preview again.",
-  "access.removeHint":
-    "Removes local sessions and inference credentials for this connection. History, installation proof and backup keys remain. The server inference key is revoked only if you select that separately.",
-  "access.revoke": "Revoke installation inference key",
-  "access.remove": "Delete local connection",
-  "access.revokeHint":
-    "Affects this installation’s desktop and image calls. Other keys stay unchanged; accepted requests may still be billed.",
   "images.eyebrow": "LOCAL IMAGE WORKSPACE",
   "images.title": "Turn an idea into an image",
   "images.description":
@@ -689,14 +672,8 @@ const en: Record<keyof typeof zh, string> = {
   "settings.security": "Secure storage",
   "settings.securityHint":
     "Account sessions, inference credentials, installation identity and backup keys use separate native secure-storage entries. Denied access fails explicitly.",
-  "settings.installation": "Installation",
   "settings.logoutHint":
     "Signing out clears account and inference credentials, retaining installation identity and backup keys. Target applications may cache credentials.",
-  "settings.forget": "Forget installation",
-  "settings.forgetTitle": "Remove installation identity and recovery keys",
-  "settings.forgetHint":
-    "The original installation proof and related encrypted backups become unrecoverable. Server keys are not automatically revoked.",
-  "settings.ackLoss": "I understand related backups cannot be restored",
   "settings.window": "Window behavior",
   "settings.close": "When closing the window",
   "settings.platformDefault": "Follow platform convention",
@@ -705,6 +682,7 @@ const en: Record<keyof typeof zh, string> = {
   "settings.quitHint":
     "Generation is not guaranteed to continue after quitting or crashing. Unconfirmed tasks retain that status.",
   "settings.updates": "Updates",
+  "settings.currentVersion": "Current version",
   "settings.autoCheck": "Check updates on startup",
   "settings.check": "Check updates",
   "settings.download": "Download and verify",

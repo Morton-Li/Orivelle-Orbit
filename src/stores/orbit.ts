@@ -70,7 +70,6 @@ export function emptyState(): BootstrapView {
       inference_credential_status: "unavailable",
     },
     connections: [],
-    installations: [],
     nodes: [],
     active_connection_id: null,
     clients: [undetectedClient("codex"), undetectedClient("claude")],

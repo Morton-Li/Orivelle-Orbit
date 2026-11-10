@@ -255,23 +255,7 @@ async function exerciseImages(page, navigation) {
   );
 }
 
-async function revokeAndLogout(page, navigation) {
-  await navigation.getByRole("link", { name: "接入", exact: true }).click();
-  await page.locator(".connection-actions summary").click();
-  await page
-    .getByRole("button", { name: "撤销本安装推理 key", exact: true })
-    .click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "确认", exact: true })
-    .click();
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
-  assert.equal(
-    fixture.requests.get(
-      "POST /api/v1/orbit/installations/current/inference-key/revoke",
-    ),
-    1,
-  );
+async function logout(page, navigation) {
   await navigation.getByRole("link", { name: "设置", exact: true }).click();
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await page
@@ -284,15 +268,7 @@ async function revokeAndLogout(page, navigation) {
     fixture.requests.get("POST /api/v1/orbit/sessions/current/revoke"),
     1,
   );
-  await page.getByRole("button", { name: "忘记此安装", exact: true }).click();
-  const forget = page.getByRole("dialog");
-  await forget.getByRole("checkbox").check();
-  await forget.getByRole("button", { name: "确认", exact: true }).click();
-  await forget.waitFor({ state: "hidden" });
-  assert.deepEqual((await invoke(page, "bootstrap")).installations, []);
-  console.log(
-    "Inference credential revocation, logout and installation cleanup verified.",
-  );
+  console.log("Local logout and server session revocation verified.");
 }
 
 let browser;
@@ -327,7 +303,7 @@ try {
   );
   await authorizeAccount(page);
   await exerciseImages(page, navigation);
-  await revokeAndLogout(page, navigation);
+  await logout(page, navigation);
 
   const nextTheme = initial.settings.theme === "dark" ? "light" : "dark";
   await choose(page, "setting-theme", nextTheme === "dark" ? "深色" : "浅色");
@@ -341,7 +317,11 @@ try {
     .getByRole("link", { name: "Settings", exact: true })
     .waitFor();
   assert.equal((await invoke(page, "bootstrap")).settings.locale, "en");
-  assert.equal((await invoke(page, "check_update")).status, "disabled");
+  const update = await invoke(page, "check_update");
+  assert.equal(update.status, "disabled");
+  await expect(page.locator(".settings-current-version strong")).toHaveText(
+    update.current_version,
+  );
 
   await page.getByRole("button", { name: "Preview diagnostic report" }).click();
   assert.match(
