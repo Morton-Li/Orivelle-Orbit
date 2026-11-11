@@ -53,7 +53,7 @@ runs:
         node scripts/native-workflow.mjs preflight
         npm run check
         if [[ "$RUNNER_OS" == Windows ]]; then
-          node --test tests/build/desktop-fake-gateway.test.mjs tests/build/github-release.test.mjs tests/build/updater-signer-probe.test.mjs
+          node --test tests/build/desktop-fake-gateway.test.mjs tests/build/github-release.test.mjs tests/build/updater-signer-probe.test.mjs tests/build/windows-package-evidence.test.mjs
         else
           node --test tests/build/*.test.mjs
         fi

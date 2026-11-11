@@ -2,6 +2,28 @@ name: Windows Integration
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Run all checks or only the native acceptance being changed
+        type: choice
+        default: all
+        options: [all, windows-desktop, macos-dmg]
+      dmg-artifact-run:
+        description: Optional prior run to reuse when only the DMG verifier changed
+        required: false
+        type: string
+      windows-artifact-run:
+        description: Optional prior run to reuse when only Windows acceptance checks changed
+        required: false
+        type: string
+      baseline-tag:
+        description: Published tag whose native data should survive the candidate launch
+        required: false
+        type: string
+      candidate-tag:
+        description: Optional release version to apply in the hosted checkout
+        required: false
+        type: string
   push:
     branches: [develop]
     paths:
@@ -10,6 +32,9 @@ on:
       - "crates/orbit-core/src/**"
       - "scripts/native-workflow.mjs"
       - "src-tauri/src/**"
+      - "src/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
       - "tests/build/**"
       - "tests/windows/**"
 
@@ -17,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: orbit-windows-integration-${{ github.ref }}
+  group: orbit-windows-integration-${{ github.ref }}-${{ inputs.scope || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -30,6 +55,7 @@ env:
 
 jobs:
   validation:
+    if: inputs.scope != 'windows-desktop' && inputs.scope != 'macos-dmg'
     name: Run Windows regression tests
     runs-on: windows-2025
     timeout-minutes: 45
@@ -37,6 +63,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Parse Windows acceptance scripts
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem tests/windows/*.ps1) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -48,7 +84,7 @@ jobs:
       - uses: ./.github/actions/prepare-native
 
       - name: Run browser workflow tests
-        run: npm run test:e2e -- --reporter=line --retries=1
+        run: npm run test:e2e -- --reporter=line --retries=1 --max-failures=3
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: ${{ failure() }}
@@ -59,15 +95,49 @@ jobs:
           retention-days: 7
 
   windows:
+    if: inputs.scope != 'macos-dmg'
     name: Build and verify Windows x64
     runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require matching application source before reusing Windows files
+        if: inputs.windows-artifact-run != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORBIT_WINDOWS_ARTIFACT_RUN: ${{ inputs.windows-artifact-run }}
+        run: |
+          if ($env:ORBIT_WINDOWS_ARTIFACT_RUN -notmatch '^\d+$') { throw 'Invalid artifact run.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $prior = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:ORBIT_WINDOWS_ARTIFACT_RUN"
+          if ($prior.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $prior.head_sha -notmatch '^[a-f0-9]{40}$') { throw 'Unexpected artifact source.' }
+          git merge-base --is-ancestor $prior.head_sha HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The artifact source is not an ancestor.' }
+          $allowed = @('.github/workflows/windows-integration.yml', '.github/workflows/release.yml', '.github/actions/prepare-native/action.yml', 'scripts/windows-package-evidence.mjs', 'scripts/verify-dmg-layout.mjs', 'tests/build/windows-package-evidence.test.mjs')
+          foreach ($file in @(git diff --name-only $prior.head_sha HEAD)) {
+            if ($file -notin $allowed -and $file -notlike 'tests/windows/*') { throw "Application build source changed: $file" }
+          }
+          "ORBIT_WINDOWS_BUILD_SOURCE=$($prior.head_sha)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ORBIT_WINDOWS_ARTIFACT_RUN=$env:ORBIT_WINDOWS_ARTIFACT_RUN" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: inputs.windows-artifact-run != ''
+        with:
+          name: orbit-windows-integration
+          path: .cache/windows-reuse
+          run-id: ${{ inputs.windows-artifact-run }}
+          github-token: ${{ github.token }}
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: inputs.windows-artifact-run == ''
         id: cargo-cache
         with:
           path: |
@@ -78,12 +148,30 @@ jobs:
       - uses: ./.github/actions/prepare-native
         with:
           validate: "false"
+          release-tag: ${{ inputs.candidate-tag }}
 
-      - name: Build Windows x64 candidate
-        run: node scripts/native-workflow.mjs candidate
+      - name: Build Windows x64 installer
+        if: inputs.windows-artifact-run == ''
+        run: node scripts/native-workflow.mjs github-bundle
+
+      - name: Verify and stage the reusable Windows build
+        if: inputs.windows-artifact-run != ''
+        shell: pwsh
+        run: |
+          $prior = Join-Path $PWD '.cache/windows-reuse'
+          $manifest = Get-Content -LiteralPath (Join-Path $prior 'logs/candidate-manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.target -ne 'x86_64-pc-windows-msvc' -or $manifest.mode -ne 'github-bundle' -or -not $manifest.source_verified_before_and_after) { throw 'The artifact has no verified Windows build receipt.' }
+          $binary = Join-Path $prior 'logs/windows-integration/binary-difference/built.exe'
+          if ((Get-FileHash $binary -Algorithm SHA256).Hash -ne $manifest.executable.sha256) { throw 'The reusable program does not match its build receipt.' }
+          New-Item -ItemType Directory -Force runtime/target/x86_64-pc-windows-msvc/release, runtime/github-release, runtime/logs | Out-Null
+          Copy-Item -LiteralPath $binary -Destination 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
+          $installers = @(Get-ChildItem (Join-Path $prior 'github-release') -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected one reusable installer.' }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination runtime/github-release
+          Copy-Item -LiteralPath (Join-Path $prior 'logs/candidate-manifest.json'), (Join-Path $prior 'logs/native-preflight.json') -Destination runtime/logs
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        if: inputs.windows-artifact-run == '' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
           path: |
             runtime/cargo-home/registry
@@ -111,7 +199,13 @@ jobs:
             }
           }
 
-      - name: Exercise the Orbit desktop executable
+      - name: Verify installers and prepare the published baseline
+        shell: pwsh
+        env:
+          ORBIT_BASELINE_TAG: ${{ inputs.baseline-tag }}
+        run: ./tests/windows/prepare-installers.ps1
+
+      - name: Exercise the packaged Orbit desktop executable
         shell: pwsh
         run: ./tests/windows/with-panel-fixture.ps1
 
@@ -123,5 +217,94 @@ jobs:
             runtime/logs/native-preflight.json
             runtime/logs/candidate-manifest.json
             runtime/logs/windows-integration/
+            runtime/github-release/*-setup.exe
           if-no-files-found: ignore
+          retention-days: 7
+
+  macos:
+    name: Check macOS arm64 candidate
+    if: inputs.candidate-tag != '' && inputs.scope != 'windows-desktop'
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.dmg-artifact-run != ''
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Require matching build source before reusing the DMG
+        if: inputs.dmg-artifact-run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORBIT_DMG_ARTIFACT_RUN: ${{ inputs.dmg-artifact-run }}
+          ORBIT_CANDIDATE_TAG: ${{ inputs.candidate-tag }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {execFileSync} from 'node:child_process';
+          import {appendFileSync} from 'node:fs';
+          assert(/^\d+$/.test(process.env.ORBIT_DMG_ARTIFACT_RUN));
+          const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.ORBIT_DMG_ARTIFACT_RUN}`, {headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json'}});
+          assert(response.ok);
+          const prior = await response.json();
+          assert.equal(prior.head_repository.full_name, process.env.GITHUB_REPOSITORY);
+          assert(/^[a-f0-9]{40}$/.test(prior.head_sha));
+          execFileSync('git',['merge-base','--is-ancestor',prior.head_sha,'HEAD']);
+          const changed = execFileSync('git',['diff','--name-only',prior.head_sha,'HEAD'],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
+          const allowed = new Set(['scripts/verify-dmg-layout.mjs','.github/workflows/windows-integration.yml','tests/windows/desktop.mjs']);
+          assert(changed.every(file=>allowed.has(file)||file.startsWith('tests/windows/')),`Build source changed: ${changed.join(', ')}`);
+          appendFileSync(process.env.GITHUB_ENV,`ORBIT_DMG_BUILD_SOURCE=${prior.head_sha}\nORBIT_DMG_ARTIFACT_RUN=${process.env.ORBIT_DMG_ARTIFACT_RUN}\n`);
+          execFileSync(process.execPath,['scripts/github-release.mjs','prepare-source',process.env.ORBIT_CANDIDATE_TAG],{stdio:'inherit'});
+          JS
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: inputs.dmg-artifact-run != ''
+        with:
+          name: orbit-macos-dmg-layout
+          path: runtime
+          run-id: ${{ inputs.dmg-artifact-run }}
+          github-token: ${{ github.token }}
+      - name: Prepare the reused DMG verification directory
+        if: inputs.dmg-artifact-run != ''
+        run: mkdir -p runtime/tmp
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: inputs.dmg-artifact-run == ''
+        id: macos-cache
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: orbit-macos-dmg-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+      - uses: ./.github/actions/prepare-native
+        if: inputs.dmg-artifact-run == ''
+        with:
+          validate: "false"
+          release-tag: ${{ inputs.candidate-tag }}
+      - name: Build macOS arm64 candidate
+        if: inputs.dmg-artifact-run == ''
+        run: node scripts/native-workflow.mjs github-dmg
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: inputs.dmg-artifact-run == '' && steps.macos-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: ${{ steps.macos-cache.outputs.cache-primary-key }}
+      - name: Verify the actual Finder installation window
+        run: node scripts/verify-dmg-layout.mjs
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: orbit-macos-dmg-layout
+          path: |
+            runtime/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            runtime/logs/dmg/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 7

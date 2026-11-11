@@ -16,7 +16,8 @@ if (
 }
 
 const executable = path.resolve(
-  "runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe",
+  process.env.ORBIT_WINDOWS_EXECUTABLE ??
+    "runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe",
 );
 const evidence = path.resolve("runtime/logs/windows-integration");
 await mkdir(evidence, { recursive: true });
@@ -30,18 +31,66 @@ const appEnvironment = { ...process.env };
 delete appEnvironment.ORBIT_FIXTURE_PFX;
 delete appEnvironment.ORBIT_FIXTURE_PASSPHRASE;
 delete appEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS;
-const app = spawn(executable, {
-  stdio: "inherit",
-  env: {
-    ...appEnvironment,
-    WEBVIEW2_USER_DATA_FOLDER: profile,
-  },
-});
-app.unref();
+let app;
 let launchError;
-app.on("error", (error) => {
-  launchError = error;
-});
+let baseline;
+const receipt = {
+  source: process.env.GITHUB_SHA,
+  build_source:
+    process.env.ORBIT_WINDOWS_BUILD_SOURCE ?? process.env.GITHUB_SHA,
+  artifact_run:
+    process.env.ORBIT_WINDOWS_ARTIFACT_RUN ?? process.env.GITHUB_RUN_ID,
+  baseline_tag: process.env.ORBIT_BASELINE_TAG ?? null,
+  scope:
+    "Real NSIS installation and version transition, native OS behavior and controlled HTTPS peer",
+  checks: [],
+};
+
+function launch(binary) {
+  launchError = undefined;
+  app = spawn(binary, {
+    stdio: "inherit",
+    env: { ...appEnvironment, WEBVIEW2_USER_DATA_FOLDER: profile },
+  });
+  app.unref();
+  app.on("error", (error) => {
+    launchError = error;
+  });
+}
+
+async function native(action, item, screenshot) {
+  const args = [
+    "-NoProfile",
+    "-NonInteractive",
+    "-STA",
+    "-File",
+    "tests/windows/lifecycle.ps1",
+    "-OrbitProcess",
+    String(app.pid),
+    "-Action",
+    action,
+  ];
+  if (item) args.push("-Item", item);
+  if (screenshot) args.push("-Screenshot", path.join(evidence, screenshot));
+  const { stdout } = await powershell("powershell.exe", args, {
+    timeout: 25_000,
+  });
+  return JSON.parse(stdout.trim());
+}
+
+async function visible(expected) {
+  await expect
+    .poll(async () => (await native("state")).main_visible, {
+      timeout: 15_000,
+    })
+    .toBe(expected);
+  assert.equal(app.exitCode, null, "The primary process must remain alive.");
+}
+
+async function exited() {
+  await expect.poll(() => app.exitCode, { timeout: 15_000 }).not.toBe(null);
+  assert.equal(app.exitCode, 0);
+}
 
 async function waitForWebView() {
   const deadline = Date.now() + 60_000;
@@ -165,6 +214,9 @@ async function choose(page, id, label) {
 }
 
 async function exerciseImages(page, navigation) {
+  const imagesBefore = (await invoke(page, "bootstrap")).image_history.length;
+  const generationsBefore =
+    fixture.requests.get("POST /v1/images/generations") ?? 0;
   await page
     .locator(".topbar")
     .getByRole("button", { name: "刷新数据", exact: true })
@@ -174,7 +226,13 @@ async function exerciseImages(page, navigation) {
   );
   assert((fixture.requests.get("GET /api/v1/orbit/bootstrap") ?? 0) >= 2);
   await navigation.getByRole("link", { name: "接入", exact: true }).click();
-  await choose(page, "access-node", fixture.nodeLabel);
+  if (baseline) {
+    // Selecting even the same node creates a new connection revision. Keep the
+    // upgraded connection so its v1.0.1 task remains the current result to reuse.
+    await expect(page.locator("#access-node")).toContainText(fixture.nodeLabel);
+  } else {
+    await choose(page, "access-node", fixture.nodeLabel);
+  }
   const configPreviews = page.getByRole("button", {
     name: "接入 Orbit",
     exact: true,
@@ -187,9 +245,84 @@ async function exerciseImages(page, navigation) {
     .getByRole("link", { name: "图片工作台", exact: true })
     .click();
   await choose(page, "image-model", fixture.modelLabel);
+  const advanced = page.getByRole("button", { name: "高级选项", exact: true });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
+  await advanced.click();
+  await expect(page.locator("#image-background")).toContainText("不透明");
+  await page.locator("#image-background").click();
+  await expect(page.getByRole("option")).toHaveText(["不透明", "透明"]);
+  await page.keyboard.press("Escape");
+  for (const id of [
+    "image-n",
+    "image-size",
+    "image-width",
+    "image-height",
+    "image-quality",
+    "image-output_format",
+    "image-compression",
+    "image-complexity",
+  ])
+    await expect(page.locator("#" + id)).toHaveCount(0);
+  if (baseline) {
+    await page
+      .getByRole("button", { name: "复用参数", exact: true })
+      .first()
+      .click();
+    await expect(advanced).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#image-prompt")).toHaveValue(
+      "Orbit v1.0.1 compatibility history",
+    );
+    await advanced.click();
+    await expect(page.locator("#image-background")).toContainText("透明");
+    await expect(page.locator("#image-quality")).toHaveCount(0);
+    await expect(page.locator("#image-size")).toHaveCount(0);
+    await expect(page.locator(".task-facts")).toContainText("1024x1024");
+    await page.screenshot({
+      path: path.join(evidence, "legacy-history-reuse.png"),
+    });
+    await choose(page, "image-background", "不透明");
+    receipt.checks.push(
+      "v1.0.1 history facts retained and unsupported parameters removed on reuse",
+    );
+  }
+  await advanced.click();
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
   await page.locator("#image-prompt").fill("Orbit Windows fixture generation");
+  const pending = fixture.holdNextImage();
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
-  await waitForImages(page, 1);
+  try {
+    await Promise.race([
+      pending.received,
+      delay(15_000).then(() => {
+        throw new Error("The generation did not reach the controlled peer.");
+      }),
+    ]);
+    await native("close");
+    await visible(false);
+    await native("menu", "退出 Orbit", "tray-quit-menu.png");
+    await native("dialog", "继续运行", "pending-quit-guard.png");
+    if ((await native("state")).main_visible) await native("close");
+    await visible(false);
+    pending.release();
+    await waitForImages(page, imagesBefore + 1);
+    await visible(false);
+    await native("double-click");
+    await visible(true);
+    receipt.checks.push(
+      "pending request continues while hidden, native Quit cancellation retains process, tray double-click restores window",
+    );
+  } finally {
+    pending.release();
+  }
+  assert.deepEqual(fixture.imageBodies.at(-1).body, {
+    model: (await invoke(page, "bootstrap")).tasks.find(
+      (task) => task.prompt === "Orbit Windows fixture generation",
+    ).requested_model,
+    prompt: "Orbit Windows fixture generation",
+    background: "opaque",
+    response_format: "b64_json",
+  });
   await page.waitForFunction(
     () => document.querySelector(".image-preview-button img")?.naturalWidth > 0,
   );
@@ -232,8 +365,24 @@ async function exerciseImages(page, navigation) {
     reference,
   );
   await page.locator("#image-prompt").fill("Orbit Windows fixture edit");
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await advanced.click();
+  await choose(page, "image-background", "透明");
+  await advanced.click();
   await page.getByRole("button", { name: "编辑图片", exact: true }).click();
-  await waitForImages(page, 2);
+  await waitForImages(page, imagesBefore + 2);
+  assert.equal(fixture.imageBodies.at(-1).body.background, "transparent");
+  for (const key of [
+    "size",
+    "quality",
+    "output_format",
+    "output_compression",
+    "complexity",
+  ])
+    assert.equal(fixture.imageBodies.at(-1).body[key], undefined);
+  receipt.checks.push(
+    "opaque default and transparent edit submitted explicitly; restricted controls and collapsed summary verified",
+  );
 
   await page.getByRole("tab", { name: /^本地历史/ }).click();
   await page
@@ -245,8 +394,14 @@ async function exerciseImages(page, navigation) {
     .getByRole("button", { name: "确认", exact: true })
     .click();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
-  assert.equal((await invoke(page, "bootstrap")).image_history.length, 1);
-  assert.equal(fixture.requests.get("POST /v1/images/generations"), 1);
+  assert.equal(
+    (await invoke(page, "bootstrap")).image_history.length,
+    imagesBefore + 1,
+  );
+  assert.equal(
+    fixture.requests.get("POST /v1/images/generations"),
+    generationsBefore + 1,
+  );
   assert.equal(fixture.requests.get("POST /v1/images/edits"), 1);
   assert.equal(generated.mime, "image/png");
   await page.screenshot({ path: path.join(evidence, "image-history.png") });
@@ -273,7 +428,7 @@ async function logout(page, navigation) {
 
 let browser;
 let page;
-try {
+async function connect() {
   await waitForWebView();
   browser = await chromium.connectOverCDP(endpoint, {
     noDefaults: true,
@@ -286,6 +441,65 @@ try {
     (await context.waitForEvent("page", { timeout: 15_000 }));
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => console.error(error));
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "首页", exact: true })
+    .waitFor({ timeout: 90_000 });
+}
+
+try {
+  if (process.env.ORBIT_BASELINE_EXECUTABLE) {
+    launch(process.env.ORBIT_BASELINE_EXECUTABLE);
+    await connect();
+    await authorizeAccount(page);
+    const navigation = page.getByRole("navigation");
+    await navigation.getByRole("link", { name: "接入", exact: true }).click();
+    await choose(page, "access-node", fixture.nodeLabel);
+    await navigation
+      .getByRole("link", { name: "图片工作台", exact: true })
+      .click();
+    await choose(page, "image-model", fixture.modelLabel);
+    await page.getByRole("button", { name: "高级模式", exact: true }).click();
+    await choose(page, "image-quality", "高");
+    await choose(page, "image-size", "1024x1024");
+    await choose(page, "image-background", "透明");
+    await page
+      .locator("#image-prompt")
+      .fill("Orbit v1.0.1 compatibility history");
+    await page.getByRole("button", { name: "生成图片", exact: true }).click();
+    await waitForImages(page, 1);
+    await invoke(page, "update_settings", {
+      patch: { theme: "dark", close_behavior: "platform_default" },
+    });
+    baseline = await invoke(page, "bootstrap");
+    assert.equal(baseline.tasks[0].parameters.quality, "high");
+    assert.equal(baseline.tasks[0].parameters.size, "1024x1024");
+    await page.screenshot({ path: path.join(evidence, "v1.0.1-baseline.png") });
+    await native("close");
+    await exited();
+    await browser.close().catch(() => {});
+    browser = undefined;
+    page = undefined;
+    receipt.checks.push(
+      "published v1.0.1 executable created native credential, legacy settings and image history",
+    );
+    const { stdout } = await powershell(
+      "pwsh.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        "tests/windows/install-candidate.ps1",
+      ],
+      { timeout: 120_000 },
+    );
+    console.log(stdout.trim());
+    receipt.checks.push(
+      "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the compiled program with the Tauri NSIS marker",
+    );
+  }
+  launch(executable);
+  await connect();
 
   const navigation = page.getByRole("navigation");
   await navigation.getByRole("link", { name: "首页", exact: true }).waitFor({
@@ -293,7 +507,22 @@ try {
   });
   const initial = await invoke(page, "bootstrap");
   assert.equal(initial.platform, "windows");
-  assert.deepEqual(initial.connections, []);
+  if (baseline) {
+    assert.equal(initial.session.status, "authenticated");
+    assert.equal(initial.session.account.id, baseline.session.account.id);
+    assert.equal(initial.active_connection_id, baseline.active_connection_id);
+    assert.deepEqual(
+      initial.image_history.map((image) => image.id),
+      baseline.image_history.map((image) => image.id),
+    );
+    assert.equal(initial.settings.theme, "dark");
+    assert.equal(initial.settings.close_behavior, "platform_default");
+    receipt.checks.push(
+      "candidate reopened v1.0.1 credential, account, connection, settings and image history",
+    );
+  } else {
+    assert.deepEqual(initial.connections, []);
+  }
   assert.equal(initial.clients.length, 2);
   assert(initial.clients.every((client) => client.platform_supported));
   assert(
@@ -301,7 +530,31 @@ try {
       (client) => client.configuration_access !== "allowed",
     ),
   );
-  await authorizeAccount(page);
+  if (!baseline) await authorizeAccount(page);
+  assert.equal((await native("state")).tray_exists, true);
+  await native("close");
+  await visible(false);
+  const secondary = spawn(executable, {
+    stdio: "inherit",
+    env: { ...appEnvironment, WEBVIEW2_USER_DATA_FOLDER: profile },
+  });
+  await expect.poll(() => secondary.exitCode, { timeout: 15_000 }).toBe(0);
+  await visible(true);
+  await native("menu", "设置…", "tray-settings-menu.png");
+  await expect(page.locator("#setting-close")).toContainText(
+    "收起到菜单栏 / 系统托盘",
+  );
+  await choose(page, "setting-close", "退出应用");
+  await expect
+    .poll(async () => (await invoke(page, "bootstrap")).settings.close_behavior)
+    .toBe("quit");
+  await choose(page, "setting-close", "收起到菜单栏 / 系统托盘");
+  await expect
+    .poll(async () => (await invoke(page, "bootstrap")).settings.close_behavior)
+    .toBe("keep_running");
+  receipt.checks.push(
+    "legacy close setting hides window, second launch activates primary, native tray Settings routes existing window",
+  );
   await exerciseImages(page, navigation);
   await logout(page, navigation);
 
@@ -345,7 +598,30 @@ try {
   console.log(
     "Orbit WebView2, native settings, diagnostics and Windows platform gates verified.",
   );
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await choose(page, "setting-close", "Quit application");
+  await expect
+    .poll(async () => (await invoke(page, "bootstrap")).settings.close_behavior)
+    .toBe("quit");
+  await native("close");
+  await exited();
+  receipt.checks.push(
+    "explicit quit-on-close terminates the primary process cleanly",
+  );
+  receipt.status = "passed";
+  receipt.requests = Object.fromEntries(fixture.requests);
+  await writeFile(
+    path.join(evidence, "acceptance.json"),
+    JSON.stringify(receipt, null, 2) + "\n",
+  );
 } catch (error) {
+  receipt.status = "failed";
+  receipt.error = String(error.message);
+  await writeFile(
+    path.join(evidence, "acceptance.json"),
+    JSON.stringify(receipt, null, 2) + "\n",
+  );
   console.error(
     "Panel fixture request counts:",
     Object.fromEntries(fixture.requests),
@@ -358,9 +634,11 @@ try {
   await page
     ?.screenshot({ path: path.join(evidence, "failure.png"), timeout: 5_000 })
     .catch(() => {});
+  if (app?.pid && app.exitCode === null)
+    await native("state", undefined, "native-failure.png").catch(() => {});
   throw error;
 } finally {
   await browser?.close().catch(() => {});
-  if (app.pid && app.exitCode === null && app.signalCode === null) app.kill();
+  if (app?.pid && app.exitCode === null && app.signalCode === null) app.kill();
   fixture.close();
 }

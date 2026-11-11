@@ -40,16 +40,19 @@ if (
     "candidate",
     "bundle",
     "github-bundle",
+    "github-dmg",
     "github-release",
   ].includes(mode)
 ) {
   throw new Error(
-    "Use preflight, check, signer-probe, candidate, bundle, github-bundle or github-release.",
+    "Use preflight, check, signer-probe, candidate, bundle, github-bundle, github-dmg or github-release.",
   );
 }
 const githubRelease = mode === "github-release";
 const githubBundle = mode === "github-bundle";
-const bundling = mode === "bundle" || githubBundle || githubRelease;
+const githubDmg = mode === "github-dmg";
+const bundling =
+  mode === "bundle" || githubBundle || githubDmg || githubRelease;
 const target =
   process.platform === "darwin" && process.arch === "arm64"
     ? "aarch64-apple-darwin"
@@ -60,6 +63,8 @@ if (!target)
   throw new Error("A native macOS arm64 or Windows x64 host is required.");
 if (githubRelease && process.platform !== "darwin")
   throw new Error("The signed updater release build requires macOS arm64.");
+if (githubDmg && process.platform !== "darwin")
+  throw new Error("The styled DMG candidate requires macOS arm64.");
 const expectedNode = (
   await readFile(path.join(root, ".node-version"), "utf8")
 ).trim();
@@ -135,6 +140,10 @@ const env = {
   NPM_CONFIG_USERCONFIG: os.devNull,
   NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig,
 };
+if (bundling && process.platform === "darwin") {
+  // Tauri otherwise skips Finder's background and icon layout on CI.
+  env.TAURI_BUNDLER_DMG_IGNORE_CI = "true";
+}
 function inspect(binary, args) {
   const result = spawnSync(binary, args, {
     cwd: root,
@@ -413,7 +422,11 @@ if (mode === "preflight") {
     if (bundling)
       build.push(
         "--bundles",
-        process.platform === "darwin" ? "app" : "nsis",
+        process.platform === "darwin"
+          ? githubDmg
+            ? "app,dmg"
+            : "app"
+          : "nsis",
         ...bundleOverride,
       );
     else build.push("--no-bundle");

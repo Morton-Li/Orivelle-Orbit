@@ -78,15 +78,14 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
 fi
 output="$GITHUB_WORKSPACE/runtime/candidates/Orivelle-Orbit-$version-macos-arm64-self-signed.dmg"
 
-mkdir -m 755 "$work/image"
-staged_app="$work/image/$app_name"
-/usr/bin/ditto "$app" "$staged_app"
-ln -s /Applications "$work/image/Applications"
-/usr/bin/codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --options runtime "$staged_app"
-
-image="$work/orbit.dmg"
-/usr/bin/hdiutil create -volname 'Orivelle Orbit' -fs HFS+ -format UDZO -srcfolder "$work/image" "$image"
-/usr/bin/codesign --sign "$identity" --keychain "$keychain" --timestamp=none "$image"
+# Use the same branded Finder layout as formal releases.
+APPLE_SIGNING_IDENTITY="$identity" TAURI_BUNDLER_DMG_IGNORE_CI=true \
+  CARGO_HOME="$GITHUB_WORKSPACE/runtime/cargo-home" \
+  CARGO_TARGET_DIR="$GITHUB_WORKSPACE/runtime/target" \
+  node "$GITHUB_WORKSPACE/node_modules/@tauri-apps/cli/tauri.js" bundle \
+    --target aarch64-apple-darwin --features system-integration --ci --bundles app,dmg \
+    --config '{"bundle":{"active":true,"useLocalToolsDir":true}}'
+image="$GITHUB_WORKSPACE/runtime/target/aarch64-apple-darwin/release/bundle/dmg/Orivelle Orbit_${version}_aarch64.dmg"
 /usr/bin/codesign --verify --strict "$image"
 /usr/bin/hdiutil verify "$image"
 mkdir "$mount"

@@ -1,0 +1,56 @@
+{
+  "run_url": "https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43077671970",
+  "acceptance": {
+    "source": "99b2eb4d5d75789ee65693c2bb9e6c1339264e8b",
+    "build_source": "3c64e7f04adcb4349d98a224443546d9cea277b7",
+    "artifact_run": "43069688256",
+    "baseline_tag": "v1.0.1",
+    "scope": "Real NSIS installation and version transition, native OS behavior and controlled HTTPS peer",
+    "checks": [
+      "published v1.0.1 executable created native credential, legacy settings and image history",
+      "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the compiled program with the Tauri NSIS marker",
+      "candidate reopened v1.0.1 credential, account, connection, settings and image history",
+      "legacy close setting hides window, second launch activates primary, native tray Settings routes existing window",
+      "v1.0.1 history facts retained and unsupported parameters removed on reuse",
+      "pending request continues while hidden, native Quit cancellation retains process, tray double-click restores window",
+      "opaque default and transparent edit submitted explicitly; restricted controls and collapsed summary verified",
+      "explicit quit-on-close terminates the primary process cleanly"
+    ],
+    "status": "passed",
+    "requests": {
+      "POST /api/v1/orbit/authorization-requests": 1,
+      "GET /orbit/authorize": 2,
+      "GET /orbit/approve": 1,
+      "POST /api/v1/orbit/token": 1,
+      "POST /api/v1/orbit/installations/current/inference-credential": 1,
+      "GET /api/v1/orbit/bootstrap": 3,
+      "GET /api/v1/orbit/models": 4,
+      "POST /v1/images/generations": 2,
+      "GET /api/v1/orbit/usage/records/ec726d3f-75f9-4ef9-a32b-f054a6426e09": 1,
+      "GET /api/v1/orbit/usage/records/27df3de7-95da-4f5f-b5b1-9a2000d3eb22": 1,
+      "POST /v1/images/edits": 1,
+      "GET /api/v1/orbit/usage/records/f41ea31d-25d3-4041-9bdc-2155e71da0c0": 1,
+      "POST /api/v1/orbit/sessions/current/revoke": 1
+    }
+  },
+  "installers": {
+    "scope": "Real NSIS installation, native OS behavior and controlled HTTPS peer; no real upstream calls",
+    "candidate_version": "1.0.2",
+    "built_sha256": "9ECED176901DE6A3FC3DB7B0B0E1FE656D2BB1F6CC46CD40AF87E6828FBCA4D8",
+    "expected_packaged_sha256": "1b122d68599439e5a607e73a04e0135d1d3fecf139a9f16f1e7d98e35f9cb5c1",
+    "baseline_sha256": "E614A12EA5680B251818326813A484FF43DDC11ED338AB94E6F64CF56C965C97",
+    "archive_extracted_sha256": "1B122D68599439E5A607E73A04E0135D1D3FECF139A9F16F1E7D98E35F9CB5C1",
+    "baseline_tag": "v1.0.1",
+    "installed_sha256": "1B122D68599439E5A607E73A04E0135D1D3FECF139A9F16F1E7D98E35F9CB5C1",
+    "installed_version": "1.0.2",
+    "archive_extraction_matches_installation": true
+  },
+  "installed_proof": {
+    "verification": "Exact bytes with the pinned Tauri UNK to NSS package marker",
+    "marker_offset": 23757554,
+    "bytes": 28801536,
+    "compiled_sha256": "9eced176901de6a3fc3db7b0b0e1fe656d2bb1f6cc46cd40af87e6828fbca4d8",
+    "expected_packaged_sha256": "1b122d68599439e5a607e73a04e0135d1d3fecf139a9f16f1e7d98e35f9cb5c1",
+    "packaged_sha256": "1b122d68599439e5a607e73a04e0135d1d3fecf139a9f16f1e7d98e35f9cb5c1"
+  }
+}
