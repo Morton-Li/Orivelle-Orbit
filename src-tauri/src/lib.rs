@@ -1,4 +1,5 @@
 mod commands;
+mod desktop;
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "windows", target_arch = "x86_64")
@@ -19,6 +20,11 @@ const BUNDLED_HELPER: &[u8] = include_bytes!(env!("ORBIT_BUNDLED_HELPER_FILE"));
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            desktop::open_main(app);
+        }))
+        .manage(desktop::Lifecycle::default())
+        .on_menu_event(desktop::menu_event)
         .register_uri_scheme_protocol("asset", |context, request| {
             let bytes = if context.webview_label() == "main"
                 && request.method() == tauri::http::Method::GET
@@ -117,6 +123,7 @@ pub fn run() {
             let service = Service::new(store, vault, paths)?;
             let handle = app.handle().clone();
             service.observe(Arc::new(move |state| {
+                desktop::update_tray(&handle, &state);
                 let _ = handle.emit("orbit://state", state);
             }))?;
             let handle = app.handle().clone();
@@ -140,6 +147,9 @@ pub fn run() {
                 service,
                 _instance: instance,
             });
+            if let Err(error) = desktop::setup(app) {
+                eprintln!("Orbit tray setup failed: {error}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -174,15 +184,9 @@ pub fn run() {
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                let native = window.state::<Native>();
-                if let Ok(settings) = native.service.store.settings() {
-                    if cfg!(target_os = "macos")
-                        && (settings.close_behavior == "keep_running"
-                            || settings.close_behavior == "platform_default")
-                    {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
+                if window.label() == "main" {
+                    api.prevent_close();
+                    desktop::close_main(window.app_handle());
                 }
             }
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
@@ -233,20 +237,18 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("Orbit startup failed");
-    app.run(|app, event| {
-        if matches!(&event, tauri::RunEvent::Exit)
-            && let Some(native) = app.try_state::<Native>()
-        {
-            native.service.stop_claude_mappings();
+    app.run(|app, event| match event {
+        tauri::RunEvent::Ready => desktop::ready(app),
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            desktop::exit_requested(app, code, &api);
         }
-        #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Reopen { .. } = event {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+        tauri::RunEvent::Exit => {
+            if let Some(native) = app.try_state::<Native>() {
+                native.service.stop_claude_mappings();
             }
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = (app, event);
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => desktop::open_main(app),
+        _ => {}
     });
 }

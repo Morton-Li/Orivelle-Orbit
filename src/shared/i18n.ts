@@ -332,8 +332,9 @@ const zh = {
     "退出清除账户和推理凭据，保留安装证明和备份恢复密钥。目标应用可能缓存凭据。",
   "settings.window": "窗口行为",
   "settings.close": "关闭窗口时",
-  "settings.platformDefault": "遵循系统习惯",
-  "settings.keepRunning": "保留进程继续当前任务",
+  "settings.keepRunning": "收起到菜单栏 / 系统托盘",
+  "settings.backgroundHint":
+    "收起后图片任务和 Claude 本地转发继续运行。点击菜单栏或系统托盘图标可重新打开 Orbit，也可从菜单中退出。",
   "settings.quit": "退出应用",
   "settings.quitHint":
     "真正退出与崩溃后不承诺继续生成，未确认的任务会保留待确认状态。",
@@ -737,8 +738,9 @@ const en: Record<keyof typeof zh, string> = {
     "Signing out clears account and inference credentials, retaining installation identity and backup keys. Target applications may cache credentials.",
   "settings.window": "Window behavior",
   "settings.close": "When closing the window",
-  "settings.platformDefault": "Follow platform convention",
-  "settings.keepRunning": "Keep process and current tasks running",
+  "settings.keepRunning": "Keep running in the menu bar / system tray",
+  "settings.backgroundHint":
+    "Image tasks and local Claude forwarding continue while the window is hidden. Use the menu bar or system tray icon to open or quit Orbit.",
   "settings.quit": "Quit application",
   "settings.quitHint":
     "Generation is not guaranteed to continue after quitting or crashing. Unconfirmed tasks retain that status.",
