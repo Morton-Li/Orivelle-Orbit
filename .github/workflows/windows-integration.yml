@@ -8,6 +8,10 @@ on:
         type: choice
         default: all
         options: [all, windows-desktop, macos-dmg]
+      dmg-artifact-run:
+        description: Optional prior run to reuse when only the DMG verifier changed
+        required: false
+        type: string
       baseline-tag:
         description: Published tag whose native data should survive the candidate launch
         required: false
@@ -168,11 +172,55 @@ jobs:
     if: inputs.candidate-tag != '' && inputs.scope != 'windows-desktop'
     runs-on: macos-15
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.dmg-artifact-run != ''
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Require matching build source before reusing the DMG
+        if: inputs.dmg-artifact-run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORBIT_DMG_ARTIFACT_RUN: ${{ inputs.dmg-artifact-run }}
+          ORBIT_CANDIDATE_TAG: ${{ inputs.candidate-tag }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {execFileSync} from 'node:child_process';
+          import {appendFileSync} from 'node:fs';
+          assert(/^\d+$/.test(process.env.ORBIT_DMG_ARTIFACT_RUN));
+          const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.ORBIT_DMG_ARTIFACT_RUN}`, {headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json'}});
+          assert(response.ok);
+          const prior = await response.json();
+          assert.equal(prior.head_repository.full_name, process.env.GITHUB_REPOSITORY);
+          assert(/^[a-f0-9]{40}$/.test(prior.head_sha));
+          execFileSync('git',['merge-base','--is-ancestor',prior.head_sha,'HEAD']);
+          const changed = execFileSync('git',['diff','--name-only',prior.head_sha,'HEAD'],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
+          const allowed = new Set(['scripts/verify-dmg-layout.mjs','.github/workflows/windows-integration.yml','tests/windows/desktop.mjs']);
+          assert(changed.every(file=>allowed.has(file)),`Build source changed: ${changed.join(', ')}`);
+          appendFileSync(process.env.GITHUB_ENV,`ORBIT_DMG_BUILD_SOURCE=${prior.head_sha}\nORBIT_DMG_ARTIFACT_RUN=${process.env.ORBIT_DMG_ARTIFACT_RUN}\n`);
+          execFileSync(process.execPath,['scripts/github-release.mjs','prepare-source',process.env.ORBIT_CANDIDATE_TAG],{stdio:'inherit'});
+          JS
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: inputs.dmg-artifact-run != ''
+        with:
+          name: orbit-macos-dmg-layout
+          path: runtime
+          run-id: ${{ inputs.dmg-artifact-run }}
+          github-token: ${{ github.token }}
+      - name: Prepare the reused DMG verification directory
+        if: inputs.dmg-artifact-run != ''
+        run: mkdir -p runtime/tmp
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: inputs.dmg-artifact-run == ''
         id: macos-cache
         with:
           path: |
@@ -180,13 +228,15 @@ jobs:
             runtime/target
           key: orbit-macos-dmg-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
       - uses: ./.github/actions/prepare-native
+        if: inputs.dmg-artifact-run == ''
         with:
           validate: "false"
           release-tag: ${{ inputs.candidate-tag }}
       - name: Build macOS arm64 candidate
+        if: inputs.dmg-artifact-run == ''
         run: node scripts/native-workflow.mjs github-dmg
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.macos-cache.outputs.cache-hit != 'true'
+        if: inputs.dmg-artifact-run == '' && steps.macos-cache.outputs.cache-hit != 'true'
         with:
           path: |
             runtime/cargo-home/registry

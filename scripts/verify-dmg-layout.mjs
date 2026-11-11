@@ -32,7 +32,12 @@ const work = await mkdtemp(path.join(root, "runtime/tmp/dmg-layout-"));
 const mount = path.join(work, "mounted");
 await mkdir(mount);
 let mounted = false;
-const receipt = { source: process.env.GITHUB_SHA, version: config.version };
+const receipt = {
+  source: process.env.GITHUB_SHA,
+  build_source: process.env.ORBIT_DMG_BUILD_SOURCE ?? process.env.GITHUB_SHA,
+  artifact_run: process.env.ORBIT_DMG_ARTIFACT_RUN ?? process.env.GITHUB_RUN_ID,
+  version: config.version,
+};
 const run = (command, args) =>
   execFileSync(command, args, { encoding: "utf8", timeout: 60_000 });
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -73,19 +78,21 @@ try {
 
   const script = `
 on run argv
-  set diskName to item 1 of argv
+  set mountedFolder to POSIX file (item 1 of argv) as alias
   set appName to item 2 of argv
   tell application "Finder"
     activate
-    open disk diskName
+    open mountedFolder
     delay 2
-    set installWindow to container window of disk diskName
+    set installWindow to front Finder window
+    set installFolder to target of installWindow
     set viewOptions to icon view options of installWindow
-    set appPoint to position of item appName of disk diskName
-    set folderPoint to position of item "Applications" of disk diskName
+    set appPoint to position of item appName of installFolder
+    set folderPoint to position of item "Applications" of installFolder
     set windowBounds to bounds of installWindow
     set picturePath to POSIX path of (background picture of viewOptions as alias)
-    set resultValues to {((current view of installWindow) is icon view) as text, item 1 of appPoint, item 2 of appPoint, item 1 of folderPoint, item 2 of folderPoint, item 1 of windowBounds, item 2 of windowBounds, item 3 of windowBounds, item 4 of windowBounds, picturePath}
+    set folderPath to POSIX path of (installFolder as alias)
+    set resultValues to {((current view of installWindow) is icon view) as text, item 1 of appPoint, item 2 of appPoint, item 1 of folderPoint, item 2 of folderPoint, item 1 of windowBounds, item 2 of windowBounds, item 3 of windowBounds, item 4 of windowBounds, picturePath, folderPath}
   end tell
   set AppleScript's text item delimiters to "|"
   return resultValues as text
@@ -93,7 +100,7 @@ end run`;
   const values = run("/usr/bin/osascript", [
     "-e",
     script,
-    config.productName,
+    mount,
     `${config.productName}.app`,
   ])
     .trim()
@@ -110,6 +117,7 @@ end run`;
   assert.equal(bounds[2] - bounds[0], settings.windowSize.width);
   assert.equal(bounds[3] - bounds[1], settings.windowSize.height);
   assert.equal(await realpath(values[9]), await realpath(background));
+  assert.equal(await realpath(values[10]), await realpath(mount));
   Object.assign(receipt, {
     status: "passed",
     background_sha256: hash(expected),
