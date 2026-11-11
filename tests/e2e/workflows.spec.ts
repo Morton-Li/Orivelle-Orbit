@@ -503,14 +503,16 @@ test("image background defaults to opaque and is submitted while advanced option
   await choose(page, "image-model", "synthetic-image");
   const advanced = page.getByRole("button", { name: "高级选项" });
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".parameter-details")).toContainText("不透明");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
   await advanced.click();
   await expect(page.locator("#image-background")).toContainText("不透明");
+  await expect(page.locator(".parameter-details > .field-hint")).toHaveCount(0);
   await page.locator("#image-background").click();
   await expect(page.getByRole("option")).toHaveText(["不透明", "透明"]);
   await page.keyboard.press("Escape");
   await advanced.click();
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
   await page
     .locator("#image-prompt")
     .fill("Synthetic opaque background request");
@@ -550,7 +552,7 @@ test("available image controls reject legacy catalog choices and sanitize histor
   await page.getByRole("button", { name: "复用参数", exact: true }).click();
   await expect(page.locator("#image-prompt")).toHaveValue(historical.prompt);
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".parameter-details")).toContainText("透明");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
   await advanced.click();
   await expect(page.locator("#image-background")).toContainText("透明");
   for (const id of [

@@ -509,9 +509,6 @@ function historyTask(image: HistoryImage) {
               {{ t("images.backgroundUsageHint") }}
             </p>
           </div>
-          <p v-if="Object.keys(currentParameters).length" class="field-hint">
-            {{ imageParameterSummary(currentParameters) }}
-          </p>
           <p v-if="parameterError" class="error-text" role="alert">
             {{ t(parameterError) }}
           </p>
