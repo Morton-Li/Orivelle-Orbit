@@ -2,18 +2,19 @@ param(
     [Parameter(Mandatory)][int]$OrbitProcess,
     [Parameter(Mandatory)][ValidateSet('state', 'close', 'double-click', 'menu', 'dialog')][string]$Action,
     [string]$Item,
-    [ValidateSet('settings', 'quit')][string]$MenuCommand,
     [string]$Screenshot
 )
 $ErrorActionPreference = 'Stop'
 if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'Use native lifecycle automation only on a GitHub-hosted Windows runner.'
 }
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
-Add-Type -TypeDefinition @'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes, Accessibility
+Add-Type -ReferencedAssemblies ([Accessibility.IAccessible].Assembly.Location) -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using Accessibility;
 
 public static class OrbitLifecycle {
     private delegate bool Callback(IntPtr window, IntPtr data);
@@ -30,6 +31,7 @@ public static class OrbitLifecycle {
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("shell32.dll")] private static extern int Shell_NotifyIconGetRect(ref IconIdentifier identifier, out Rect rect);
+    [DllImport("oleacc.dll")] private static extern int AccessibleObjectFromWindow(IntPtr window, uint objectId, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IAccessible accessible);
 
     public static IntPtr Find(int process, string kind) {
         IntPtr found = IntPtr.Zero;
@@ -66,10 +68,46 @@ public static class OrbitLifecycle {
         var window = Find(process, "main");
         if (window == IntPtr.Zero || !PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero)) throw new Exception("Could not send the native close event.");
     }
-    public static void Click(Rect rect, bool twice) {
+    private static string MenuLabel(string name) {
+        name = (name ?? "").Split('\t')[0];
+        if (name.EndsWith("\u2026")) return name.Substring(0, name.Length - 1);
+        if (name.EndsWith("...")) return name.Substring(0, name.Length - 3);
+        return name;
+    }
+    private static bool FindMenuItem(IAccessible parent, object child, string requested, List<string> names, int depth, out Rect rect) {
+        rect = new Rect();
+        if (depth > 8) return false;
+        string name = parent.get_accName(child);
+        names.Add(name ?? "(unnamed)");
+        if (Convert.ToInt32(parent.get_accRole(child)) == 12 && MenuLabel(name) == MenuLabel(requested) &&
+            (Convert.ToInt32(parent.get_accState(child)) & 1) == 0) {
+            int x, y, width, height;
+            parent.accLocation(out x, out y, out width, out height, child);
+            rect = new Rect { Left = x, Top = y, Right = x + width, Bottom = y + height };
+            return width > 0 && height > 0;
+        }
+        if (!child.Equals(0)) return false;
+        for (int id = 1; id <= parent.accChildCount; id++) {
+            var accessible = parent.get_accChild(id) as IAccessible;
+            if (FindMenuItem(accessible ?? parent, accessible == null ? (object)id : 0, requested, names, depth + 1, out rect)) return true;
+        }
+        return false;
+    }
+    public static Rect MenuItemRect(int process, string requested) {
+        var menu = Find(process, "menu");
+        var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");
+        IAccessible accessible;
+        int result = AccessibleObjectFromWindow(menu, 0xFFFFFFFC, ref iid, out accessible);
+        if (result != 0 || accessible == null) throw new Exception("Could not read the native popup menu through MSAA: " + result);
+        var names = new List<string>();
+        Rect rect;
+        if (FindMenuItem(accessible, 0, requested, names, 0, out rect)) return rect;
+        throw new Exception("The native menu item was not found: " + requested + ". MSAA items: " + string.Join(" | ", names));
+    }
+    public static void Click(Rect rect, bool twice, bool right) {
         if (!SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2)) throw new Exception("Could not position the native pointer.");
-        uint down = twice ? 0x0002u : 0x0008u;
-        uint up = twice ? 0x0004u : 0x0010u;
+        uint down = right ? 0x0008u : 0x0002u;
+        uint up = right ? 0x0010u : 0x0004u;
         mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero);
         if (twice) {
             System.Threading.Thread.Sleep(80);
@@ -107,11 +145,10 @@ if ($Action -eq 'double-click' -or $Action -eq 'menu') {
             break
         }
     }
-    [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click')
+    [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click', $Action -eq 'menu')
 }
 
 if ($Action -eq 'menu') {
-    if (-not $MenuCommand) { throw 'Select a known Orbit tray menu command.' }
     $deadline = (Get-Date).AddSeconds(10)
     do {
         $menu = [OrbitLifecycle]::Find($OrbitProcess, 'menu')
@@ -120,13 +157,11 @@ if ($Action -eq 'menu') {
     } while ((Get-Date) -lt $deadline)
     if ($menu -eq [IntPtr]::Zero) { Save-Screen; throw 'The native Orbit popup menu did not open.' }
     Save-Screen
-    # The Win32 popup has no UIA menu children on hosted Windows. Navigate the
-    # real menu: Home selects Open, Down selects Settings, End selects Quit.
-    # The caller separately verifies the resulting route or native quit guard.
-    $keys = if ($MenuCommand -eq 'settings') { '{HOME}{DOWN}{ENTER}' } else { '{END}{ENTER}' }
-    [Windows.Forms.SendKeys]::SendWait($keys)
+    # Read the standard Win32 popup with MSAA and click the exact named item.
+    # https://learn.microsoft.com/windows/win32/winauto/menu-item
+    [OrbitLifecycle]::Click([OrbitLifecycle]::MenuItemRect($OrbitProcess, $Item), $false, $false)
     $selected = $true
-    $name = $MenuCommand
+    $name = $Item
 }
 
 if ($Action -eq 'dialog') {
@@ -135,13 +170,10 @@ if ($Action -eq 'dialog') {
     $available = @()
     do {
         $root = [Windows.Automation.AutomationElement]::RootElement
-        if ($Action -eq 'dialog') {
-            $dialog = [OrbitLifecycle]::Find($OrbitProcess, 'dialog')
-            if ($dialog -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; continue }
-            $root = [Windows.Automation.AutomationElement]::FromHandle($dialog)
-        }
-        $controlType = if ($Action -eq 'menu') { [Windows.Automation.ControlType]::MenuItem } else { [Windows.Automation.ControlType]::Button }
-        $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), $controlType
+        $dialog = [OrbitLifecycle]::Find($OrbitProcess, 'dialog')
+        if ($dialog -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; continue }
+        $root = [Windows.Automation.AutomationElement]::FromHandle($dialog)
+        $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::Button)
         $elements = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
         $element = $null
         $available = @()
