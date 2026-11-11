@@ -26,6 +26,7 @@ import StatusBadge from "../components/StatusBadge.vue";
 import PriceDetails from "../components/PriceDetails.vue";
 import {
   imageParameterFields,
+  availableImageConstraints,
   imageParameterLabel,
   imageParameterError,
   supportedImageParameters,
@@ -40,7 +41,6 @@ const modelId = ref("");
 const inputs = ref<ImageInput[]>([]);
 const parameters = ref<ImageParameters>({});
 const advanced = ref(false);
-const customSize = ref(false);
 const activeTaskId = ref<string | null>(null);
 const enlarged = ref<HistoryImage | null>(null);
 const deleteImageIds = ref<string[]>([]);
@@ -51,7 +51,9 @@ let alive = true;
 const model = computed(
   () => store.imageModels.find((item) => item.id === modelId.value) ?? null,
 );
-const constraints = computed(() => model.value?.image_parameters ?? null);
+const constraints = computed(() =>
+  availableImageConstraints(model.value?.image_parameters ?? null),
+);
 const currentNode = computed(() => {
   const index = store.state.nodes.findIndex(
     (node) => node.id === store.activeConnection?.node_id,
@@ -68,11 +70,6 @@ function supportedParameters(values: ImageParameters): ImageParameters {
 const currentParameters = computed(() => parameters.value);
 const parameterError = computed(() =>
   model.value ? imageParameterError(parameters.value, constraints.value) : null,
-);
-const compressionAvailable = computed(
-  () =>
-    !!constraints.value?.output_compression &&
-    ["jpeg", "webp"].includes(parameters.value.output_format ?? ""),
 );
 const promptBytes = computed(() => utf8Bytes(prompt.value));
 const promptLimit = computed(() =>
@@ -167,7 +164,6 @@ watch(
     modelId.value = "";
     parameters.value = {};
     advanced.value = false;
-    customSize.value = false;
     activeTaskId.value = null;
     enlarged.value = null;
     deleteImageIds.value = [];
@@ -175,14 +171,10 @@ watch(
 );
 watch(modelId, () => {
   parameters.value = {};
-  customSize.value = false;
 });
-watch(
-  () => parameters.value.output_format,
-  () => {
-    if (!compressionAvailable.value) delete parameters.value.output_compression;
-  },
-);
+watch(constraints, () => {
+  parameters.value = supportedParameters(parameters.value);
+});
 watch(
   () => store.imageModels,
   () => {
@@ -320,9 +312,6 @@ async function reuse(task: TaskView) {
     if (captured !== store.scope) return;
     prompt.value = result.prompt;
     parameters.value = supportedParameters(result.parameters);
-    customSize.value =
-      !!parameters.value.size &&
-      !constraints.value?.sizes.includes(parameters.value.size);
     advanced.value = Object.keys(parameters.value).length > 0;
     inputs.value = result.inputs;
     tab.value = "create";
@@ -341,13 +330,6 @@ async function deleteHistory() {
   }
 }
 function setParameter(key: ImageSelectParameter, value: string) {
-  if (key === "size") {
-    customSize.value = value === "custom";
-    if (value === "custom") {
-      parameters.value.size = "1024x1024";
-      return;
-    }
-  }
   if (value === "default") {
     const next = { ...parameters.value };
     delete next[key];
@@ -357,16 +339,6 @@ function setParameter(key: ImageSelectParameter, value: string) {
       ...parameters.value,
       [key]: key === "n" ? Number(value) : value,
     };
-}
-function setDimension(axis: number, event: Event) {
-  const dimensions = (parameters.value.size ?? "1024x1024").split("x");
-  dimensions[axis] = (event.target as HTMLInputElement).value;
-  parameters.value.size = dimensions.join("x");
-}
-function setCompression(event: Event) {
-  const value = (event.target as HTMLInputElement).value;
-  if (value === "") delete parameters.value.output_compression;
-  else parameters.value.output_compression = Number(value);
 }
 function historyTask(image: HistoryImage) {
   return store.tasks.find(
@@ -517,9 +489,7 @@ function historyTask(image: HistoryImage) {
                 <OrbitSelect
                   :id="`image-${field.key}`"
                   :model-value="
-                    field.key === 'size' && customSize
-                      ? 'custom'
-                      : String(currentParameters[field.key] ?? 'default')
+                    String(currentParameters[field.key] ?? 'default')
                   "
                   :disabled="active"
                   :options="[
@@ -528,68 +498,17 @@ function historyTask(image: HistoryImage) {
                       value,
                       label: imageParameterLabel(value),
                     })),
-                    ...(field.key === 'size' && constraints.custom_size
-                      ? [{ value: 'custom', label: t('images.customSize') }]
-                      : []),
                   ]"
                   @update:model-value="setParameter(field.key, $event)"
-                />
-              </div>
-              <template v-if="customSize && constraints.custom_size">
-                <div class="field">
-                  <label for="image-width" class="field-label">{{
-                    t("images.width")
-                  }}</label>
-                  <input
-                    id="image-width"
-                    type="number"
-                    min="16"
-                    :max="constraints.custom_size.max_edge"
-                    step="16"
-                    :value="parameters.size?.split('x')[0]"
-                    :disabled="active"
-                    @input="setDimension(0, $event)"
-                  />
-                </div>
-                <div class="field">
-                  <label for="image-height" class="field-label">{{
-                    t("images.height")
-                  }}</label>
-                  <input
-                    id="image-height"
-                    type="number"
-                    min="16"
-                    :max="constraints.custom_size.max_edge"
-                    step="16"
-                    :value="parameters.size?.split('x')[1]"
-                    :disabled="active"
-                    @input="setDimension(1, $event)"
-                  />
-                </div>
-              </template>
-              <div v-if="compressionAvailable" class="field">
-                <label for="image-compression" class="field-label">{{
-                  t("images.compression")
-                }}</label>
-                <input
-                  id="image-compression"
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="1"
-                  :value="parameters.output_compression ?? ''"
-                  :placeholder="t('images.default')"
-                  :disabled="active"
-                  @input="setCompression"
                 />
               </div>
             </div>
             <p v-else class="field-hint">{{ t("images.noAdvancedOptions") }}</p>
             <p
-              v-if="parameterFields.length && !constraints.verified"
+              v-if="parameterFields.some((field) => field.key === 'background')"
               class="field-hint"
             >
-              {{ t("images.unverified") }}
+              {{ t("images.backgroundUsageHint") }}
             </p>
           </div>
           <p v-if="Object.keys(currentParameters).length" class="field-hint">

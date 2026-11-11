@@ -465,8 +465,7 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   expect(await calls(page, "create_image_task")).toBe(0);
   await expect(page.locator("#image-quality")).toHaveCount(0);
   await page.getByRole("button", { name: "高级选项" }).click();
-  await choose(page, "image-quality", "高");
-  await choose(page, "image-n", "2");
+  await choose(page, "image-background", "透明");
   await page.locator("#image-prompt").fill("Synthetic image prompt");
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(
@@ -479,7 +478,7 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
         (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
           .lastRequests.create_image_task?.parameters,
     ),
-  ).toEqual({ quality: "high", n: 2 });
+  ).toEqual({ background: "transparent" });
 
   await expect(
     page.getByText("SYNTHETIC_SECRET_SHOULD_NOT_RENDER"),
@@ -496,56 +495,60 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   await expect(page.getByRole("button", { name: "重试生成" })).toHaveCount(0);
 });
 
-test("advanced image options remain selected when collapsed and invalid combinations never submit", async ({
+test("available image controls reject legacy catalog choices and sanitize history reuse", async ({
   page,
 }) => {
-  await fixture(page);
+  const state = bootstrap();
+  const historical = task("completed");
+  historical.prompt = "Synthetic historical request";
+  historical.parameters = {
+    n: 3,
+    quality: "max",
+    size: "1536x864",
+    output_format: "webp",
+    output_compression: 0,
+    complexity: "high",
+    background: "transparent",
+  };
+  state.tasks = [historical];
+  await fixture(page, { state });
   await page.goto("/#/images");
   await choose(page, "image-model", "synthetic-image");
-  await page.locator("#image-prompt").fill("Synthetic static image parameters");
   const advanced = page.getByRole("button", { name: "高级选项" });
-  const generate = page.getByRole("button", { name: "生成图片", exact: true });
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
-  await advanced.click();
-  await choose(page, "image-size", "自定义尺寸");
-  await page.locator("#image-width").fill("256");
-  await page.locator("#image-height").fill("256");
-  await expect(generate).toBeDisabled();
-  await expect(page.getByRole("alert")).toContainText("总像素");
-  await page.locator("#image-width").fill("1536");
-  await page.locator("#image-height").fill("864");
-  await choose(page, "image-quality", "最高");
-  await choose(page, "image-n", "2");
-  await choose(page, "image-background", "透明");
-  await choose(page, "image-output_format", "JPEG");
-  await expect(generate).toBeDisabled();
-  await expect(page.getByRole("alert")).toContainText("PNG 或 WebP");
-  expect(await calls(page, "create_image_task")).toBe(0);
-  await choose(page, "image-output_format", "WEBP");
-  await page.locator("#image-compression").fill("0");
-  await choose(page, "image-complexity", "低");
-  await expect(generate).toBeEnabled();
+  await page.getByRole("button", { name: "复用参数", exact: true }).click();
+  await expect(page.locator("#image-prompt")).toHaveValue(historical.prompt);
+  await expect(advanced).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#image-background")).toContainText("透明");
+  for (const id of [
+    "image-n",
+    "image-size",
+    "image-width",
+    "image-height",
+    "image-quality",
+    "image-output_format",
+    "image-compression",
+    "image-complexity",
+  ])
+    await expect(page.locator("#" + id)).toHaveCount(0);
+  await expect(page.locator(".parameter-details")).toContainText(
+    "透明背景可能增加图片 token 用量",
+  );
+  // Historical facts remain readable even though their controls cannot be submitted again.
+  await expect(page.locator(".task-facts")).toContainText("1536x864");
   await page.locator(".parameter-details").screenshot({
-    path: ".cache/evidence/images-advanced-options-panel.png",
+    path: ".cache/evidence/images-available-controls-panel.png",
   });
   await advanced.click();
-  await expect(page.locator("#image-quality")).toHaveCount(0);
-  await generate.click();
+  await expect(page.locator("#image-background")).toHaveCount(0);
+  await page.getByRole("button", { name: "生成图片", exact: true }).click();
   expect(
     await page.evaluate(
       () =>
         (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
           .lastRequests.create_image_task?.parameters,
     ),
-  ).toEqual({
-    size: "1536x864",
-    quality: "max",
-    n: 2,
-    background: "transparent",
-    output_format: "webp",
-    output_compression: 0,
-    complexity: "low",
-  });
+  ).toEqual({ background: "transparent" });
   expect(await calls(page, "create_image_task")).toBe(1);
 });
 

@@ -165,6 +165,25 @@ pub struct ImageParameterConstraints {
     #[serde(default)]
     pub request_timeout_seconds: Option<u64>,
 }
+impl ImageParameterConstraints {
+    /// New product tasks expose only controls established on the Codex route.
+    /// Keep the serializable parameter types intact for historical snapshots.
+    pub fn available_controls(&self) -> Self {
+        let mut controls = self.clone();
+        controls.max_results = controls.max_results.min(1);
+        controls.max_inputs = controls.max_inputs.min(5);
+        controls.qualities.clear();
+        controls.sizes.clear();
+        controls
+            .backgrounds
+            .retain(|value| matches!(value.as_str(), "opaque" | "transparent"));
+        controls.output_formats.clear();
+        controls.output_compression = false;
+        controls.complexities.clear();
+        controls.custom_size = None;
+        controls
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSizeConstraints {
     pub multiple: u32,

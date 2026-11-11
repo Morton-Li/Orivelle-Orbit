@@ -1,6 +1,22 @@
 {
   "contract": "codex-images-static-parameters-v1",
   "evidence_scope": "synthetic_contract_not_real_upstream",
+  "codex_available_controls": {
+    "contract": "codex-images-static-parameters-v1",
+    "max_results": 1,
+    "max_inputs": 5,
+    "maximum_request_bytes": 67108864,
+    "prompt_maximum_bytes": 32768,
+    "qualities": [],
+    "sizes": [],
+    "backgrounds": ["opaque", "transparent"],
+    "output_formats": [],
+    "output_compression": false,
+    "complexities": [],
+    "custom_size": null,
+    "request_timeout_seconds": 630,
+    "verified": false
+  },
   "models": {
     "gpt-image-2": {
       "contract": "codex-images-static-parameters-v1",

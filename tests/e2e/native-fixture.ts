@@ -154,6 +154,18 @@ export async function fixture(
               };
             return created;
           }
+          if (command === "reuse_task_parameters") {
+            const found = current.tasks.find(
+              (item) => item.id === request.task_id,
+            );
+            if (!found) throw { code: "task_unavailable" };
+            return {
+              prompt: found.prompt,
+              model_id: found.requested_model,
+              parameters: structuredClone(found.parameters),
+              inputs: [],
+            };
+          }
           if (command === "retry_local_save") {
             const found = current.tasks.find(
               (item) => item.id === request.task_id,

@@ -8,12 +8,39 @@ import {
   supportedImageParameters,
   imageFailureMessage,
   imageParameterSummary,
+  availableImageConstraints,
+  imageParameterFields,
 } from "../../src/shared/image-parameters";
 import { publicFailure } from "../../src/shared/bridge";
 import fixture from "../contracts/images-parameters.json" with { type: "json" };
 
 const caps = fixture.models["gpt-image-2.5-flare"] as ImageParameterConstraints;
 describe("declared static image parameters", () => {
+  it("restricts a legacy catalog and reused parameters to available product controls", () => {
+    const available = availableImageConstraints(caps);
+    expect(available).toEqual(fixture.codex_available_controls);
+    expect(imageParameterFields(available).map((field) => field.key)).toEqual([
+      "background",
+    ]);
+    const oldParameters: ImageParameters = {
+      n: 3,
+      quality: "max",
+      size: "1536x864",
+      output_format: "webp",
+      output_compression: 0,
+      complexity: "high",
+      background: "transparent",
+    };
+    expect(supportedImageParameters(oldParameters, available)).toEqual({
+      background: "transparent",
+    });
+    expect(imageParameterError(oldParameters, available)).not.toBeNull();
+    expect(
+      imageParameterError({ background: "transparent" }, available),
+    ).toBeNull();
+    expect(caps.output_formats).toContain("webp");
+    expect(caps.max_results).toBe(5);
+  });
   it("keeps absent result parameters distinct from requested service defaults", () => {
     expect(
       imageParameterSummary({
