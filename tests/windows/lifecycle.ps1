@@ -111,6 +111,7 @@ if ($Action -eq 'double-click' -or $Action -eq 'menu') {
 if ($Action -eq 'menu' -or $Action -eq 'dialog') {
     $deadline = (Get-Date).AddSeconds(10)
     $selected = $false
+    $available = @()
     do {
         $root = [Windows.Automation.AutomationElement]::RootElement
         if ($Action -eq 'dialog') {
@@ -118,8 +119,20 @@ if ($Action -eq 'menu' -or $Action -eq 'dialog') {
             if ($dialog -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; continue }
             $root = [Windows.Automation.AutomationElement]::FromHandle($dialog)
         }
-        $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::NameProperty), $Item
-        $element = $root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+        $controlType = if ($Action -eq 'menu') { [Windows.Automation.ControlType]::MenuItem } else { [Windows.Automation.ControlType]::Button }
+        $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), $controlType
+        $elements = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+        $element = $null
+        $available = @()
+        foreach ($candidate in $elements) {
+            $name = $candidate.Current.Name
+            $available += $name
+            # Win32 accessibility can expose an ellipsis as three periods or omit it.
+            # Keep the control type and the rest of the label exact.
+            $accessibleName = [regex]::Replace($name, '(?:\.{3}|\u2026)$', '')
+            $requestedName = [regex]::Replace($Item, '(?:\.{3}|\u2026)$', '')
+            if ($accessibleName -ceq $requestedName) { $element = $candidate; break }
+        }
         if ($element -and $element.Current.IsEnabled) {
             Save-Screen
             $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
@@ -128,7 +141,7 @@ if ($Action -eq 'menu' -or $Action -eq 'dialog') {
         }
         Start-Sleep -Milliseconds 100
     } while ((Get-Date) -lt $deadline)
-    if (-not $selected) { Save-Screen; throw "The native $Action item '$Item' did not become available." }
+    if (-not $selected) { Save-Screen; throw "The native $Action item '$Item' did not become available. Accessible items: $($available -join ' | ')" }
 }
 if ($Action -eq 'state') { Save-Screen }
 $main = [OrbitLifecycle]::Find($OrbitProcess, 'main')
@@ -137,4 +150,5 @@ $tray = [OrbitLifecycle]::Find($OrbitProcess, 'tray')
     main_exists = $main -ne [IntPtr]::Zero
     main_visible = $main -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($main)
     tray_exists = $tray -ne [IntPtr]::Zero
+    selected_item = if ($selected) { $name } else { $null }
 } | ConvertTo-Json -Compress
