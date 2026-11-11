@@ -188,7 +188,7 @@ fn application_menu(
 fn tray_icon(_app: &App) -> tauri::Result<tauri::image::Image<'static>> {
     #[cfg(target_os = "windows")]
     if let Some(icon) = _app.default_window_icon() {
-        return Ok(icon.clone());
+        return Ok(icon.clone().to_owned());
     }
     let image = image::load_from_memory(include_bytes!("../icons/tray-template@2x.png"))
         .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?

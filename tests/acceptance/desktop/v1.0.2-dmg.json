@@ -1,0 +1,17 @@
+{
+  "run_url": "https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43070439297",
+  "layout": {
+    "source": "e1f379c5df553f5c734fb9b03652a7cb0cee2ff2",
+    "build_source": "29f4cec81cb2c38f2c5bce12dfd9842fd6569c50",
+    "artifact_run": "43064366241",
+    "version": "1.0.2",
+    "status": "passed",
+    "background_sha256": "6b2c3d2df6fa88b6c7d6454ba9b061c354a6873afc5e3844413cfbbd4a468b92",
+    "background_evidence": "Exact mounted image bytes and native Finder screenshot",
+    "app_position": [180, 220],
+    "applications_position": [480, 220],
+    "window_bounds": [10, 60, 670, 480],
+    "screenshot": "finder-installation.png",
+    "applications_target": "/Applications"
+  }
+}

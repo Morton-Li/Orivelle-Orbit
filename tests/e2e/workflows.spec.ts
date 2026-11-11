@@ -8,6 +8,25 @@ import {
   type FixtureControl,
 } from "./native-fixture";
 
+test.describe("Windows window chrome", () => {
+  test.use({
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36",
+  });
+  test("Windows native window metadata keeps the application and settings usable", async ({
+    page,
+  }) => {
+    await fixture(page);
+    await page.goto("/#/settings");
+    await expect(page.locator(".window-controls button")).toHaveCount(3);
+    await expect(page.locator("#setting-close")).toBeVisible();
+    await expect(
+      page.getByText("合成测试数据 · 不代表真实接入或结算"),
+    ).toBeVisible();
+    expect(await calls(page, "bootstrap")).toBe(1);
+  });
+});
+
 async function choose(page: Page, id: string, label: string) {
   await page.locator(`#${id}`).click();
   await page.getByRole("option", { name: label, exact: true }).click();

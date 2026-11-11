@@ -46,6 +46,7 @@ export async function fixture(
       const testWindow = window as unknown as {
         isTauri: boolean;
         __TAURI_INTERNALS__: {
+          metadata: { currentWindow: { label: string } };
           invoke: (
             command: string,
             args?: Record<string, unknown>,
@@ -92,12 +93,14 @@ export async function fixture(
         },
       };
       testWindow.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "main" } },
         transformCallback(callback) {
           const id = ++next;
           callbacks.set(id, callback);
           return id;
         },
         async invoke(command, args = {}) {
+          if (command === "plugin:window|is_maximized") return false;
           if (command === "plugin:event|listen") {
             const name = String(args.event);
             if (!listeners.has(name)) listeners.set(name, new Set());
