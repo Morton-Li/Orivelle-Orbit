@@ -54,6 +54,19 @@ public static class OrbitLifecycle {
         }, IntPtr.Zero);
         return found;
     }
+    public static bool OverflowVisible() {
+        bool visible = false;
+        EnumWindows((window, data) => {
+            var name = new StringBuilder(256);
+            GetClassName(window, name, name.Capacity);
+            if (name.ToString() == "TopLevelWindowForOverflowXamlIsland" && IsWindowVisible(window)) {
+                visible = true;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return visible;
+    }
     public static Rect IconRect(int process) {
         var window = Find(process, "tray");
         if (window == IntPtr.Zero) throw new Exception("The native tray window was not created.");
@@ -134,15 +147,20 @@ function Save-Screen {
 if ($Action -eq 'close') { [OrbitLifecycle]::Close($OrbitProcess) }
 if ($Action -eq 'double-click' -or $Action -eq 'menu') {
     # Newly registered icons may start in Windows' overflow panel.
-    $buttons = [Windows.Automation.AutomationElement]::RootElement.FindAll(
-        [Windows.Automation.TreeScope]::Descendants,
-        (New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::Button))
-    )
-    foreach ($button in $buttons) {
-        if ($button.Current.AutomationId -eq 'SystemTrayIcon' -or $button.Current.Name -eq 'Show hidden icons') {
-            $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-            Start-Sleep -Milliseconds 250
-            break
+    # Invoking an already-open panel closes it and leaves the icon rect stale.
+    if (-not [OrbitLifecycle]::OverflowVisible()) {
+        $buttons = [Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            (New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::Button))
+        )
+        foreach ($button in $buttons) {
+            if ($button.Current.AutomationId -eq 'SystemTrayIcon' -or $button.Current.Name -eq 'Show hidden icons') {
+                $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+                $deadline = (Get-Date).AddSeconds(5)
+                while (-not [OrbitLifecycle]::OverflowVisible() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+                if (-not [OrbitLifecycle]::OverflowVisible()) { Save-Screen; throw 'The Windows tray overflow panel did not open.' }
+                break
+            }
         }
     }
     [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click', $Action -eq 'menu')
