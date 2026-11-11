@@ -4826,6 +4826,7 @@ fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod image_live_demo;
     #[cfg(target_os = "macos")]
     mod macos_config_roundtrip;
     #[cfg(target_os = "macos")]
