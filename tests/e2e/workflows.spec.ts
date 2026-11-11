@@ -495,6 +495,36 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   await expect(page.getByRole("button", { name: "重试生成" })).toHaveCount(0);
 });
 
+test("image background defaults to opaque and is submitted while advanced options stay collapsed", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await choose(page, "image-model", "synthetic-image");
+  const advanced = page.getByRole("button", { name: "高级选项" });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toContainText("不透明");
+  await advanced.click();
+  await expect(page.locator("#image-background")).toContainText("不透明");
+  await page.locator("#image-background").click();
+  await expect(page.getByRole("option")).toHaveText(["不透明", "透明"]);
+  await page.keyboard.press("Escape");
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await page
+    .locator("#image-prompt")
+    .fill("Synthetic opaque background request");
+  await page.getByRole("button", { name: "生成图片", exact: true }).click();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.create_image_task?.parameters,
+    ),
+  ).toEqual({ background: "opaque" });
+  expect(await calls(page, "create_image_task")).toBe(1);
+});
+
 test("available image controls reject legacy catalog choices and sanitize history reuse", async ({
   page,
 }) => {
@@ -516,9 +546,12 @@ test("available image controls reject legacy catalog choices and sanitize histor
   await choose(page, "image-model", "synthetic-image");
   const advanced = page.getByRole("button", { name: "高级选项" });
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await advanced.click();
   await page.getByRole("button", { name: "复用参数", exact: true }).click();
   await expect(page.locator("#image-prompt")).toHaveValue(historical.prompt);
-  await expect(advanced).toHaveAttribute("aria-expanded", "true");
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toContainText("透明");
+  await advanced.click();
   await expect(page.locator("#image-background")).toContainText("透明");
   for (const id of [
     "image-n",
@@ -537,7 +570,7 @@ test("available image controls reject legacy catalog choices and sanitize histor
   // Historical facts remain readable even though their controls cannot be submitted again.
   await expect(page.locator(".task-facts")).toContainText("1536x864");
   await page.locator(".parameter-details").screenshot({
-    path: ".cache/evidence/images-available-controls-panel.png",
+    path: ".cache/evidence/images-background-explicit-choice.png",
   });
   await advanced.click();
   await expect(page.locator("#image-background")).toHaveCount(0);

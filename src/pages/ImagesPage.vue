@@ -65,7 +65,12 @@ const currentNode = computed(() => {
 });
 const parameterFields = computed(() => imageParameterFields(constraints.value));
 function supportedParameters(values: ImageParameters): ImageParameters {
-  return supportedImageParameters(values, constraints.value);
+  const supported = supportedImageParameters(values, constraints.value);
+  const backgrounds = constraints.value?.backgrounds ?? [];
+  const background =
+    supported.background ??
+    (backgrounds.includes("opaque") ? "opaque" : backgrounds[0]);
+  return background ? { ...supported, background } : supported;
 }
 const currentParameters = computed(() => parameters.value);
 const parameterError = computed(() =>
@@ -170,7 +175,8 @@ watch(
   },
 );
 watch(modelId, () => {
-  parameters.value = {};
+  parameters.value = supportedParameters({});
+  advanced.value = false;
 });
 watch(constraints, () => {
   parameters.value = supportedParameters(parameters.value);
@@ -312,7 +318,7 @@ async function reuse(task: TaskView) {
     if (captured !== store.scope) return;
     prompt.value = result.prompt;
     parameters.value = supportedParameters(result.parameters);
-    advanced.value = Object.keys(parameters.value).length > 0;
+    advanced.value = false;
     inputs.value = result.inputs;
     tab.value = "create";
   }
@@ -330,15 +336,10 @@ async function deleteHistory() {
   }
 }
 function setParameter(key: ImageSelectParameter, value: string) {
-  if (value === "default") {
-    const next = { ...parameters.value };
-    delete next[key];
-    parameters.value = next;
-  } else
-    parameters.value = {
-      ...parameters.value,
-      [key]: key === "n" ? Number(value) : value,
-    };
+  parameters.value = {
+    ...parameters.value,
+    [key]: key === "n" ? Number(value) : value,
+  };
 }
 function historyTask(image: HistoryImage) {
   return store.tasks.find(
@@ -488,12 +489,9 @@ function historyTask(image: HistoryImage) {
                 }}</label>
                 <OrbitSelect
                   :id="`image-${field.key}`"
-                  :model-value="
-                    String(currentParameters[field.key] ?? 'default')
-                  "
+                  :model-value="String(currentParameters[field.key] ?? '')"
                   :disabled="active"
                   :options="[
-                    { value: 'default', label: t('images.default') },
                     ...field.values.map((value) => ({
                       value,
                       label: imageParameterLabel(value),
