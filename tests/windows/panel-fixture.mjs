@@ -81,12 +81,32 @@ export async function startPanelFixture() {
   const model = wire.models_reply.data.find(
     (item) => item.model_category === "image",
   );
+  const contracts = JSON.parse(
+    await readFile(
+      new URL("../contracts/images-parameters.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  for (const catalog of [
+    wire.bootstrap_reply.data.models,
+    wire.models_reply.data,
+  ]) {
+    for (const item of catalog.filter(
+      (entry) => entry.model_category === "image",
+    )) {
+      // Deliberately advertise the legacy wider catalog. The current product
+      // must restrict new requests while keeping old request facts readable.
+      item.image_parameters = structuredClone(contracts.models["gpt-image-2"]);
+    }
+  }
   const code = "C".repeat(43);
   const authorizationUrl =
     panelOrigin + "/orbit/authorize?request=" + start.authorization_request_id;
   const imageRequests = new Set();
   const requests = new Map();
   const failures = [];
+  const imageBodies = [];
+  let nextImage;
   let installation;
   let approved = false;
   let revoked = false;
@@ -201,11 +221,18 @@ export async function startPanelFixture() {
             "Bearer " + credential.plain_text_token,
           );
           const image = JSON.parse(body);
+          imageBodies.push({ route, body: image });
           assert.equal(image.model, model.id);
           assert.equal(image.response_format, "b64_json");
           if (route.endsWith("/edits")) {
             assert.equal(image.images.length, 1);
             assert.match(image.images[0].image_url, /^data:image\/png;base64,/);
+          }
+          if (nextImage) {
+            const pending = nextImage;
+            nextImage = undefined;
+            pending.received();
+            await pending.released;
           }
           const id = randomUUID();
           imageRequests.add(id);
@@ -283,6 +310,20 @@ export async function startPanelFixture() {
     png,
     requests,
     failures,
+    imageBodies,
+    holdNextImage: () => {
+      assert.equal(nextImage, undefined);
+      let received;
+      let release;
+      const seen = new Promise((resolve) => {
+        received = resolve;
+      });
+      const released = new Promise((resolve) => {
+        release = resolve;
+      });
+      nextImage = { received, released };
+      return { received: seen, release };
+    },
     close: () => {
       server.closeAllConnections();
       server.close();

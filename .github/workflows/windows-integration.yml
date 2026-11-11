@@ -2,6 +2,15 @@ name: Windows Integration
 
 on:
   workflow_dispatch:
+    inputs:
+      baseline-tag:
+        description: Published tag whose native data should survive the candidate launch
+        required: false
+        type: string
+      candidate-tag:
+        description: Optional release version to apply in the hosted checkout
+        required: false
+        type: string
   push:
     branches: [develop]
     paths:
@@ -10,6 +19,9 @@ on:
       - "crates/orbit-core/src/**"
       - "scripts/native-workflow.mjs"
       - "src-tauri/src/**"
+      - "src/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
       - "tests/build/**"
       - "tests/windows/**"
 
@@ -37,6 +49,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Parse Windows acceptance scripts
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem tests/windows/*.ps1) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -78,9 +100,10 @@ jobs:
       - uses: ./.github/actions/prepare-native
         with:
           validate: "false"
+          release-tag: ${{ inputs.candidate-tag }}
 
-      - name: Build Windows x64 candidate
-        run: node scripts/native-workflow.mjs candidate
+      - name: Build Windows x64 installer
+        run: node scripts/native-workflow.mjs github-bundle
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.cargo-cache.outputs.cache-hit != 'true'
@@ -111,7 +134,13 @@ jobs:
             }
           }
 
-      - name: Exercise the Orbit desktop executable
+      - name: Verify installers and prepare the published baseline
+        shell: pwsh
+        env:
+          ORBIT_BASELINE_TAG: ${{ inputs.baseline-tag }}
+        run: ./tests/windows/prepare-installers.ps1
+
+      - name: Exercise the packaged Orbit desktop executable
         shell: pwsh
         run: ./tests/windows/with-panel-fixture.ps1
 
@@ -123,5 +152,21 @@ jobs:
             runtime/logs/native-preflight.json
             runtime/logs/candidate-manifest.json
             runtime/logs/windows-integration/
+            runtime/github-release/*-setup.exe
           if-no-files-found: ignore
           retention-days: 7
+
+  macos:
+    name: Check macOS arm64 candidate
+    if: inputs.candidate-tag != ''
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-native
+        with:
+          release-tag: ${{ inputs.candidate-tag }}
+      - name: Build macOS arm64 candidate
+        run: node scripts/native-workflow.mjs github-bundle

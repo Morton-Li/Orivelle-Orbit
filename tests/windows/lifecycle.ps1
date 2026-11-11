@@ -1,0 +1,140 @@
+param(
+    [Parameter(Mandatory)][int]$OrbitProcess,
+    [Parameter(Mandatory)][ValidateSet('state', 'close', 'double-click', 'menu', 'dialog')][string]$Action,
+    [string]$Item,
+    [string]$Screenshot
+)
+$ErrorActionPreference = 'Stop'
+if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
+    throw 'Use native lifecycle automation only on a GitHub-hosted Windows runner.'
+}
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class OrbitLifecycle {
+    private delegate bool Callback(IntPtr window, IntPtr data);
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] private struct IconIdentifier {
+        public uint Size; public IntPtr Window; public uint Id; public Guid Guid;
+    }
+    [DllImport("user32.dll")] private static extern bool EnumWindows(Callback callback, IntPtr data);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder name, int size);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    [DllImport("shell32.dll")] private static extern int Shell_NotifyIconGetRect(ref IconIdentifier identifier, out Rect rect);
+
+    public static IntPtr Find(int process, string kind) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((window, data) => {
+            uint owner;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner != (uint)process) return true;
+            var name = new StringBuilder(256);
+            GetClassName(window, name, name.Capacity);
+            string cls = name.ToString();
+            GetWindowText(window, name, name.Capacity);
+            if ((kind == "tray" && cls == "tray_icon_app") ||
+                (kind == "main" && cls != "#32770" && name.ToString() == "Orivelle Orbit") ||
+                (kind == "dialog" && cls == "#32770" && IsWindowVisible(window))) {
+                found = window;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static Rect IconRect(int process) {
+        var window = Find(process, "tray");
+        if (window == IntPtr.Zero) throw new Exception("The native tray window was not created.");
+        for (uint id = 1; id <= 32; id++) {
+            var identifier = new IconIdentifier { Size = (uint)Marshal.SizeOf(typeof(IconIdentifier)), Window = window, Id = id };
+            Rect rect;
+            if (Shell_NotifyIconGetRect(ref identifier, out rect) == 0 && rect.Right > rect.Left && rect.Bottom > rect.Top) return rect;
+        }
+        throw new Exception("Windows Shell did not register the Orbit notification icon.");
+    }
+    public static void Close(int process) {
+        var window = Find(process, "main");
+        if (window == IntPtr.Zero || !PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero)) throw new Exception("Could not send the native close event.");
+    }
+    public static void Click(Rect rect, bool twice) {
+        if (!SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2)) throw new Exception("Could not position the native pointer.");
+        uint down = twice ? 0x0002u : 0x0008u;
+        uint up = twice ? 0x0004u : 0x0010u;
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        if (twice) {
+            System.Threading.Thread.Sleep(80);
+            mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        }
+    }
+}
+'@
+
+function Save-Screen {
+    if (-not $Screenshot) { return }
+    $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bitmap = New-Object Drawing.Bitmap $bounds.Width, $bounds.Height
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
+        $bitmap.Save($Screenshot, [Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+if ($Action -eq 'close') { [OrbitLifecycle]::Close($OrbitProcess) }
+if ($Action -eq 'double-click' -or $Action -eq 'menu') {
+    # Newly registered icons may start in Windows' overflow panel.
+    $buttons = [Windows.Automation.AutomationElement]::RootElement.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        (New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::Button))
+    )
+    foreach ($button in $buttons) {
+        if ($button.Current.AutomationId -eq 'SystemTrayIcon' -or $button.Current.Name -eq 'Show hidden icons') {
+            $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Start-Sleep -Milliseconds 250
+            break
+        }
+    }
+    [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click')
+}
+
+if ($Action -eq 'menu' -or $Action -eq 'dialog') {
+    $deadline = (Get-Date).AddSeconds(10)
+    $selected = $false
+    do {
+        $root = [Windows.Automation.AutomationElement]::RootElement
+        if ($Action -eq 'dialog') {
+            $dialog = [OrbitLifecycle]::Find($OrbitProcess, 'dialog')
+            if ($dialog -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; continue }
+            $root = [Windows.Automation.AutomationElement]::FromHandle($dialog)
+        }
+        $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::NameProperty), $Item
+        $element = $root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($element -and $element.Current.IsEnabled) {
+            Save-Screen
+            $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $selected = $true
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    if (-not $selected) { Save-Screen; throw "The native $Action item '$Item' did not become available." }
+}
+if ($Action -eq 'state') { Save-Screen }
+$main = [OrbitLifecycle]::Find($OrbitProcess, 'main')
+$tray = [OrbitLifecycle]::Find($OrbitProcess, 'tray')
+@{
+    main_exists = $main -ne [IntPtr]::Zero
+    main_visible = $main -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($main)
+    tray_exists = $tray -ne [IntPtr]::Zero
+} | ConvertTo-Json -Compress
