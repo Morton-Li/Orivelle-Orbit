@@ -27,7 +27,8 @@ if ($installers.Count -ne 1) { throw 'Expected one candidate installer.' }
 # Suppress 7-Zip stdout in this function's pipeline; retain its exit status.
 $current = Read-Installer $installers[0].FullName (Join-Path $env:RUNNER_TEMP 'orbit-current-payload') | Select-Object -Last 1
 $built = Join-Path $PWD 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
-if ((Get-FileHash $current -Algorithm SHA256).Hash -ne (Get-FileHash $built -Algorithm SHA256).Hash) {
+node "$PSScriptRoot/../../scripts/windows-package-evidence.mjs" $built $current (Join-Path $evidence 'payload-proof.json')
+if ($LASTEXITCODE -ne 0) {
     node "$PSScriptRoot/compare-executables.mjs" $built $current (Join-Path $evidence 'binary-difference')
     throw 'The installer payload differs from the built program; binary evidence has been retained.'
 }
@@ -38,6 +39,7 @@ $installed = Join-Path $installation 'orivelle-orbit.exe'
 $receipt = @{
     candidate_version = (Get-Item $current).VersionInfo.ProductVersion
     built_sha256 = (Get-FileHash $built -Algorithm SHA256).Hash
+    expected_packaged_sha256 = (Get-Content -LiteralPath (Join-Path $evidence 'payload-proof.json') -Raw | ConvertFrom-Json).expected_packaged_sha256
     archive_extracted_sha256 = (Get-FileHash $current -Algorithm SHA256).Hash
     scope = 'Real NSIS installation, native OS behavior and controlled HTTPS peer; no real upstream calls'
 }

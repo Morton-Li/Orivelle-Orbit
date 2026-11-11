@@ -36,6 +36,10 @@ let launchError;
 let baseline;
 const receipt = {
   source: process.env.GITHUB_SHA,
+  build_source:
+    process.env.ORBIT_WINDOWS_BUILD_SOURCE ?? process.env.GITHUB_SHA,
+  artifact_run:
+    process.env.ORBIT_WINDOWS_ARTIFACT_RUN ?? process.env.GITHUB_RUN_ID,
   baseline_tag: process.env.ORBIT_BASELINE_TAG ?? null,
   scope:
     "Real NSIS installation and version transition, native OS behavior and controlled HTTPS peer",
@@ -485,7 +489,7 @@ try {
     );
     console.log(stdout.trim());
     receipt.checks.push(
-      "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the built executable",
+      "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the compiled program with the Tauri NSIS marker",
     );
   }
   launch(executable);

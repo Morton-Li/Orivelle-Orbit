@@ -12,6 +12,10 @@ on:
         description: Optional prior run to reuse when only the DMG verifier changed
         required: false
         type: string
+      windows-artifact-run:
+        description: Optional prior run to reuse when only Windows acceptance checks changed
+        required: false
+        type: string
       baseline-tag:
         description: Published tag whose native data should survive the candidate launch
         required: false
@@ -95,12 +99,45 @@ jobs:
     name: Build and verify Windows x64
     runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require matching application source before reusing Windows files
+        if: inputs.windows-artifact-run != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORBIT_WINDOWS_ARTIFACT_RUN: ${{ inputs.windows-artifact-run }}
+        run: |
+          if ($env:ORBIT_WINDOWS_ARTIFACT_RUN -notmatch '^\d+$') { throw 'Invalid artifact run.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $prior = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:ORBIT_WINDOWS_ARTIFACT_RUN"
+          if ($prior.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $prior.head_sha -notmatch '^[a-f0-9]{40}$') { throw 'Unexpected artifact source.' }
+          git merge-base --is-ancestor $prior.head_sha HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The artifact source is not an ancestor.' }
+          $allowed = @('.github/workflows/windows-integration.yml', '.github/workflows/release.yml', '.github/actions/prepare-native/action.yml', 'scripts/windows-package-evidence.mjs', 'scripts/verify-dmg-layout.mjs', 'tests/build/windows-package-evidence.test.mjs')
+          foreach ($file in @(git diff --name-only $prior.head_sha HEAD)) {
+            if ($file -notin $allowed -and $file -notlike 'tests/windows/*') { throw "Application build source changed: $file" }
+          }
+          "ORBIT_WINDOWS_BUILD_SOURCE=$($prior.head_sha)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ORBIT_WINDOWS_ARTIFACT_RUN=$env:ORBIT_WINDOWS_ARTIFACT_RUN" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: inputs.windows-artifact-run != ''
+        with:
+          name: orbit-windows-integration
+          path: .cache/windows-reuse
+          run-id: ${{ inputs.windows-artifact-run }}
+          github-token: ${{ github.token }}
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: inputs.windows-artifact-run == ''
         id: cargo-cache
         with:
           path: |
@@ -114,10 +151,27 @@ jobs:
           release-tag: ${{ inputs.candidate-tag }}
 
       - name: Build Windows x64 installer
+        if: inputs.windows-artifact-run == ''
         run: node scripts/native-workflow.mjs github-bundle
 
+      - name: Verify and stage the reusable Windows build
+        if: inputs.windows-artifact-run != ''
+        shell: pwsh
+        run: |
+          $prior = Join-Path $PWD '.cache/windows-reuse'
+          $manifest = Get-Content -LiteralPath (Join-Path $prior 'logs/candidate-manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.target -ne 'x86_64-pc-windows-msvc' -or $manifest.mode -ne 'github-bundle' -or -not $manifest.source_verified_before_and_after) { throw 'The artifact has no verified Windows build receipt.' }
+          $binary = Join-Path $prior 'logs/windows-integration/binary-difference/built.exe'
+          if ((Get-FileHash $binary -Algorithm SHA256).Hash -ne $manifest.executable.sha256) { throw 'The reusable program does not match its build receipt.' }
+          New-Item -ItemType Directory -Force runtime/target/x86_64-pc-windows-msvc/release, runtime/github-release, runtime/logs | Out-Null
+          Copy-Item -LiteralPath $binary -Destination 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
+          $installers = @(Get-ChildItem (Join-Path $prior 'github-release') -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected one reusable installer.' }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination runtime/github-release
+          Copy-Item -LiteralPath (Join-Path $prior 'logs/candidate-manifest.json'), (Join-Path $prior 'logs/native-preflight.json') -Destination runtime/logs
+
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        if: inputs.windows-artifact-run == '' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
           path: |
             runtime/cargo-home/registry
