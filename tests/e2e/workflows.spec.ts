@@ -464,7 +464,7 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   ).toBeDisabled();
   expect(await calls(page, "create_image_task")).toBe(0);
   await expect(page.locator("#image-quality")).toHaveCount(0);
-  await page.getByRole("button", { name: "高级模式" }).click();
+  await page.getByRole("button", { name: "高级选项" }).click();
   await choose(page, "image-quality", "高");
   await choose(page, "image-n", "2");
   await page.locator("#image-prompt").fill("Synthetic image prompt");
@@ -496,6 +496,59 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   await expect(page.getByRole("button", { name: "重试生成" })).toHaveCount(0);
 });
 
+test("advanced image options remain selected when collapsed and invalid combinations never submit", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await choose(page, "image-model", "synthetic-image");
+  await page.locator("#image-prompt").fill("Synthetic static image parameters");
+  const advanced = page.getByRole("button", { name: "高级选项" });
+  const generate = page.getByRole("button", { name: "生成图片", exact: true });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await advanced.click();
+  await choose(page, "image-size", "自定义尺寸");
+  await page.locator("#image-width").fill("256");
+  await page.locator("#image-height").fill("256");
+  await expect(generate).toBeDisabled();
+  await expect(page.getByRole("alert")).toContainText("总像素");
+  await page.locator("#image-width").fill("1536");
+  await page.locator("#image-height").fill("864");
+  await choose(page, "image-quality", "最高");
+  await choose(page, "image-n", "2");
+  await choose(page, "image-background", "透明");
+  await choose(page, "image-output_format", "JPEG");
+  await expect(generate).toBeDisabled();
+  await expect(page.getByRole("alert")).toContainText("PNG 或 WebP");
+  expect(await calls(page, "create_image_task")).toBe(0);
+  await choose(page, "image-output_format", "WEBP");
+  await page.locator("#image-compression").fill("0");
+  await choose(page, "image-complexity", "低");
+  await expect(generate).toBeEnabled();
+  await page.locator(".parameter-details").screenshot({
+    path: ".cache/evidence/images-advanced-options-panel.png",
+  });
+  await advanced.click();
+  await expect(page.locator("#image-quality")).toHaveCount(0);
+  await generate.click();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.create_image_task?.parameters,
+    ),
+  ).toEqual({
+    size: "1536x864",
+    quality: "max",
+    n: 2,
+    background: "transparent",
+    output_format: "webp",
+    output_compression: 0,
+    complexity: "low",
+  });
+  expect(await calls(page, "create_image_task")).toBe(1);
+});
+
 test("crash-recovered local materials expose only a local saving retry", async ({
   page,
 }) => {
@@ -520,6 +573,18 @@ test("deleting one local image never deletes other results of the same task", as
   const state = bootstrap();
   state.tasks = [task()];
   state.tasks[0]!.image_ids = ["image-1", "image-2"];
+  state.tasks[0]!.parameters = {
+    size: "1536x864",
+    quality: "max",
+    output_format: "webp",
+  };
+  state.tasks[0]!.result_parameters = {
+    size: "1254x1254",
+    quality: "high",
+    output_format: "png",
+    background: null,
+    observed_model: "gpt-image-2.5-flare",
+  };
   state.image_history = ["image-1", "image-2"].map((id) => ({
     id,
     task_id: "synthetic-task",
@@ -535,8 +600,17 @@ test("deleting one local image never deletes other results of the same task", as
   }));
   await fixture(page, { state });
   await page.goto("/#/images");
+  await expect(page.locator(".task-facts")).toContainText("1536x864");
+  await expect(page.locator(".task-facts")).toContainText("1254x1254");
   await page.getByRole("tab", { name: "本地历史" }).click();
   await expect(page.locator(".history-card")).toHaveCount(2);
+  await expect(page.locator(".history-card").first()).toContainText(
+    "16 × 16 · PNG",
+  );
+  await expect(page.locator(".history-card").first()).toContainText("1536x864");
+  await expect(page.locator(".history-card").first()).toContainText(
+    "1254x1254",
+  );
   await page
     .getByRole("button", { name: "删除本地历史", exact: true })
     .first()

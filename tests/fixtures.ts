@@ -7,6 +7,7 @@ import type {
   TaskView,
 } from "../src/shared/contracts";
 import { CAPABILITIES } from "../src/shared/contracts";
+import imageParameters from "./contracts/images-parameters.json" with { type: "json" };
 
 export function bootstrap(
   accountId = "synthetic-account-a",
@@ -98,22 +99,15 @@ export function imageModel(id = "synthetic-image"): ModelView {
     revision: "model-revision-1",
     category: "image",
     capabilities: [CAPABILITIES.imageGeneration, CAPABILITIES.imageEdit],
-    execution_profile: "openai_images",
+    execution_profile: "codex-images-json-v1",
     image_billing_mode: "image_tokens_v1",
     reasoning_efforts: [],
     reasoning: null,
     codex_catalog_binding: null,
     support_status: "unverified",
-    image_parameters: {
-      max_results: 5,
-      max_inputs: 5,
-      maximum_request_bytes: 64 * 1024 ** 2,
-      prompt_maximum_bytes: 32768,
-      qualities: ["auto", "low", "medium", "high"],
-      sizes: ["auto", "1024x1024"],
-      backgrounds: ["auto", "opaque", "transparent"],
-      verified: false,
-    },
+    image_parameters: structuredClone(
+      imageParameters.models["gpt-image-2.5-flare"],
+    ) as ModelView["image_parameters"],
     sales_price: {
       currency: "USD",
       source: "sales",

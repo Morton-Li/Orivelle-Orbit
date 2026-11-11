@@ -215,7 +215,33 @@ const zh = {
   "images.addInputs": "添加参考图",
   "images.drop": "拖入 PNG、JPEG 或 WebP，也可从文件选择器添加",
   "images.noInputs": "未添加参考图",
-  "images.params": "高级模式",
+  "images.params": "高级选项",
+  "images.outputFormat": "输出格式",
+  "images.compression": "压缩质量",
+  "images.complexity": "画面规划复杂度",
+  "images.customSize": "自定义尺寸",
+  "images.width": "宽度（像素）",
+  "images.height": "高度（像素）",
+  "images.xhigh": "超高",
+  "images.max": "最高",
+  "images.invalidParameters": "所选参数不适用于当前模型，请调整后提交。",
+  "images.invalidSize":
+    "尺寸需为 16 的倍数，边长不超过 3840，比例不超过 3:1，总像素在 655360 至 8294400 之间。",
+  "images.transparentFormat": "透明背景请选择 PNG 或 WebP 输出。",
+  "images.invalidCompression":
+    "压缩质量需为 0–100 的整数，且仅用于 JPEG 或 WebP。",
+  "images.requestedParameters": "请求参数",
+  "images.observedParameters": "上游返回参数",
+  "images.parametersUnknown": "未返回参数",
+  "images.observedModel": "上游返回模型",
+  "images.errorAccess": "当前账户无权使用此图片模型或操作。",
+  "images.errorTimeout":
+    "等待图片结果超时，请先核对任务状态，再决定是否重新提交。",
+  "images.errorRateLimit": "图片请求已达到额度或频率限制，请稍后查看额度状态。",
+  "images.errorUpgrade": "图片服务需要升级以支持本次请求，请联系管理员。",
+  "images.errorModel": "所选模型当前不可用，请刷新模型列表。",
+  "images.errorBalance": "可用余额或消费额度不足。",
+  "images.errorResponse": "图片响应无效或未完成，请先核对任务状态。",
   "images.noAdvancedOptions": "当前模型仅提供服务默认参数。",
   "images.count": "结果数量",
   "images.quality": "质量",
@@ -577,7 +603,41 @@ const en: Record<keyof typeof zh, string> = {
   "images.addInputs": "Add references",
   "images.drop": "Drop PNG, JPEG or WebP images, or select files",
   "images.noInputs": "No reference images",
-  "images.params": "Advanced mode",
+  "images.params": "Advanced options",
+  "images.outputFormat": "Output format",
+  "images.compression": "Compression quality",
+  "images.complexity": "Image planning complexity",
+  "images.customSize": "Custom dimensions",
+  "images.width": "Width (pixels)",
+  "images.height": "Height (pixels)",
+  "images.xhigh": "Extra high",
+  "images.max": "Maximum",
+  "images.invalidParameters":
+    "These parameters are unavailable for the selected model. Adjust them before submitting.",
+  "images.invalidSize":
+    "Dimensions must be multiples of 16, at most 3840 per edge, with an aspect ratio at most 3:1 and 655360–8294400 total pixels.",
+  "images.transparentFormat":
+    "Choose PNG or WebP for a transparent background.",
+  "images.invalidCompression":
+    "Compression quality must be an integer from 0 to 100 and requires JPEG or WebP.",
+  "images.requestedParameters": "Requested parameters",
+  "images.observedParameters": "Upstream result parameters",
+  "images.parametersUnknown": "Not reported",
+  "images.observedModel": "Upstream reported model",
+  "images.errorAccess":
+    "This account cannot access the selected image model or operation.",
+  "images.errorTimeout":
+    "Waiting for the image result timed out. Check the task status before submitting again.",
+  "images.errorRateLimit":
+    "The image allowance or rate limit has been reached. Check the allowance before trying again.",
+  "images.errorUpgrade":
+    "The image service needs an upgrade to support this request. Contact an administrator.",
+  "images.errorModel":
+    "The selected model is unavailable. Refresh the model list.",
+  "images.errorBalance":
+    "The available balance or spending allowance is insufficient.",
+  "images.errorResponse":
+    "The image response is invalid or incomplete. Check the task status first.",
   "images.noAdvancedOptions": "This model currently offers service defaults.",
   "images.count": "Results",
   "images.quality": "Quality",

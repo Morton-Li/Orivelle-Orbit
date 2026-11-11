@@ -3696,6 +3696,7 @@ impl Service {
             result_state: "unconfirmed".into(),
             outcome: None,
             charge_state: "unavailable".into(),
+            result_parameters: None,
             charges: vec![],
             image_ids: vec![],
             error: None,
@@ -3746,6 +3747,15 @@ impl Service {
                     "binding_disabled",
                     "connection_conflict",
                     "image_limit_exceeded",
+                    "image_access_denied",
+                    "image_rate_limited",
+                    "invalid_image_request",
+                    "unsupported_image_parameter",
+                    "image_parameters_upgrade_required",
+                    "image_metering_upgrade_required",
+                    "model_unavailable",
+                    "insufficient_balance",
+                    "api_key_spending_limit_exceeded",
                 ]
                 .contains(&error.code.as_str())
                 {
@@ -3836,9 +3846,13 @@ impl Service {
                     ("Authorization".into(), format!("Bearer {}", &*token)),
                     ("Content-Type".into(), "application/json".into()),
                     ("Accept".into(), "application/json".into()),
+                    (
+                        "X-Orivelle-Images-Contract".into(),
+                        images::PARAMETER_CONTRACT.into(),
+                    ),
                 ],
                 images::MAX_RESPONSE_BYTES,
-                Duration::from_secs(300),
+                Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
                 Some(observation.clone()),
             )
             .await;
@@ -3855,11 +3869,11 @@ impl Service {
         snapshot.task.state = "waiting".into();
         self.persist_task(snapshot)?;
         if !(200..300).contains(&response.status) {
-            return Err(fail(if (300..400).contains(&response.status) {
-                "generation_redirect_rejected"
+            return Err(if (300..400).contains(&response.status) {
+                fail("generation_redirect_rejected")
             } else {
-                "generation_response_failed"
-            }));
+                images::generation_failure(response.status, &response.bytes)
+            });
         }
         let _memory_permit = self
             .image_memory_workers
@@ -3867,7 +3881,9 @@ impl Service {
             .acquire_owned()
             .await
             .map_err(|_| fail("image_busy"))?;
-        let received = images::parse_response(&response.bytes, snapshot.maximum_results)?;
+        let result = images::parse_response(&response.bytes, snapshot.maximum_results)?;
+        snapshot.task.result_parameters = Some(result.parameters);
+        let received = result.images;
         snapshot.task.state = "saving".into();
         snapshot.task.local_save_available = true;
         self.persist_task(snapshot)?;
@@ -6438,6 +6454,7 @@ mod tests {
             result_state: "unconfirmed".into(),
             outcome: None,
             charge_state: "unavailable".into(),
+            result_parameters: None,
             charges: vec![],
             image_ids: vec![],
             error: None,
@@ -6458,6 +6475,99 @@ mod tests {
             maximum_request_bytes: images::MAX_REQUEST_BYTES,
             maximum_results: 1,
             inputs: vec![],
+        }
+    }
+    #[tokio::test]
+    async fn static_image_send_retains_parameters_saves_actual_bytes_and_never_replays_generation_or_edit()
+     {
+        for edit in [false, true] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let mut snapshot = task_snapshot(&record);
+            snapshot.task.state = "queued".into();
+            snapshot.task.kind = if edit { "edit" } else { "generation" }.into();
+            snapshot.task.parameters = ImageParameters {
+                quality: Some("max".into()),
+                size: Some("1536x864".into()),
+                output_format: Some("webp".into()),
+                output_compression: Some(0),
+                complexity: Some("low".into()),
+                ..Default::default()
+            };
+            if edit {
+                let path = service.store.root.join("synthetic-reference.png");
+                std::fs::write(&path, export_png(16, 16, 0)).unwrap();
+                let input = images::import_input(&service.store, &path, &record.view).unwrap();
+                snapshot
+                    .inputs
+                    .push(service.store.get("input", &input.id).unwrap().unwrap());
+            }
+            service.persist_task(&snapshot).unwrap();
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = count.clone();
+            let actual_image = export_png(16, 16, 0);
+            let response_image = actual_image.clone();
+            service.http.scripted(Arc::new(move |request| {
+                let response_image = response_image.clone();
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request.method, Method::POST);
+                assert!(request.url.ends_with(if edit { "/images/edits" } else { "/images/generations" }));
+                assert!(request.headers.iter().any(|(key, value)| key == "X-Orivelle-Images-Contract" && value == images::PARAMETER_CONTRACT));
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["quality"], "max");
+                assert_eq!(body["size"], "1536x864");
+                assert_eq!(body["output_format"], "webp");
+                assert_eq!(body["output_compression"], 0);
+                assert_eq!(body["complexity"], "low");
+                assert_eq!(body["images"].as_array().map(Vec::len).unwrap_or(0), usize::from(edit));
+                Box::pin(async move { Ok(crate::network::RemoteResponse { status: 200,
+                    request_id: Some("33333333-3333-4333-8333-333333333333".into()),
+                    bytes: serde_json::to_vec(&json!({"created":1,"quality":"max","size":"1254x1254","output_format":"png","model":"gpt-image-2.5-flare",
+                        "data":[{"b64_json":base64::engine::general_purpose::STANDARD.encode(response_image)}]})).unwrap() }) })
+            }));
+            service.send_image_once(&mut snapshot).await.unwrap();
+            service.persist_task(&snapshot).unwrap();
+            assert_eq!(snapshot.task.state, "completed");
+            assert_eq!(
+                snapshot
+                    .task
+                    .result_parameters
+                    .as_ref()
+                    .unwrap()
+                    .size
+                    .as_deref(),
+                Some("1254x1254")
+            );
+            let image: HistoryImage = service
+                .store
+                .get("image", &snapshot.task.image_ids[0])
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (image.width, image.height, image.mime.as_str()),
+                (16, 16, "image/png")
+            );
+            let filename: String = service.store.get("image-file", &image.id).unwrap().unwrap();
+            assert_eq!(
+                std::fs::read(images::owned_image_path(&service.store, &filename).unwrap())
+                    .unwrap(),
+                actual_image
+            );
+            assert_eq!(
+                service
+                    .send_image_once(&mut snapshot)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "task_state_conflict"
+            );
+            assert_eq!(count.load(Ordering::SeqCst), 1);
         }
     }
     fn export_png(width: u32, height: u32, value: u8) -> Vec<u8> {

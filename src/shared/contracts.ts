@@ -68,10 +68,24 @@ export type ImageParameterConstraints = {
   max_inputs: number;
   maximum_request_bytes: number;
   prompt_maximum_bytes: number;
-  qualities: ("auto" | "low" | "medium" | "high")[];
+  qualities: ("auto" | "low" | "medium" | "high" | "xhigh" | "max")[];
   sizes: string[];
   backgrounds: ("auto" | "opaque" | "transparent")[];
   verified: boolean;
+  contract?: string | null;
+  output_formats?: ("png" | "jpeg" | "webp")[];
+  output_compression?: boolean;
+  complexities?: ("low" | "medium" | "high")[];
+  custom_size?: ImageSizeConstraints | null;
+  request_timeout_seconds?: number | null;
+};
+export type ImageSizeConstraints = {
+  multiple: number;
+  min_edge: number;
+  max_edge: number;
+  min_pixels: number;
+  max_pixels: number;
+  max_aspect_ratio: number;
 };
 export type AccountView = {
   id: string;
@@ -203,9 +217,19 @@ export type ImageInput = {
 };
 export type ImageParameters = {
   n?: number;
-  quality?: "auto" | "low" | "medium" | "high";
+  quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   size?: string;
   background?: "auto" | "opaque" | "transparent";
+  output_format?: "png" | "jpeg" | "webp";
+  output_compression?: number;
+  complexity?: "low" | "medium" | "high";
+};
+export type ImageResultParameters = {
+  quality: string | null;
+  size: string | null;
+  background: string | null;
+  output_format: string | null;
+  observed_model: string | null;
 };
 export type ImageInputsEvent = {
   account_id: string;
@@ -230,6 +254,7 @@ export type TaskView = {
   requested_model: string;
   prompt: string;
   parameters: ImageParameters;
+  result_parameters?: ImageResultParameters | null;
   state:
     | "draft"
     | "queued"

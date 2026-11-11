@@ -152,6 +152,27 @@ pub struct ImageParameterConstraints {
     pub sizes: Vec<String>,
     pub backgrounds: Vec<String>,
     pub verified: bool,
+    #[serde(default)]
+    pub contract: Option<String>,
+    #[serde(default)]
+    pub output_formats: Vec<String>,
+    #[serde(default)]
+    pub output_compression: bool,
+    #[serde(default)]
+    pub complexities: Vec<String>,
+    #[serde(default)]
+    pub custom_size: Option<ImageSizeConstraints>,
+    #[serde(default)]
+    pub request_timeout_seconds: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSizeConstraints {
+    pub multiple: u32,
+    pub min_edge: u32,
+    pub max_edge: u32,
+    pub min_pixels: u64,
+    pub max_pixels: u64,
+    pub max_aspect_ratio: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
@@ -218,6 +239,20 @@ pub struct ImageParameters {
     pub size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_compression: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageResultParameters {
+    pub quality: Option<String>,
+    pub size: Option<String>,
+    pub background: Option<String>,
+    pub output_format: Option<String>,
+    pub observed_model: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskView {
@@ -231,6 +266,8 @@ pub struct TaskView {
     pub requested_model: String,
     pub prompt: String,
     pub parameters: ImageParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_parameters: Option<ImageResultParameters>,
     pub state: String,
     #[serde(default)]
     pub local_save_available: bool,
