@@ -296,7 +296,8 @@ pub fn validate_parameters(
     let constraints = model
         .image_parameters
         .as_ref()
-        .ok_or_else(|| fail("unsupported_image_model"))?;
+        .ok_or_else(|| fail("unsupported_image_model"))?
+        .available_controls();
     if constraints
         .contract
         .as_deref()
@@ -1065,7 +1066,7 @@ mod tests {
         assert!(parse_response(&serde_json::to_vec(&payload).unwrap(), 0).is_err());
     }
     #[test]
-    fn static_parameter_fixture_validates_and_serializes_without_losing_zero_compression() {
+    fn legacy_parameter_fixture_still_serializes_without_losing_zero_compression() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/contracts/images-parameters.json"
         ))
@@ -1083,10 +1084,6 @@ mod tests {
             params.remove("model");
             params.remove("prompt");
             let parameters: ImageParameters = serde_json::from_value(params.into()).unwrap();
-            assert!(
-                validate_parameters(&model(id), &parameters, "synthetic", 0, MAX_REQUEST_BYTES)
-                    .is_ok()
-            );
             let dir = tempfile::tempdir().unwrap();
             let store = Store::open(dir.path()).unwrap();
             let mut snapshot = snapshot();
@@ -1109,6 +1106,57 @@ mod tests {
                     "{raw}"
                 );
             }
+        }
+    }
+    #[test]
+    fn available_controls_restrict_legacy_catalogs_and_reject_hidden_new_task_parameters() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/contracts/images-parameters.json"
+        ))
+        .unwrap();
+        let constraints: ImageParameterConstraints =
+            serde_json::from_value(fixture["models"]["gpt-image-2.5-flare"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(constraints.available_controls()).unwrap(),
+            fixture["codex_available_controls"]
+        );
+        let model: ModelView = serde_json::from_value(serde_json::json!({"id":"synthetic-image","label":"Synthetic","provider_id":"openai","revision":"synthetic",
+            "category":"image","capabilities":["openai.images.generations","openai.images.edits"],
+            "execution_profile":"codex-images-json-v1","image_billing_mode":"image_count","reasoning_efforts":[],
+            "reasoning":null,"codex_catalog_binding":null,"support_status":"unverified",
+            "image_parameters":constraints,"sales_price":null,"official_price":null})).unwrap();
+        for background in [None, Some("opaque"), Some("transparent")] {
+            let parameters = ImageParameters {
+                background: background.map(str::to_owned),
+                ..Default::default()
+            };
+            let (_, results) =
+                validate_parameters(&model, &parameters, "synthetic", 5, MAX_REQUEST_BYTES)
+                    .unwrap();
+            assert_eq!(results, 1);
+            assert!(
+                validate_parameters(&model, &parameters, "synthetic", 6, MAX_REQUEST_BYTES)
+                    .is_err()
+            );
+        }
+        for raw in [
+            serde_json::json!({"n":2}),
+            serde_json::json!({"quality":"low"}),
+            serde_json::json!({"quality":"high"}),
+            serde_json::json!({"size":"auto"}),
+            serde_json::json!({"size":"1536x1024"}),
+            serde_json::json!({"output_format":"png"}),
+            serde_json::json!({"output_format":"jpeg"}),
+            serde_json::json!({"output_compression":0}),
+            serde_json::json!({"complexity":"low"}),
+            serde_json::json!({"background":"auto"}),
+        ] {
+            let parameters: ImageParameters = serde_json::from_value(raw.clone()).unwrap();
+            assert!(
+                validate_parameters(&model, &parameters, "synthetic", 0, MAX_REQUEST_BYTES)
+                    .is_err(),
+                "{raw}"
+            );
         }
     }
     #[test]

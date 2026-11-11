@@ -12,6 +12,28 @@ export type ImageSelectParameter = Exclude<
   "output_compression"
 >;
 
+// A previous Panel or cached native catalog may still advertise the wider
+// legacy wire subset. Product controls must not infer upstream behavior from it.
+export function availableImageConstraints(
+  caps: ImageParameterConstraints | null,
+): ImageParameterConstraints | null {
+  if (!caps) return null;
+  return {
+    ...caps,
+    max_results: Math.min(1, caps.max_results),
+    max_inputs: Math.min(5, caps.max_inputs),
+    qualities: [],
+    sizes: [],
+    backgrounds: caps.backgrounds.filter((value) =>
+      ["opaque", "transparent"].includes(value),
+    ),
+    output_formats: [],
+    output_compression: false,
+    complexities: [],
+    custom_size: null,
+  };
+}
+
 export function imageParameterFields(caps: ImageParameterConstraints | null) {
   if (!caps) return [];
   const fields: {

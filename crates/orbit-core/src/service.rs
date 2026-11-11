@@ -4559,7 +4559,8 @@ fn map_model(value: &Value, revision: &str) -> Result<ModelView> {
     let constraints = if image && !value["image_parameters"].is_null() {
         Some(
             serde_json::from_value::<ImageParameterConstraints>(value["image_parameters"].clone())
-                .map_err(|_| fail("invalid_panel_response"))?,
+                .map_err(|_| fail("invalid_panel_response"))?
+                .available_controls(),
         )
     } else {
         None
@@ -7851,6 +7852,83 @@ mod tests {
         assert_eq!(task.state, "cancelled");
         assert_eq!(snap.task.state, "cancelled");
         assert!(task.request_id.is_none());
+    }
+    #[tokio::test]
+    async fn cached_legacy_image_parameters_cannot_queue_hidden_product_controls() {
+        let (_dir, service, _vault, mut record, install) = setup();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+            )
+            .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/contracts/images-parameters.json"
+        ))
+        .unwrap();
+        let mut cache = service.account_cache(&record).unwrap();
+        let model = cache
+            .models
+            .iter_mut()
+            .find(|model| model.category == "image")
+            .unwrap();
+        model.image_parameters =
+            Some(serde_json::from_value(fixture["models"]["gpt-image-2.5-flare"].clone()).unwrap());
+        let model_id = model.id.clone();
+        service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        service.http.scripted(Arc::new(move |_| {
+            let counted = counted.clone();
+            Box::pin(async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Err(fail("unexpected_fixture_http"))
+            })
+        }));
+        for (raw, code) in [
+            (json!({"n":2}), "image_limit_exceeded"),
+            (json!({"quality":"high"}), "unsupported_image_parameter"),
+            (
+                json!({"output_format":"webp"}),
+                "unsupported_image_parameter",
+            ),
+        ] {
+            let error = service
+                .create_image_task(
+                    &record.view.id,
+                    record.view.revision,
+                    &model_id,
+                    "synthetic prompt".into(),
+                    serde_json::from_value(raw).unwrap(),
+                    vec![],
+                )
+                .unwrap_err();
+            assert_eq!(error.code, code);
+        }
+        assert!(
+            service
+                .store
+                .list::<TaskView>("task", None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            service
+                .store
+                .list::<TaskSnapshot>("task-snapshot", None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn concurrent_creation_cannot_exceed_two_and_all_cancel_before_http() {

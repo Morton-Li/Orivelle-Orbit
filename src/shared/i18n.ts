@@ -274,6 +274,7 @@ const zh = {
   "images.requestedModel": "请求模型",
   "images.actualUnknown": "实际型号未观测",
   "images.unverified": "此模型的参数组合尚未验证",
+  "images.backgroundUsageHint": "透明背景可能增加图片 token 用量。",
   "images.settlement": "结算状态",
   "images.pendingCharge": "费用待确认",
   "images.reconciliation": "待核账",
@@ -672,6 +673,8 @@ const en: Record<keyof typeof zh, string> = {
   "images.requestedModel": "Requested model",
   "images.actualUnknown": "Actual model not observed",
   "images.unverified": "This model’s parameter combination is unverified",
+  "images.backgroundUsageHint":
+    "Transparent backgrounds may use more image tokens.",
   "images.settlement": "Settlement",
   "images.pendingCharge": "Charges unconfirmed",
   "images.reconciliation": "Reconciliation pending",
