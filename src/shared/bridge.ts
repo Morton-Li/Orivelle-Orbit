@@ -58,6 +58,12 @@ export async function subscribeState(
     callback(event.payload),
   );
 }
+export async function subscribeOpenSettings(
+  callback: () => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen("orbit://open-settings", callback);
+}
 export async function subscribeImageInputs(
   callback: (event: ImageInputsEvent) => void,
 ): Promise<() => void> {

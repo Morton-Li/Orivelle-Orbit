@@ -219,18 +219,42 @@ test("browser authorization remains pending and supports explicit denial and can
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
-test("synthetic Windows capabilities never offer an inaccessible hidden background window", async ({
+test("background close settings support both desktop platforms and legacy defaults", async ({
   page,
 }) => {
   const state = bootstrap();
   state.platform = "windows";
+  state.settings.close_behavior = "platform_default";
+  const closePatch = () =>
+    page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.update_settings,
+    );
   await fixture(page, { state });
   await page.goto("/#/settings");
+  await expect(page.locator("#setting-close")).toContainText(
+    "收起到菜单栏 / 系统托盘",
+  );
   await page.locator("#setting-close").click();
   await expect(
-    page.getByRole("option", { name: "保留进程继续当前任务" }),
-  ).toHaveCount(0);
+    page.getByRole("option", { name: "收起到菜单栏 / 系统托盘" }),
+  ).toHaveCount(1);
   await expect(page.getByRole("option")).toHaveCount(2);
+  await page.getByRole("option", { name: "退出应用" }).click();
+  await expect.poll(closePatch).toEqual({
+    patch: { close_behavior: "quit" },
+  });
+  await choose(page, "setting-close", "收起到菜单栏 / 系统托盘");
+  await expect.poll(closePatch).toEqual({
+    patch: { close_behavior: "keep_running" },
+  });
+  const updated = bootstrap();
+  updated.settings.close_behavior = "keep_running";
+  await pushState(page, updated);
+  await expect(page.locator("#setting-close")).toContainText(
+    "收起到菜单栏 / 系统托盘",
+  );
 });
 
 test("update maintenance disables image submission and settings without losing a same-account draft", async ({

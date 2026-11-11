@@ -6,6 +6,7 @@ import { locale, t } from "./shared/i18n";
 import OrbitIcon from "./components/OrbitIcon.vue";
 import OrbitDialog from "./components/OrbitDialog.vue";
 import WindowControls from "./components/WindowControls.vue";
+import { subscribeOpenSettings } from "./shared/bridge";
 const store = useOrbitStore();
 const router = useRouter();
 const systemDark = ref(false);
@@ -27,6 +28,8 @@ const navigation = [
   { path: "/settings", key: "nav.settings", icon: "settings" },
 ] as const;
 let media: MediaQueryList | undefined;
+let unlistenSettings: (() => void) | undefined;
+let disposed = false;
 function updateSystem(event: MediaQueryListEvent) {
   systemDark.value = event.matches;
 }
@@ -66,9 +69,19 @@ onMounted(() => {
   systemDark.value = media.matches;
   media.addEventListener("change", updateSystem);
   window.addEventListener("keydown", keyboard);
+  if (store.native) {
+    void subscribeOpenSettings(() => void router.push("/settings"))
+      .then((stop) => {
+        if (disposed) stop();
+        else unlistenSettings = stop;
+      })
+      .catch(() => store.notify(t("app.windowControlFailed"), "error"));
+  }
   void store.initialize();
 });
 onUnmounted(() => {
+  disposed = true;
+  unlistenSettings?.();
   media?.removeEventListener("change", updateSystem);
   window.removeEventListener("keydown", keyboard);
   store.dispose();

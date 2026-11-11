@@ -349,7 +349,7 @@ impl Default for SettingsView {
         Self {
             theme: "system".into(),
             locale: "zh-CN".into(),
-            close_behavior: "platform_default".into(),
+            close_behavior: "keep_running".into(),
             image_disk_limit_bytes: 2 * 1024 * 1024 * 1024,
             preview_cache_limit_bytes: 128 * 1024 * 1024,
             backup_retention_days: 30,

@@ -16,6 +16,7 @@ tauri.workspace = true
 tauri-plugin-updater.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
+tauri-plugin-single-instance.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

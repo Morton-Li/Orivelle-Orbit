@@ -4347,7 +4347,6 @@ impl Service {
             || !["zh-CN", "en"].contains(&settings.locale.as_str())
             || !["platform_default", "keep_running", "quit"]
                 .contains(&settings.close_behavior.as_str())
-            || settings.close_behavior == "keep_running" && !cfg!(target_os = "macos")
             || settings.image_disk_limit_bytes < 32 * 1024 * 1024
             || settings.image_disk_limit_bytes > 64 * 1024 * 1024 * 1024
             || settings.preview_cache_limit_bytes > 1024 * 1024 * 1024
@@ -9105,14 +9104,26 @@ mod tests {
         assert!(!service.bootstrap().unwrap().maintenance_active);
     }
     #[test]
-    fn window_keep_running_is_only_an_available_macos_setting() {
+    fn window_close_settings_support_background_running_and_legacy_defaults() {
         let (_dir, service, _vault, _record, _install) = setup();
-        let result = service.update_settings(json!({"close_behavior":"keep_running"}));
-        if cfg!(target_os = "macos") {
-            assert_eq!(result.unwrap().close_behavior, "keep_running");
-        } else {
-            assert_eq!(result.unwrap_err().code, "invalid_settings");
+        assert_eq!(
+            service.store.settings().unwrap().close_behavior,
+            "keep_running"
+        );
+        for behavior in ["platform_default", "keep_running", "quit"] {
+            service
+                .update_settings(json!({"close_behavior": behavior}))
+                .unwrap();
+            assert_eq!(service.store.settings().unwrap().close_behavior, behavior);
         }
+        assert_eq!(
+            service
+                .update_settings(json!({"close_behavior": "unknown"}))
+                .unwrap_err()
+                .code,
+            "invalid_settings"
+        );
+        assert_eq!(service.store.settings().unwrap().close_behavior, "quit");
     }
     #[tokio::test]
     async fn expired_refresh_gate_does_not_send_again() {

@@ -201,13 +201,14 @@ async function installUpdate() {
         <label for="setting-close">{{ t("settings.close") }}</label
         ><OrbitSelect
           id="setting-close"
-          :model-value="store.state.settings.close_behavior"
+          :model-value="
+            store.state.settings.close_behavior === 'quit'
+              ? 'quit'
+              : 'keep_running'
+          "
           :disabled="settingsDisabled"
           :options="[
-            { value: 'platform_default', label: t('settings.platformDefault') },
-            ...(store.state.platform === 'macos'
-              ? [{ value: 'keep_running', label: t('settings.keepRunning') }]
-              : []),
+            { value: 'keep_running', label: t('settings.keepRunning') },
             { value: 'quit', label: t('settings.quit') },
           ]"
           @update:model-value="
@@ -215,6 +216,7 @@ async function installUpdate() {
           "
         />
       </div>
+      <p class="field-hint">{{ t("settings.backgroundHint") }}</p>
       <p class="field-hint">{{ t("settings.quitHint") }}</p>
     </section>
     <section class="settings-section">
