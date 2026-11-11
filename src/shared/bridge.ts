@@ -8,6 +8,7 @@ import type {
   ScopedErrorEvent,
 } from "./contracts";
 import { t } from "./i18n";
+import { imageFailureMessage } from "./image-parameters";
 
 export class OrbitError extends Error {
   constructor(
@@ -31,7 +32,11 @@ export function publicFailure(error: unknown): OrbitError {
       ? value.code
       : "operation_failed";
   // Native and network messages can contain paths, headers or secret material.
-  return new OrbitError(code, t("common.failed"), value?.retryable === true);
+  return new OrbitError(
+    code,
+    imageFailureMessage(code),
+    value?.retryable === true,
+  );
 }
 export async function call<K extends keyof IpcCommands>(
   command: K,
@@ -52,6 +57,12 @@ export async function subscribeState(
   return listen<BootstrapView>("orbit://state", (event) =>
     callback(event.payload),
   );
+}
+export async function subscribeOpenSettings(
+  callback: () => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen("orbit://open-settings", callback);
 }
 export async function subscribeImageInputs(
   callback: (event: ImageInputsEvent) => void,

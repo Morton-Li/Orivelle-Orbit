@@ -219,18 +219,42 @@ test("browser authorization remains pending and supports explicit denial and can
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
-test("synthetic Windows capabilities never offer an inaccessible hidden background window", async ({
+test("background close settings support both desktop platforms and legacy defaults", async ({
   page,
 }) => {
   const state = bootstrap();
   state.platform = "windows";
+  state.settings.close_behavior = "platform_default";
+  const closePatch = () =>
+    page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.update_settings,
+    );
   await fixture(page, { state });
   await page.goto("/#/settings");
+  await expect(page.locator("#setting-close")).toContainText(
+    "收起到菜单栏 / 系统托盘",
+  );
   await page.locator("#setting-close").click();
   await expect(
-    page.getByRole("option", { name: "保留进程继续当前任务" }),
-  ).toHaveCount(0);
+    page.getByRole("option", { name: "收起到菜单栏 / 系统托盘" }),
+  ).toHaveCount(1);
   await expect(page.getByRole("option")).toHaveCount(2);
+  await page.getByRole("option", { name: "退出应用" }).click();
+  await expect.poll(closePatch).toEqual({
+    patch: { close_behavior: "quit" },
+  });
+  await choose(page, "setting-close", "收起到菜单栏 / 系统托盘");
+  await expect.poll(closePatch).toEqual({
+    patch: { close_behavior: "keep_running" },
+  });
+  const updated = bootstrap();
+  updated.settings.close_behavior = "keep_running";
+  await pushState(page, updated);
+  await expect(page.locator("#setting-close")).toContainText(
+    "收起到菜单栏 / 系统托盘",
+  );
 });
 
 test("update maintenance disables image submission and settings without losing a same-account draft", async ({
@@ -464,9 +488,8 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   ).toBeDisabled();
   expect(await calls(page, "create_image_task")).toBe(0);
   await expect(page.locator("#image-quality")).toHaveCount(0);
-  await page.getByRole("button", { name: "高级模式" }).click();
-  await choose(page, "image-quality", "高");
-  await choose(page, "image-n", "2");
+  await page.getByRole("button", { name: "高级选项" }).click();
+  await choose(page, "image-background", "透明");
   await page.locator("#image-prompt").fill("Synthetic image prompt");
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(
@@ -479,7 +502,7 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
         (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
           .lastRequests.create_image_task?.parameters,
     ),
-  ).toEqual({ quality: "high", n: 2 });
+  ).toEqual({ background: "transparent" });
 
   await expect(
     page.getByText("SYNTHETIC_SECRET_SHOULD_NOT_RENDER"),
@@ -494,6 +517,98 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
     .click();
   expect(await calls(page, "create_image_task")).toBe(1);
   await expect(page.getByRole("button", { name: "重试生成" })).toHaveCount(0);
+});
+
+test("image background defaults to opaque and is submitted while advanced options stay collapsed", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/images");
+  await choose(page, "image-model", "synthetic-image");
+  const advanced = page.getByRole("button", { name: "高级选项" });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
+  await advanced.click();
+  await expect(page.locator("#image-background")).toContainText("不透明");
+  await expect(page.locator(".parameter-details > .field-hint")).toHaveCount(0);
+  await page.locator("#image-background").click();
+  await expect(page.getByRole("option")).toHaveText(["不透明", "透明"]);
+  await page.keyboard.press("Escape");
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
+  await page
+    .locator("#image-prompt")
+    .fill("Synthetic opaque background request");
+  await page.getByRole("button", { name: "生成图片", exact: true }).click();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.create_image_task?.parameters,
+    ),
+  ).toEqual({ background: "opaque" });
+  expect(await calls(page, "create_image_task")).toBe(1);
+});
+
+test("available image controls reject legacy catalog choices and sanitize history reuse", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  const historical = task("completed");
+  historical.prompt = "Synthetic historical request";
+  historical.parameters = {
+    n: 3,
+    quality: "max",
+    size: "1536x864",
+    output_format: "webp",
+    output_compression: 0,
+    complexity: "high",
+    background: "transparent",
+  };
+  state.tasks = [historical];
+  await fixture(page, { state });
+  await page.goto("/#/images");
+  await choose(page, "image-model", "synthetic-image");
+  const advanced = page.getByRole("button", { name: "高级选项" });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await advanced.click();
+  await page.getByRole("button", { name: "复用参数", exact: true }).click();
+  await expect(page.locator("#image-prompt")).toHaveValue(historical.prompt);
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
+  await advanced.click();
+  await expect(page.locator("#image-background")).toContainText("透明");
+  for (const id of [
+    "image-n",
+    "image-size",
+    "image-width",
+    "image-height",
+    "image-quality",
+    "image-output_format",
+    "image-compression",
+    "image-complexity",
+  ])
+    await expect(page.locator("#" + id)).toHaveCount(0);
+  await expect(page.locator(".parameter-details")).toContainText(
+    "透明背景可能增加图片 token 用量",
+  );
+  // Historical facts remain readable even though their controls cannot be submitted again.
+  await expect(page.locator(".task-facts")).toContainText("1536x864");
+  await page.locator(".parameter-details").screenshot({
+    path: ".cache/evidence/images-background-explicit-choice.png",
+  });
+  await advanced.click();
+  await expect(page.locator("#image-background")).toHaveCount(0);
+  await page.getByRole("button", { name: "生成图片", exact: true }).click();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __ORBIT_TEST__: FixtureControl }).__ORBIT_TEST__
+          .lastRequests.create_image_task?.parameters,
+    ),
+  ).toEqual({ background: "transparent" });
+  expect(await calls(page, "create_image_task")).toBe(1);
 });
 
 test("crash-recovered local materials expose only a local saving retry", async ({
@@ -520,6 +635,18 @@ test("deleting one local image never deletes other results of the same task", as
   const state = bootstrap();
   state.tasks = [task()];
   state.tasks[0]!.image_ids = ["image-1", "image-2"];
+  state.tasks[0]!.parameters = {
+    size: "1536x864",
+    quality: "max",
+    output_format: "webp",
+  };
+  state.tasks[0]!.result_parameters = {
+    size: "1254x1254",
+    quality: "high",
+    output_format: "png",
+    background: null,
+    observed_model: "gpt-image-2.5-flare",
+  };
   state.image_history = ["image-1", "image-2"].map((id) => ({
     id,
     task_id: "synthetic-task",
@@ -535,8 +662,17 @@ test("deleting one local image never deletes other results of the same task", as
   }));
   await fixture(page, { state });
   await page.goto("/#/images");
+  await expect(page.locator(".task-facts")).toContainText("1536x864");
+  await expect(page.locator(".task-facts")).toContainText("1254x1254");
   await page.getByRole("tab", { name: "本地历史" }).click();
   await expect(page.locator(".history-card")).toHaveCount(2);
+  await expect(page.locator(".history-card").first()).toContainText(
+    "16 × 16 · PNG",
+  );
+  await expect(page.locator(".history-card").first()).toContainText("1536x864");
+  await expect(page.locator(".history-card").first()).toContainText(
+    "1254x1254",
+  );
   await page
     .getByRole("button", { name: "删除本地历史", exact: true })
     .first()

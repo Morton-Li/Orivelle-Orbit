@@ -1,0 +1,367 @@
+{
+  "contract": "codex-images-static-parameters-v1",
+  "evidence_scope": "synthetic_contract_not_real_upstream",
+  "codex_available_controls": {
+    "contract": "codex-images-static-parameters-v1",
+    "max_results": 1,
+    "max_inputs": 5,
+    "maximum_request_bytes": 67108864,
+    "prompt_maximum_bytes": 32768,
+    "qualities": [],
+    "sizes": [],
+    "backgrounds": ["opaque", "transparent"],
+    "output_formats": [],
+    "output_compression": false,
+    "complexities": [],
+    "custom_size": null,
+    "request_timeout_seconds": 630,
+    "verified": false
+  },
+  "models": {
+    "gpt-image-2": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": [],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2-2026-04-21": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": [],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2.5-sunburst": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": ["low", "medium", "high"],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2.5-flare": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": ["low", "medium", "high"],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2.5-sunburst-2026-09-08": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": ["low", "medium", "high"],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2.5-flare-2026-09-08": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": ["low", "medium", "high"],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2.6-sunburst": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": ["low", "medium", "high"],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "gpt-image-2.6-flare": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 5,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+      "sizes": [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840"
+      ],
+      "backgrounds": ["auto", "opaque", "transparent"],
+      "output_formats": ["png", "jpeg", "webp"],
+      "output_compression": true,
+      "complexities": ["low", "medium", "high"],
+      "custom_size": {
+        "multiple": 16,
+        "min_edge": 16,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 8294400,
+        "max_aspect_ratio": 3
+      },
+      "request_timeout_seconds": 630,
+      "verified": false
+    },
+    "opaque-picture-2026": {
+      "contract": "codex-images-static-parameters-v1",
+      "max_results": 1,
+      "max_inputs": 5,
+      "maximum_request_bytes": 67108864,
+      "prompt_maximum_bytes": 32768,
+      "qualities": [],
+      "sizes": [],
+      "backgrounds": [],
+      "output_formats": [],
+      "output_compression": false,
+      "complexities": [],
+      "custom_size": null,
+      "request_timeout_seconds": 630,
+      "verified": false
+    }
+  },
+  "valid_requests": [
+    {
+      "model": "gpt-image-2",
+      "prompt": "synthetic",
+      "n": 1,
+      "quality": "high",
+      "size": "1024x1024"
+    },
+    {
+      "model": "gpt-image-2.5-flare",
+      "prompt": "synthetic",
+      "n": 2,
+      "quality": "max",
+      "size": "1536x864",
+      "background": "transparent",
+      "output_format": "webp",
+      "output_compression": 0,
+      "complexity": "low"
+    }
+  ],
+  "invalid_requests": [
+    {
+      "size": "4096x4096"
+    },
+    {
+      "size": "256x256"
+    },
+    {
+      "size": "3840x256"
+    },
+    {
+      "size": "1025x1024"
+    },
+    {
+      "quality": "ultra"
+    },
+    {
+      "output_format": "gif"
+    },
+    {
+      "output_format": "svg"
+    },
+    {
+      "output_format": "jpeg",
+      "background": "transparent"
+    },
+    {
+      "output_format": "png",
+      "output_compression": 50
+    },
+    {
+      "output_compression": 100
+    },
+    {
+      "output_format": "webp",
+      "output_compression": 101
+    },
+    {
+      "output_format": "webp",
+      "output_compression": 1.5
+    },
+    {
+      "n": 6
+    },
+    {
+      "stream": true
+    },
+    {
+      "mask": {
+        "file_id": "synthetic"
+      }
+    }
+  ]
+}

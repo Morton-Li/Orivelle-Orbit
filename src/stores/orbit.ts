@@ -26,7 +26,7 @@ import { configPolicyMessage } from "../shared/format";
 const defaultSettings: SettingsView = {
   theme: "system",
   locale: "zh-CN",
-  close_behavior: "platform_default",
+  close_behavior: "keep_running",
   image_disk_limit_bytes: 2 * 1024 ** 3,
   preview_cache_limit_bytes: 128 * 1024 ** 2,
   backup_retention_days: 30,

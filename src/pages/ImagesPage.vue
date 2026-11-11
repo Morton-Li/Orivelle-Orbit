@@ -24,6 +24,16 @@ import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import PriceDetails from "../components/PriceDetails.vue";
+import {
+  imageParameterFields,
+  availableImageConstraints,
+  imageParameterLabel,
+  imageParameterError,
+  supportedImageParameters,
+  imageParameterSummary,
+  imageFailureMessage,
+  type ImageSelectParameter,
+} from "../shared/image-parameters";
 const store = useOrbitStore();
 const tab = ref("create");
 const prompt = ref("");
@@ -41,7 +51,9 @@ let alive = true;
 const model = computed(
   () => store.imageModels.find((item) => item.id === modelId.value) ?? null,
 );
-const constraints = computed(() => model.value?.image_parameters ?? null);
+const constraints = computed(() =>
+  availableImageConstraints(model.value?.image_parameters ?? null),
+);
 const currentNode = computed(() => {
   const index = store.state.nodes.findIndex(
     (node) => node.id === store.activeConnection?.node_id,
@@ -51,51 +63,19 @@ const currentNode = computed(() => {
     ? nodeName(node, index)
     : t(store.account ? "access.noNode" : "access.noConnection");
 });
-const parameterFields = computed(() => {
-  const caps = constraints.value;
-  if (!caps) return [];
-  const fields = [
-    {
-      key: "n",
-      label: "images.count",
-      values:
-        caps.max_results > 1
-          ? Array.from({ length: Math.min(5, caps.max_results) }, (_, index) =>
-              String(index + 1),
-            )
-          : [],
-    },
-    { key: "size", label: "images.size", values: caps.sizes },
-    { key: "quality", label: "images.quality", values: caps.qualities },
-    { key: "background", label: "images.background", values: caps.backgrounds },
-  ] as const;
-  return fields.filter((field) => field.values.length > 0);
-});
-const parameterLabels: Partial<Record<string, MessageKey>> = {
-  auto: "images.auto",
-  low: "images.low",
-  medium: "images.medium",
-  high: "images.high",
-  opaque: "images.opaque",
-  transparent: "images.transparent",
-};
-function parameterLabel(value: string) {
-  const key = parameterLabels[value];
-  return key ? t(key) : value;
-}
+const parameterFields = computed(() => imageParameterFields(constraints.value));
 function supportedParameters(values: ImageParameters): ImageParameters {
-  const result = { ...values };
-  for (const key of ["n", "size", "quality", "background"] as const) {
-    if (
-      !parameterFields.value
-        .find((field) => field.key === key)
-        ?.values.some((value) => value === String(values[key]))
-    )
-      delete result[key];
-  }
-  return result;
+  const supported = supportedImageParameters(values, constraints.value);
+  const backgrounds = constraints.value?.backgrounds ?? [];
+  const background =
+    supported.background ??
+    (backgrounds.includes("opaque") ? "opaque" : backgrounds[0]);
+  return background ? { ...supported, background } : supported;
 }
-const currentParameters = computed(() => supportedParameters(parameters.value));
+const currentParameters = computed(() => parameters.value);
+const parameterError = computed(() =>
+  model.value ? imageParameterError(parameters.value, constraints.value) : null,
+);
 const promptBytes = computed(() => utf8Bytes(prompt.value));
 const promptLimit = computed(() =>
   Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
@@ -126,6 +106,7 @@ const canSubmit = computed(
     !!model.value &&
     prompt.value.trim().length > 0 &&
     promptBytes.value <= promptLimit.value &&
+    !parameterError.value &&
     inputs.value.length <= (constraints.value?.max_inputs ?? 5) &&
     !active.value &&
     !store.busy.has("image-submit") &&
@@ -194,7 +175,11 @@ watch(
   },
 );
 watch(modelId, () => {
-  parameters.value = {};
+  parameters.value = supportedParameters({});
+  advanced.value = false;
+});
+watch(constraints, () => {
+  parameters.value = supportedParameters(parameters.value);
 });
 watch(
   () => store.imageModels,
@@ -254,7 +239,7 @@ async function submit() {
     expected_revision: connection.revision,
     model_id: modelId.value,
     prompt: prompt.value,
-    parameters: advanced.value ? currentParameters.value : {},
+    parameters: { ...currentParameters.value },
     input_ids: inputs.value.map((input) => input.id),
   });
   if (result && captured === store.scope) {
@@ -333,7 +318,7 @@ async function reuse(task: TaskView) {
     if (captured !== store.scope) return;
     prompt.value = result.prompt;
     parameters.value = supportedParameters(result.parameters);
-    advanced.value = Object.keys(parameters.value).length > 0;
+    advanced.value = false;
     inputs.value = result.inputs;
     tab.value = "create";
   }
@@ -350,19 +335,16 @@ async function deleteHistory() {
     store.notify(t("common.deleted"), "success");
   }
 }
-function setParameter(
-  key: "quality" | "size" | "background" | "n",
-  value: string,
-) {
-  if (value === "default") {
-    const next = { ...parameters.value };
-    delete next[key];
-    parameters.value = next;
-  } else
-    parameters.value = {
-      ...parameters.value,
-      [key]: key === "n" ? Number(value) : value,
-    };
+function setParameter(key: ImageSelectParameter, value: string) {
+  parameters.value = {
+    ...parameters.value,
+    [key]: key === "n" ? Number(value) : value,
+  };
+}
+function historyTask(image: HistoryImage) {
+  return store.tasks.find(
+    (task) => task.id === image.task_id && task.account_id === image.account_id,
+  );
 }
 </script>
 <template>
@@ -507,15 +489,12 @@ function setParameter(
                 }}</label>
                 <OrbitSelect
                   :id="`image-${field.key}`"
-                  :model-value="
-                    String(currentParameters[field.key] ?? 'default')
-                  "
+                  :model-value="String(currentParameters[field.key] ?? '')"
                   :disabled="active"
                   :options="[
-                    { value: 'default', label: t('images.default') },
                     ...field.values.map((value) => ({
                       value,
-                      label: parameterLabel(value),
+                      label: imageParameterLabel(value),
                     })),
                   ]"
                   @update:model-value="setParameter(field.key, $event)"
@@ -524,12 +503,15 @@ function setParameter(
             </div>
             <p v-else class="field-hint">{{ t("images.noAdvancedOptions") }}</p>
             <p
-              v-if="parameterFields.length && !constraints.verified"
+              v-if="parameterFields.some((field) => field.key === 'background')"
               class="field-hint"
             >
-              {{ t("images.unverified") }}
+              {{ t("images.backgroundUsageHint") }}
             </p>
           </div>
+          <p v-if="parameterError" class="error-text" role="alert">
+            {{ t(parameterError) }}
+          </p>
         </section>
         <PriceDetails v-if="model" :model="model" /><button
           type="submit"
@@ -551,6 +533,9 @@ function setParameter(
               >{{ elapsed }} {{ t("common.seconds") }}</span
             >
           </div>
+          <p v-if="activeTask.error" class="error-text" role="alert">
+            {{ imageFailureMessage(activeTask.error.code) }}
+          </p>
           <div v-if="resultImages.length" class="result-grid">
             <article
               v-for="image in resultImages"
@@ -647,6 +632,18 @@ function setParameter(
           </div>
           <dl class="task-facts">
             <div>
+              <dt>{{ t("images.requestedParameters") }}</dt>
+              <dd>{{ imageParameterSummary(activeTask.parameters) }}</dd>
+            </div>
+            <div v-if="activeTask.result_parameters">
+              <dt>{{ t("images.observedParameters") }}</dt>
+              <dd>{{ imageParameterSummary(activeTask.result_parameters) }}</dd>
+            </div>
+            <div v-if="activeTask.result_parameters?.observed_model">
+              <dt>{{ t("images.observedModel") }}</dt>
+              <dd>{{ activeTask.result_parameters.observed_model }}</dd>
+            </div>
+            <div>
               <dt>{{ t("images.requestedModel") }}</dt>
               <dd>{{ activeTask.requested_model }}</dd>
             </div>
@@ -728,10 +725,25 @@ function setParameter(
             <strong class="truncate">{{ image.requested_model }}</strong>
             <p class="muted">
               {{ image.width }} × {{ image.height }} ·
+              {{ image.mime.replace("image/", "").toUpperCase() }} ·
               {{ formatBytes(image.bytes) }}
             </p>
             <p class="field-hint">
-              {{ image.observed_model ?? t("images.actualUnknown") }}
+              {{
+                image.observed_model ??
+                historyTask(image)?.result_parameters?.observed_model ??
+                t("images.actualUnknown")
+              }}
+            </p>
+            <p v-if="historyTask(image)" class="field-hint">
+              {{ t("images.requestedParameters") }}:
+              {{ imageParameterSummary(historyTask(image)!.parameters) }}
+            </p>
+            <p v-if="historyTask(image)?.result_parameters" class="field-hint">
+              {{ t("images.observedParameters") }}:
+              {{
+                imageParameterSummary(historyTask(image)!.result_parameters!)
+              }}
             </p>
             <div class="image-card-actions">
               <button

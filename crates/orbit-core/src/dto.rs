@@ -152,6 +152,46 @@ pub struct ImageParameterConstraints {
     pub sizes: Vec<String>,
     pub backgrounds: Vec<String>,
     pub verified: bool,
+    #[serde(default)]
+    pub contract: Option<String>,
+    #[serde(default)]
+    pub output_formats: Vec<String>,
+    #[serde(default)]
+    pub output_compression: bool,
+    #[serde(default)]
+    pub complexities: Vec<String>,
+    #[serde(default)]
+    pub custom_size: Option<ImageSizeConstraints>,
+    #[serde(default)]
+    pub request_timeout_seconds: Option<u64>,
+}
+impl ImageParameterConstraints {
+    /// New product tasks expose only controls established on the Codex route.
+    /// Keep the serializable parameter types intact for historical snapshots.
+    pub fn available_controls(&self) -> Self {
+        let mut controls = self.clone();
+        controls.max_results = controls.max_results.min(1);
+        controls.max_inputs = controls.max_inputs.min(5);
+        controls.qualities.clear();
+        controls.sizes.clear();
+        controls
+            .backgrounds
+            .retain(|value| matches!(value.as_str(), "opaque" | "transparent"));
+        controls.output_formats.clear();
+        controls.output_compression = false;
+        controls.complexities.clear();
+        controls.custom_size = None;
+        controls
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSizeConstraints {
+    pub multiple: u32,
+    pub min_edge: u32,
+    pub max_edge: u32,
+    pub min_pixels: u64,
+    pub max_pixels: u64,
+    pub max_aspect_ratio: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
@@ -218,6 +258,20 @@ pub struct ImageParameters {
     pub size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_compression: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageResultParameters {
+    pub quality: Option<String>,
+    pub size: Option<String>,
+    pub background: Option<String>,
+    pub output_format: Option<String>,
+    pub observed_model: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskView {
@@ -231,6 +285,8 @@ pub struct TaskView {
     pub requested_model: String,
     pub prompt: String,
     pub parameters: ImageParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_parameters: Option<ImageResultParameters>,
     pub state: String,
     #[serde(default)]
     pub local_save_available: bool,
@@ -293,7 +349,7 @@ impl Default for SettingsView {
         Self {
             theme: "system".into(),
             locale: "zh-CN".into(),
-            close_behavior: "platform_default".into(),
+            close_behavior: "keep_running".into(),
             image_disk_limit_bytes: 2 * 1024 * 1024 * 1024,
             preview_cache_limit_bytes: 128 * 1024 * 1024,
             backup_retention_days: 30,

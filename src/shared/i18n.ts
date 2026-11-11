@@ -215,7 +215,33 @@ const zh = {
   "images.addInputs": "添加参考图",
   "images.drop": "拖入 PNG、JPEG 或 WebP，也可从文件选择器添加",
   "images.noInputs": "未添加参考图",
-  "images.params": "高级模式",
+  "images.params": "高级选项",
+  "images.outputFormat": "输出格式",
+  "images.compression": "压缩质量",
+  "images.complexity": "画面规划复杂度",
+  "images.customSize": "自定义尺寸",
+  "images.width": "宽度（像素）",
+  "images.height": "高度（像素）",
+  "images.xhigh": "超高",
+  "images.max": "最高",
+  "images.invalidParameters": "所选参数不适用于当前模型，请调整后提交。",
+  "images.invalidSize":
+    "尺寸需为 16 的倍数，边长不超过 3840，比例不超过 3:1，总像素在 655360 至 8294400 之间。",
+  "images.transparentFormat": "透明背景请选择 PNG 或 WebP 输出。",
+  "images.invalidCompression":
+    "压缩质量需为 0–100 的整数，且仅用于 JPEG 或 WebP。",
+  "images.requestedParameters": "请求参数",
+  "images.observedParameters": "上游返回参数",
+  "images.parametersUnknown": "未返回参数",
+  "images.observedModel": "上游返回模型",
+  "images.errorAccess": "当前账户无权使用此图片模型或操作。",
+  "images.errorTimeout":
+    "等待图片结果超时，请先核对任务状态，再决定是否重新提交。",
+  "images.errorRateLimit": "图片请求已达到额度或频率限制，请稍后查看额度状态。",
+  "images.errorUpgrade": "图片服务需要升级以支持本次请求，请联系管理员。",
+  "images.errorModel": "所选模型当前不可用，请刷新模型列表。",
+  "images.errorBalance": "可用余额或消费额度不足。",
+  "images.errorResponse": "图片响应无效或未完成，请先核对任务状态。",
   "images.noAdvancedOptions": "当前模型仅提供服务默认参数。",
   "images.count": "结果数量",
   "images.quality": "质量",
@@ -248,6 +274,7 @@ const zh = {
   "images.requestedModel": "请求模型",
   "images.actualUnknown": "实际型号未观测",
   "images.unverified": "此模型的参数组合尚未验证",
+  "images.backgroundUsageHint": "透明背景可能增加图片 token 用量。",
   "images.settlement": "结算状态",
   "images.pendingCharge": "费用待确认",
   "images.reconciliation": "待核账",
@@ -305,8 +332,9 @@ const zh = {
     "退出清除账户和推理凭据，保留安装证明和备份恢复密钥。目标应用可能缓存凭据。",
   "settings.window": "窗口行为",
   "settings.close": "关闭窗口时",
-  "settings.platformDefault": "遵循系统习惯",
-  "settings.keepRunning": "保留进程继续当前任务",
+  "settings.keepRunning": "收起到菜单栏 / 系统托盘",
+  "settings.backgroundHint":
+    "收起后图片任务和 Claude 本地转发继续运行。点击菜单栏或系统托盘图标可重新打开 Orbit，也可从菜单中退出。",
   "settings.quit": "退出应用",
   "settings.quitHint":
     "真正退出与崩溃后不承诺继续生成，未确认的任务会保留待确认状态。",
@@ -577,7 +605,41 @@ const en: Record<keyof typeof zh, string> = {
   "images.addInputs": "Add references",
   "images.drop": "Drop PNG, JPEG or WebP images, or select files",
   "images.noInputs": "No reference images",
-  "images.params": "Advanced mode",
+  "images.params": "Advanced options",
+  "images.outputFormat": "Output format",
+  "images.compression": "Compression quality",
+  "images.complexity": "Image planning complexity",
+  "images.customSize": "Custom dimensions",
+  "images.width": "Width (pixels)",
+  "images.height": "Height (pixels)",
+  "images.xhigh": "Extra high",
+  "images.max": "Maximum",
+  "images.invalidParameters":
+    "These parameters are unavailable for the selected model. Adjust them before submitting.",
+  "images.invalidSize":
+    "Dimensions must be multiples of 16, at most 3840 per edge, with an aspect ratio at most 3:1 and 655360–8294400 total pixels.",
+  "images.transparentFormat":
+    "Choose PNG or WebP for a transparent background.",
+  "images.invalidCompression":
+    "Compression quality must be an integer from 0 to 100 and requires JPEG or WebP.",
+  "images.requestedParameters": "Requested parameters",
+  "images.observedParameters": "Upstream result parameters",
+  "images.parametersUnknown": "Not reported",
+  "images.observedModel": "Upstream reported model",
+  "images.errorAccess":
+    "This account cannot access the selected image model or operation.",
+  "images.errorTimeout":
+    "Waiting for the image result timed out. Check the task status before submitting again.",
+  "images.errorRateLimit":
+    "The image allowance or rate limit has been reached. Check the allowance before trying again.",
+  "images.errorUpgrade":
+    "The image service needs an upgrade to support this request. Contact an administrator.",
+  "images.errorModel":
+    "The selected model is unavailable. Refresh the model list.",
+  "images.errorBalance":
+    "The available balance or spending allowance is insufficient.",
+  "images.errorResponse":
+    "The image response is invalid or incomplete. Check the task status first.",
   "images.noAdvancedOptions": "This model currently offers service defaults.",
   "images.count": "Results",
   "images.quality": "Quality",
@@ -612,6 +674,8 @@ const en: Record<keyof typeof zh, string> = {
   "images.requestedModel": "Requested model",
   "images.actualUnknown": "Actual model not observed",
   "images.unverified": "This model’s parameter combination is unverified",
+  "images.backgroundUsageHint":
+    "Transparent backgrounds may use more image tokens.",
   "images.settlement": "Settlement",
   "images.pendingCharge": "Charges unconfirmed",
   "images.reconciliation": "Reconciliation pending",
@@ -674,8 +738,9 @@ const en: Record<keyof typeof zh, string> = {
     "Signing out clears account and inference credentials, retaining installation identity and backup keys. Target applications may cache credentials.",
   "settings.window": "Window behavior",
   "settings.close": "When closing the window",
-  "settings.platformDefault": "Follow platform convention",
-  "settings.keepRunning": "Keep process and current tasks running",
+  "settings.keepRunning": "Keep running in the menu bar / system tray",
+  "settings.backgroundHint":
+    "Image tasks and local Claude forwarding continue while the window is hidden. Use the menu bar or system tray icon to open or quit Orbit.",
   "settings.quit": "Quit application",
   "settings.quitHint":
     "Generation is not guaranteed to continue after quitting or crashing. Unconfirmed tasks retain that status.",

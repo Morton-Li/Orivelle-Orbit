@@ -18,6 +18,8 @@ pub const MAX_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_PROMPT_BYTES: usize = 32768;
+pub const PARAMETER_CONTRACT: &str = "codex-images-static-parameters-v1";
+pub const REQUEST_TIMEOUT_SECONDS: u64 = 630;
 pub const MAX_PIXELS: u64 = 16_777_216;
 pub const MAX_DIMENSION: u32 = 8192;
 pub const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
@@ -294,7 +296,15 @@ pub fn validate_parameters(
     let constraints = model
         .image_parameters
         .as_ref()
-        .ok_or_else(|| fail("unsupported_image_model"))?;
+        .ok_or_else(|| fail("unsupported_image_model"))?
+        .available_controls();
+    if constraints
+        .contract
+        .as_deref()
+        .is_some_and(|value| value != PARAMETER_CONTRACT)
+    {
+        return Err(fail("unsupported_image_parameter"));
+    }
     if model.category != "image"
         || model.execution_profile.as_deref() != Some("codex-images-json-v1")
         || model.support_status == "unsupported"
@@ -312,8 +322,9 @@ pub fn validate_parameters(
     }
     for (value, allowed) in [
         (&parameters.quality, &constraints.qualities),
-        (&parameters.size, &constraints.sizes),
         (&parameters.background, &constraints.backgrounds),
+        (&parameters.output_format, &constraints.output_formats),
+        (&parameters.complexity, &constraints.complexities),
     ] {
         if value.as_ref().is_some_and(|v| !allowed.contains(v)) {
             return Err(fail("unsupported_image_parameter"));
@@ -322,7 +333,7 @@ pub fn validate_parameters(
     if parameters
         .quality
         .as_ref()
-        .is_some_and(|v| !["auto", "low", "medium", "high"].contains(&v.as_str()))
+        .is_some_and(|v| !["auto", "low", "medium", "high", "xhigh", "max"].contains(&v.as_str()))
         || parameters
             .background
             .as_ref()
@@ -330,7 +341,41 @@ pub fn validate_parameters(
     {
         return Err(fail("unsupported_image_parameter"));
     }
+    let extended = parameters.output_format.is_some()
+        || parameters.output_compression.is_some()
+        || parameters.complexity.is_some()
+        || parameters
+            .quality
+            .as_ref()
+            .is_some_and(|v| ["xhigh", "max"].contains(&v.as_str()));
+    if extended && constraints.contract.as_deref() != Some(PARAMETER_CONTRACT)
+        || parameters
+            .output_format
+            .as_ref()
+            .is_some_and(|v| !["png", "jpeg", "webp"].contains(&v.as_str()))
+        || parameters
+            .complexity
+            .as_ref()
+            .is_some_and(|v| !["low", "medium", "high"].contains(&v.as_str()))
+        || parameters.background.as_deref() == Some("transparent")
+            && parameters.output_format.as_deref() == Some("jpeg")
+        || parameters.output_compression.is_some_and(|v| {
+            v > 100
+                || !constraints.output_compression
+                || !matches!(parameters.output_format.as_deref(), Some("jpeg" | "webp"))
+        })
+    {
+        return Err(fail("unsupported_image_parameter"));
+    }
     if let Some(size) = &parameters.size {
+        if !constraints.sizes.contains(size)
+            && !constraints
+                .custom_size
+                .as_ref()
+                .is_some_and(|limits| valid_size(size, limits))
+        {
+            return Err(fail("unsupported_image_parameter"));
+        }
         if size != "auto" {
             let dimensions = size
                 .split('x')
@@ -344,6 +389,14 @@ pub fn validate_parameters(
             {
                 return Err(fail("unsupported_image_parameter"));
             }
+            if constraints.contract.as_deref() == Some(PARAMETER_CONTRACT)
+                && !constraints
+                    .custom_size
+                    .as_ref()
+                    .is_some_and(|limits| valid_size(size, limits))
+            {
+                return Err(fail("unsupported_image_parameter"));
+            }
         }
     }
     Ok((
@@ -352,6 +405,37 @@ pub fn validate_parameters(
             .min(MAX_REQUEST_BYTES),
         n,
     ))
+}
+
+pub fn valid_size(size: &str, limits: &ImageSizeConstraints) -> bool {
+    let Some((width, height)) = size.split_once('x') else {
+        return false;
+    };
+    if !(2..=4).contains(&width.len())
+        || !(2..=4).contains(&height.len())
+        || !width.bytes().all(|v| v.is_ascii_digit())
+        || !height.bytes().all(|v| v.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) else {
+        return false;
+    };
+    let pixels = u64::from(width) * u64::from(height);
+    // Local ceilings cannot be broadened by a stale or malformed catalog.
+    limits.multiple == 16
+        && limits.max_aspect_ratio > 0
+        && limits.max_aspect_ratio <= 3
+        && width >= limits.min_edge.max(16)
+        && height >= limits.min_edge.max(16)
+        && width <= limits.max_edge.min(3840)
+        && height <= limits.max_edge.min(3840)
+        && width % 16 == 0
+        && height % 16 == 0
+        && pixels >= limits.min_pixels.max(655360)
+        && pixels <= limits.max_pixels.min(8294400)
+        && u64::from(width) <= u64::from(height) * u64::from(limits.max_aspect_ratio)
+        && u64::from(height) <= u64::from(width) * u64::from(limits.max_aspect_ratio)
 }
 pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> {
     let limit = snapshot.maximum_request_bytes.min(MAX_REQUEST_BYTES) as usize;
@@ -507,6 +591,10 @@ struct ImageResponse {
     #[allow(dead_code)]
     #[serde(default)]
     size: Option<String>,
+    #[serde(default)]
+    output_format: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -521,12 +609,39 @@ pub struct ReceivedImage {
     pub bytes: Vec<u8>,
     pub info: ValidatedImage,
 }
-pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<Vec<ReceivedImage>> {
+pub struct ImageResult {
+    pub images: Vec<ReceivedImage>,
+    pub parameters: ImageResultParameters,
+}
+pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<ImageResult> {
     if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err(fail("response_too_large"));
     }
     let response: ImageResponse =
         serde_json::from_slice(bytes).map_err(|_| fail("invalid_image_response"))?;
+    if response
+        .quality
+        .as_deref()
+        .is_some_and(|value| !["auto", "low", "medium", "high", "xhigh", "max"].contains(&value))
+        || response
+            .background
+            .as_deref()
+            .is_some_and(|value| !["auto", "opaque", "transparent"].contains(&value))
+        || response
+            .output_format
+            .as_deref()
+            .is_some_and(|value| !["png", "jpeg", "webp"].contains(&value))
+        || response.model.as_ref().is_some_and(|value| {
+            value.is_empty()
+                || value.len() > 255
+                || !value.as_bytes()[0].is_ascii_alphanumeric()
+                || !value
+                    .bytes()
+                    .all(|v| v.is_ascii_alphanumeric() || b"._:/@-".contains(&v))
+        })
+    {
+        return Err(fail("invalid_image_response"));
+    }
     if response.data.is_empty() || response.data.len() > maximum_results.min(5) as usize {
         return Err(fail("invalid_image_response"));
     }
@@ -547,7 +662,46 @@ pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<Vec<ReceivedI
             info,
         });
     }
-    Ok(images)
+    Ok(ImageResult {
+        images,
+        parameters: ImageResultParameters {
+            quality: response.quality,
+            size: response.size,
+            background: response.background,
+            output_format: response.output_format,
+            observed_model: response.model,
+        },
+    })
+}
+
+pub fn generation_failure(status: u16, bytes: &[u8]) -> crate::error::PublicError {
+    // Never surface arbitrary provider messages, credentials, URLs or field names.
+    let code = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("error")?.get("code")?.as_str().map(str::to_owned));
+    let safe = code.as_deref().filter(|code| {
+        matches!(
+            *code,
+            "image_request_timeout"
+                | "image_access_denied"
+                | "invalid_image_request"
+                | "unsupported_image_parameter"
+                | "image_parameters_upgrade_required"
+                | "image_metering_upgrade_required"
+                | "model_unavailable"
+                | "insufficient_balance"
+                | "api_key_spending_limit_exceeded"
+                | "invalid_image_response"
+                | "image_response_incomplete"
+        )
+    });
+    fail(safe.unwrap_or(match status {
+        400 | 413 | 415 | 422 => "invalid_image_request",
+        401 | 403 => "image_access_denied",
+        429 => "image_rate_limited",
+        426 => "image_parameters_upgrade_required",
+        _ => "generation_response_failed",
+    }))
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingImage {
@@ -785,6 +939,7 @@ mod tests {
                 result_state: "unconfirmed".into(),
                 outcome: None,
                 charge_state: "unavailable".into(),
+                result_parameters: None,
                 charges: vec![],
                 image_ids: vec![],
                 error: None,
@@ -905,9 +1060,132 @@ mod tests {
     fn response_bounds_and_no_model_inference() {
         let payload = serde_json::json!({"created":1,"data":[{"b64_json":STANDARD.encode(png())}]});
         let parsed = parse_response(&serde_json::to_vec(&payload).unwrap(), 1).unwrap();
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.images.len(), 1);
+        assert!(parsed.parameters.observed_model.is_none());
         assert!(parse_response(br#"{"created":1,"data":[{"b64_json":"bad!"}]}"#, 1).is_err());
         assert!(parse_response(&serde_json::to_vec(&payload).unwrap(), 0).is_err());
+    }
+    #[test]
+    fn legacy_parameter_fixture_still_serializes_without_losing_zero_compression() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/contracts/images-parameters.json"
+        ))
+        .unwrap();
+        let model = |id: &str| -> ModelView {
+            serde_json::from_value(serde_json::json!({"id":id,"label":id,"provider_id":"openai","revision":"synthetic",
+                "category":"image","capabilities":["openai.images.generations","openai.images.edits"],
+                "execution_profile":"codex-images-json-v1","image_billing_mode":"image_count","reasoning_efforts":[],
+                "reasoning":null,"codex_catalog_binding":null,"support_status":"unverified",
+                "image_parameters":fixture["models"][id],"sales_price":null,"official_price":null})).unwrap()
+        };
+        for raw in fixture["valid_requests"].as_array().unwrap() {
+            let id = raw["model"].as_str().unwrap();
+            let mut params = raw.as_object().unwrap().clone();
+            params.remove("model");
+            params.remove("prompt");
+            let parameters: ImageParameters = serde_json::from_value(params.into()).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path()).unwrap();
+            let mut snapshot = snapshot();
+            snapshot.task.requested_model = id.into();
+            snapshot.task.parameters = parameters;
+            let bytes = request_bytes(&store, &snapshot).unwrap();
+            let actual: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            for (key, value) in raw.as_object().unwrap() {
+                if key != "prompt" {
+                    assert_eq!(&actual[key], value, "{key}");
+                }
+            }
+        }
+        let model = model("gpt-image-2.5-flare");
+        for raw in fixture["invalid_requests"].as_array().unwrap() {
+            if let Ok(parameters) = serde_json::from_value::<ImageParameters>(raw.clone()) {
+                assert!(
+                    validate_parameters(&model, &parameters, "synthetic", 0, MAX_REQUEST_BYTES)
+                        .is_err(),
+                    "{raw}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn available_controls_restrict_legacy_catalogs_and_reject_hidden_new_task_parameters() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/contracts/images-parameters.json"
+        ))
+        .unwrap();
+        let constraints: ImageParameterConstraints =
+            serde_json::from_value(fixture["models"]["gpt-image-2.5-flare"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(constraints.available_controls()).unwrap(),
+            fixture["codex_available_controls"]
+        );
+        let model: ModelView = serde_json::from_value(serde_json::json!({"id":"synthetic-image","label":"Synthetic","provider_id":"openai","revision":"synthetic",
+            "category":"image","capabilities":["openai.images.generations","openai.images.edits"],
+            "execution_profile":"codex-images-json-v1","image_billing_mode":"image_count","reasoning_efforts":[],
+            "reasoning":null,"codex_catalog_binding":null,"support_status":"unverified",
+            "image_parameters":constraints,"sales_price":null,"official_price":null})).unwrap();
+        for background in [None, Some("opaque"), Some("transparent")] {
+            let parameters = ImageParameters {
+                background: background.map(str::to_owned),
+                ..Default::default()
+            };
+            let (_, results) =
+                validate_parameters(&model, &parameters, "synthetic", 5, MAX_REQUEST_BYTES)
+                    .unwrap();
+            assert_eq!(results, 1);
+            assert!(
+                validate_parameters(&model, &parameters, "synthetic", 6, MAX_REQUEST_BYTES)
+                    .is_err()
+            );
+        }
+        for raw in [
+            serde_json::json!({"n":2}),
+            serde_json::json!({"quality":"low"}),
+            serde_json::json!({"quality":"high"}),
+            serde_json::json!({"size":"auto"}),
+            serde_json::json!({"size":"1536x1024"}),
+            serde_json::json!({"output_format":"png"}),
+            serde_json::json!({"output_format":"jpeg"}),
+            serde_json::json!({"output_compression":0}),
+            serde_json::json!({"complexity":"low"}),
+            serde_json::json!({"background":"auto"}),
+        ] {
+            let parameters: ImageParameters = serde_json::from_value(raw.clone()).unwrap();
+            assert!(
+                validate_parameters(&model, &parameters, "synthetic", 0, MAX_REQUEST_BYTES)
+                    .is_err(),
+                "{raw}"
+            );
+        }
+    }
+    #[test]
+    fn observed_parameters_are_separate_from_decoded_image_facts_and_private_errors_are_filtered() {
+        let raw = serde_json::json!({"created":1,"quality":"max","size":"1254x1254","output_format":"jpeg","model":"gpt-image-2.5-flare",
+            "data":[{"b64_json":STANDARD.encode(png())}]});
+        let result = parse_response(&serde_json::to_vec(&raw).unwrap(), 1).unwrap();
+        assert_eq!(result.parameters.quality.as_deref(), Some("max"));
+        assert_eq!(result.parameters.size.as_deref(), Some("1254x1254"));
+        assert_eq!(result.parameters.output_format.as_deref(), Some("jpeg"));
+        assert_eq!(
+            (
+                result.images[0].info.mime,
+                result.images[0].info.width,
+                result.images[0].info.height
+            ),
+            ("image/png", 16, 16)
+        );
+        let error = generation_failure(403,br#"{"error":{"code":"image_access_denied","message":"SYNTHETIC_PRIVATE_PROVIDER_MESSAGE"}}"#);
+        assert_eq!(error.code, "image_access_denied");
+        assert!(!error.message.contains("SYNTHETIC_PRIVATE"));
+        assert_eq!(
+            generation_failure(504, br#"{"error":{"code":"image_request_timeout"}}"#).code,
+            "image_request_timeout"
+        );
+        assert_eq!(
+            generation_failure(429, br#"{"error":{"code":"unknown_private_code"}}"#).code,
+            "image_rate_limited"
+        );
     }
     #[test]
     fn full_request_includes_base64_and_utf8_prompt_bytes() {
@@ -951,6 +1229,7 @@ mod tests {
             result_state: "unconfirmed".into(),
             outcome: None,
             charge_state: "unavailable".into(),
+            result_parameters: None,
             charges: vec![],
             image_ids: vec![],
             error: None,
@@ -1112,6 +1391,7 @@ mod tests {
             result_state: "unconfirmed".into(),
             outcome: None,
             charge_state: "unavailable".into(),
+            result_parameters: None,
             charges: vec![],
             image_ids: vec![],
             error: None,
