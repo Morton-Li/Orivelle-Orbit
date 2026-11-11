@@ -3,6 +3,11 @@ name: Windows Integration
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: Run all checks or only the native acceptance being changed
+        type: choice
+        default: all
+        options: [all, windows-desktop, macos-dmg]
       baseline-tag:
         description: Published tag whose native data should survive the candidate launch
         required: false
@@ -29,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: orbit-windows-integration-${{ github.ref }}
+  group: orbit-windows-integration-${{ github.ref }}-${{ inputs.scope || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -42,6 +47,7 @@ env:
 
 jobs:
   validation:
+    if: inputs.scope != 'windows-desktop' && inputs.scope != 'macos-dmg'
     name: Run Windows regression tests
     runs-on: windows-2025
     timeout-minutes: 45
@@ -81,6 +87,7 @@ jobs:
           retention-days: 7
 
   windows:
+    if: inputs.scope != 'macos-dmg'
     name: Build and verify Windows x64
     runs-on: windows-2025
     timeout-minutes: 60
@@ -158,7 +165,7 @@ jobs:
 
   macos:
     name: Check macOS arm64 candidate
-    if: inputs.candidate-tag != ''
+    if: inputs.candidate-tag != '' && inputs.scope != 'windows-desktop'
     runs-on: macos-15
     timeout-minutes: 60
     steps:

@@ -449,7 +449,7 @@ try {
       .getByRole("link", { name: "图片工作台", exact: true })
       .click();
     await choose(page, "image-model", fixture.modelLabel);
-    await page.getByRole("button", { name: "高级选项", exact: true }).click();
+    await page.getByRole("button", { name: "高级模式", exact: true }).click();
     await choose(page, "image-quality", "高");
     await choose(page, "image-size", "1024x1024");
     await choose(page, "image-background", "透明");
