@@ -27,6 +27,10 @@ if ($installers.Count -ne 1) { throw 'Expected one candidate installer.' }
 # Suppress 7-Zip stdout in this function's pipeline; retain its exit status.
 $current = Read-Installer $installers[0].FullName (Join-Path $env:RUNNER_TEMP 'orbit-current-payload') | Select-Object -Last 1
 $built = Join-Path $PWD 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
+if ((Get-FileHash $current -Algorithm SHA256).Hash -ne (Get-FileHash $built -Algorithm SHA256).Hash) {
+    node "$PSScriptRoot/compare-executables.mjs" $built $current (Join-Path $evidence 'binary-difference')
+    throw 'The installer payload differs from the built program; binary evidence has been retained.'
+}
 $installation = Join-Path $env:RUNNER_TEMP 'orbit-native-installation'
 $installed = Join-Path $installation 'orivelle-orbit.exe'
 "ORBIT_WINDOWS_EXECUTABLE=$installed" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

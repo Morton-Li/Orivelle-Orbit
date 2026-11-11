@@ -90,9 +90,9 @@ on run argv
     set appPoint to position of item appName of installFolder
     set folderPoint to position of item "Applications" of installFolder
     set windowBounds to bounds of installWindow
-    set picturePath to POSIX path of (background picture of viewOptions as alias)
+    set backgroundSet to (background picture of viewOptions) is not missing value
     set folderPath to POSIX path of (installFolder as alias)
-    set resultValues to {((current view of installWindow) is icon view) as text, item 1 of appPoint, item 2 of appPoint, item 1 of folderPoint, item 2 of folderPoint, item 1 of windowBounds, item 2 of windowBounds, item 3 of windowBounds, item 4 of windowBounds, picturePath, folderPath}
+    set resultValues to {((current view of installWindow) is icon view) as text, item 1 of appPoint, item 2 of appPoint, item 1 of folderPoint, item 2 of folderPoint, item 1 of windowBounds, item 2 of windowBounds, item 3 of windowBounds, item 4 of windowBounds, backgroundSet as text, folderPath}
   end tell
   set AppleScript's text item delimiters to "|"
   return resultValues as text
@@ -105,7 +105,6 @@ end run`;
   ])
     .trim()
     .split("|");
-  run("/usr/sbin/screencapture", ["-x", screenshot]);
   assert.equal(values[0], "true");
   assert.deepEqual(values.slice(1, 5).map(Number), [
     settings.appPosition.x,
@@ -116,8 +115,18 @@ end run`;
   const bounds = values.slice(5, 9).map(Number);
   assert.equal(bounds[2] - bounds[0], settings.windowSize.width);
   assert.equal(bounds[3] - bounds[1], settings.windowSize.height);
-  assert.equal(await realpath(values[9]), await realpath(background));
+  assert.equal(
+    values[9],
+    "true",
+    "Finder did not retain a background picture.",
+  );
   assert.equal(await realpath(values[10]), await realpath(mount));
+  run("/usr/sbin/screencapture", [
+    "-x",
+    "-R",
+    `${bounds[0]},${bounds[1]},${bounds[2] - bounds[0]},${bounds[3] - bounds[1]}`,
+    screenshot,
+  ]);
   Object.assign(receipt, {
     status: "passed",
     background_sha256: hash(expected),

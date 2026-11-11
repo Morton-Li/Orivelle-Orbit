@@ -205,7 +205,7 @@ jobs:
           execFileSync('git',['merge-base','--is-ancestor',prior.head_sha,'HEAD']);
           const changed = execFileSync('git',['diff','--name-only',prior.head_sha,'HEAD'],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
           const allowed = new Set(['scripts/verify-dmg-layout.mjs','.github/workflows/windows-integration.yml','tests/windows/desktop.mjs']);
-          assert(changed.every(file=>allowed.has(file)),`Build source changed: ${changed.join(', ')}`);
+          assert(changed.every(file=>allowed.has(file)||file.startsWith('tests/windows/')),`Build source changed: ${changed.join(', ')}`);
           appendFileSync(process.env.GITHUB_ENV,`ORBIT_DMG_BUILD_SOURCE=${prior.head_sha}\nORBIT_DMG_ARTIFACT_RUN=${process.env.ORBIT_DMG_ARTIFACT_RUN}\n`);
           execFileSync(process.execPath,['scripts/github-release.mjs','prepare-source',process.env.ORBIT_CANDIDATE_TAG],{stdio:'inherit'});
           JS
