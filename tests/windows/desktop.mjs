@@ -226,7 +226,13 @@ async function exerciseImages(page, navigation) {
   );
   assert((fixture.requests.get("GET /api/v1/orbit/bootstrap") ?? 0) >= 2);
   await navigation.getByRole("link", { name: "接入", exact: true }).click();
-  await choose(page, "access-node", fixture.nodeLabel);
+  if (baseline) {
+    // Selecting even the same node creates a new connection revision. Keep the
+    // upgraded connection so its v1.0.1 task remains the current result to reuse.
+    await expect(page.locator("#access-node")).toContainText(fixture.nodeLabel);
+  } else {
+    await choose(page, "access-node", fixture.nodeLabel);
+  }
   const configPreviews = page.getByRole("button", {
     name: "接入 Orbit",
     exact: true,
