@@ -70,7 +70,7 @@ async function native(action, item, screenshot) {
     "-Action",
     action,
   ];
-  if (item) args.push("-Item", item);
+  if (item) args.push(action === "menu" ? "-MenuCommand" : "-Item", item);
   if (screenshot) args.push("-Screenshot", path.join(evidence, screenshot));
   const { stdout } = await powershell("powershell.exe", args, {
     timeout: 25_000,
@@ -294,7 +294,7 @@ async function exerciseImages(page, navigation) {
     ]);
     await native("close");
     await visible(false);
-    await native("menu", "退出 Orbit", "tray-quit-menu.png");
+    await native("menu", "quit", "tray-quit-menu.png");
     await native("dialog", "继续运行", "pending-quit-guard.png");
     if ((await native("state")).main_visible) await native("close");
     await visible(false);
@@ -534,7 +534,7 @@ try {
   });
   await expect.poll(() => secondary.exitCode, { timeout: 15_000 }).toBe(0);
   await visible(true);
-  await native("menu", "设置…", "tray-settings-menu.png");
+  await native("menu", "settings", "tray-settings-menu.png");
   await expect(page.locator("#setting-close")).toContainText(
     "收起到菜单栏 / 系统托盘",
   );

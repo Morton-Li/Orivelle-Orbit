@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)][int]$OrbitProcess,
     [Parameter(Mandatory)][ValidateSet('state', 'close', 'double-click', 'menu', 'dialog')][string]$Action,
     [string]$Item,
+    [ValidateSet('settings', 'quit')][string]$MenuCommand,
     [string]$Screenshot
 )
 $ErrorActionPreference = 'Stop'
@@ -42,6 +43,7 @@ public static class OrbitLifecycle {
             GetWindowText(window, name, name.Capacity);
             if ((kind == "tray" && cls == "tray_icon_app") ||
                 (kind == "main" && cls != "#32770" && name.ToString() == "Orivelle Orbit") ||
+                (kind == "menu" && cls == "#32768" && IsWindowVisible(window)) ||
                 (kind == "dialog" && cls == "#32770" && IsWindowVisible(window))) {
                 found = window;
                 return false;
@@ -108,7 +110,26 @@ if ($Action -eq 'double-click' -or $Action -eq 'menu') {
     [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click')
 }
 
-if ($Action -eq 'menu' -or $Action -eq 'dialog') {
+if ($Action -eq 'menu') {
+    if (-not $MenuCommand) { throw 'Select a known Orbit tray menu command.' }
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $menu = [OrbitLifecycle]::Find($OrbitProcess, 'menu')
+        if ($menu -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    if ($menu -eq [IntPtr]::Zero) { Save-Screen; throw 'The native Orbit popup menu did not open.' }
+    Save-Screen
+    # The Win32 popup has no UIA menu children on hosted Windows. Navigate the
+    # real menu: Home selects Open, Down selects Settings, End selects Quit.
+    # The caller separately verifies the resulting route or native quit guard.
+    $keys = if ($MenuCommand -eq 'settings') { '{HOME}{DOWN}{ENTER}' } else { '{END}{ENTER}' }
+    [Windows.Forms.SendKeys]::SendWait($keys)
+    $selected = $true
+    $name = $MenuCommand
+}
+
+if ($Action -eq 'dialog') {
     $deadline = (Get-Date).AddSeconds(10)
     $selected = $false
     $available = @()
