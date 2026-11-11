@@ -27,14 +27,15 @@ if ($installers.Count -ne 1) { throw 'Expected one candidate installer.' }
 # Suppress 7-Zip stdout in this function's pipeline; retain its exit status.
 $current = Read-Installer $installers[0].FullName (Join-Path $env:RUNNER_TEMP 'orbit-current-payload') | Select-Object -Last 1
 $built = Join-Path $PWD 'runtime/target/x86_64-pc-windows-msvc/release/orivelle-orbit.exe'
-if ((Get-FileHash $current -Algorithm SHA256).Hash -ne (Get-FileHash $built -Algorithm SHA256).Hash) {
-    throw 'The installer executable differs from the built candidate.'
-}
-"ORBIT_WINDOWS_EXECUTABLE=$current" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+$installation = Join-Path $env:RUNNER_TEMP 'orbit-native-installation'
+$installed = Join-Path $installation 'orivelle-orbit.exe'
+"ORBIT_WINDOWS_EXECUTABLE=$installed" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+"ORBIT_WINDOWS_INSTALLER=$($installers[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 $receipt = @{
     candidate_version = (Get-Item $current).VersionInfo.ProductVersion
-    candidate_sha256 = (Get-FileHash $current -Algorithm SHA256).Hash
-    scope = 'NSIS archive verification and native executable data compatibility; no installer upgrade or real upstream calls'
+    built_sha256 = (Get-FileHash $built -Algorithm SHA256).Hash
+    archive_extracted_sha256 = (Get-FileHash $current -Algorithm SHA256).Hash
+    scope = 'Real NSIS installation, native OS behavior and controlled HTTPS peer; no real upstream calls'
 }
 
 if ($env:ORBIT_BASELINE_TAG) {
@@ -54,11 +55,19 @@ if ($env:ORBIT_BASELINE_TAG) {
     $entry = @($checksums -split "`n" | Where-Object { $_.TrimEnd().EndsWith($name) })
     if ($entry.Count -ne 1 -or $entry[0] -notmatch '^([a-fA-F0-9]{64})\s+') { throw 'Missing baseline checksum.' }
     if ((Get-FileHash $baseline -Algorithm SHA256).Hash -ne $Matches[1]) { throw 'The baseline checksum is invalid.' }
-    $previous = Read-Installer $baseline (Join-Path $env:RUNNER_TEMP 'orbit-baseline-payload') | Select-Object -Last 1
-    if ((Get-Item $previous).VersionInfo.ProductVersion -ne $tag.Substring(1)) { throw 'Incorrect baseline executable version.' }
-    "ORBIT_BASELINE_EXECUTABLE=$previous" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    & $archiveTool t -tNsis $baseline
+    if ($LASTEXITCODE -ne 0) { throw 'The baseline installer failed its integrity check.' }
+    $install = Start-Process -FilePath $baseline -ArgumentList '/S', "/D=$installation" -Wait -PassThru
+    if ($install.ExitCode -ne 0) { throw "Baseline installation failed: $($install.ExitCode)." }
+    if ((Get-Item $installed).VersionInfo.ProductVersion -ne $tag.Substring(1)) { throw 'Incorrect installed baseline version.' }
+    "ORBIT_BASELINE_EXECUTABLE=$installed" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
     "ORBIT_BASELINE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
     $receipt.baseline_tag = $tag
-    $receipt.baseline_sha256 = (Get-FileHash $previous -Algorithm SHA256).Hash
+    $receipt.baseline_sha256 = (Get-FileHash $installed -Algorithm SHA256).Hash
 }
 $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'installers.json') -Encoding utf8
+if (-not $env:ORBIT_BASELINE_TAG) {
+    $env:ORBIT_WINDOWS_EXECUTABLE = $installed
+    $env:ORBIT_WINDOWS_INSTALLER = $installers[0].FullName
+    & "$PSScriptRoot/install-candidate.ps1"
+}

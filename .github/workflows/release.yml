@@ -78,6 +78,16 @@ jobs:
           CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
         run: node scripts/native-workflow.mjs github-release
 
+      - name: Verify the mounted DMG installation window
+        run: node scripts/verify-dmg-layout.mjs
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: orbit-dmg-layout
+          path: runtime/logs/dmg/
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: orbit-release-macos

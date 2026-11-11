@@ -38,7 +38,7 @@ const receipt = {
   source: process.env.GITHUB_SHA,
   baseline_tag: process.env.ORBIT_BASELINE_TAG ?? null,
   scope:
-    "Packaged Windows executable, native OS behavior and controlled HTTPS peer",
+    "Real NSIS installation and version transition, native OS behavior and controlled HTTPS peer",
   checks: [],
 };
 
@@ -472,6 +472,20 @@ try {
     page = undefined;
     receipt.checks.push(
       "published v1.0.1 executable created native credential, legacy settings and image history",
+    );
+    const { stdout } = await powershell(
+      "pwsh.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        "tests/windows/install-candidate.ps1",
+      ],
+      { timeout: 120_000 },
+    );
+    console.log(stdout.trim());
+    receipt.checks.push(
+      "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the built executable",
     );
   }
   launch(executable);
