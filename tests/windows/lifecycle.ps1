@@ -23,10 +23,13 @@ public static class OrbitLifecycle {
         public uint Size; public IntPtr Window; public uint Id; public Guid Guid;
     }
     [DllImport("user32.dll")] private static extern bool EnumWindows(Callback callback, IntPtr data);
+    [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, Callback callback, IntPtr data);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int size);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder name, int size);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -117,6 +120,25 @@ public static class OrbitLifecycle {
         if (FindMenuItem(accessible, 0, requested, names, 0, out rect)) return rect;
         throw new Exception("The native menu item was not found: " + requested + ". MSAA items: " + string.Join(" | ", names));
     }
+    public static Rect DialogButtonRect(int process, string requested) {
+        var dialog = Find(process, "dialog");
+        var names = new List<string>();
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(dialog, (window, data) => {
+            var name = new StringBuilder(256);
+            GetClassName(window, name, name.Capacity);
+            if (name.ToString() != "Button" || !IsWindowVisible(window) || !IsWindowEnabled(window)) return true;
+            GetWindowText(window, name, name.Capacity);
+            names.Add(name.ToString());
+            if (name.ToString() != requested) return true;
+            found = window;
+            return false;
+        }, IntPtr.Zero);
+        Rect rect;
+        if (found == IntPtr.Zero || !GetWindowRect(found, out rect))
+            throw new Exception("The native dialog button was not found: " + requested + ". Buttons: " + string.Join(" | ", names));
+        return rect;
+    }
     public static void Click(Rect rect, bool twice, bool right) {
         if (!SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2)) throw new Exception("Could not position the native pointer.");
         uint down = right ? 0x0008u : 0x0002u;
@@ -185,34 +207,16 @@ if ($Action -eq 'menu') {
 if ($Action -eq 'dialog') {
     $deadline = (Get-Date).AddSeconds(10)
     $selected = $false
-    $available = @()
     do {
-        $root = [Windows.Automation.AutomationElement]::RootElement
         $dialog = [OrbitLifecycle]::Find($OrbitProcess, 'dialog')
         if ($dialog -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; continue }
-        $root = [Windows.Automation.AutomationElement]::FromHandle($dialog)
-        $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::Button)
-        $elements = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
-        $element = $null
-        $available = @()
-        foreach ($candidate in $elements) {
-            $name = $candidate.Current.Name
-            $available += $name
-            # Win32 accessibility can expose an ellipsis as three periods or omit it.
-            # Keep the control type and the rest of the label exact.
-            $accessibleName = [regex]::Replace($name, '(?:\.{3}|\u2026)$', '')
-            $requestedName = [regex]::Replace($Item, '(?:\.{3}|\u2026)$', '')
-            if ($accessibleName -ceq $requestedName) { $element = $candidate; break }
-        }
-        if ($element -and $element.Current.IsEnabled) {
-            Save-Screen
-            $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-            $selected = $true
-            break
-        }
-        Start-Sleep -Milliseconds 100
+        Save-Screen
+        [OrbitLifecycle]::Click([OrbitLifecycle]::DialogButtonRect($OrbitProcess, $Item), $false, $false)
+        $selected = $true
+        $name = $Item
+        break
     } while ((Get-Date) -lt $deadline)
-    if (-not $selected) { Save-Screen; throw "The native $Action item '$Item' did not become available. Accessible items: $($available -join ' | ')" }
+    if (-not $selected) { Save-Screen; throw "The native dialog for '$Item' did not become available." }
 }
 if ($Action -eq 'state') { Save-Screen }
 $main = [OrbitLifecycle]::Find($OrbitProcess, 'main')
