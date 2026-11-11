@@ -122,7 +122,8 @@ end run`;
   Object.assign(receipt, {
     status: "passed",
     background_sha256: hash(expected),
-    background_evidence: "Exact mounted image bytes and native Finder screenshot",
+    background_evidence:
+      "Exact mounted image bytes and native Finder screenshot",
     app_position: values.slice(1, 3).map(Number),
     applications_position: values.slice(3, 5).map(Number),
     window_bounds: bounds,
