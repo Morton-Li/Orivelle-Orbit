@@ -103,7 +103,7 @@ beforeEach(async () => {
       return {
         state: "saved",
         loaded_state: "restart_required",
-        backup_group_id: "synthetic-backup",
+        snapshot_id: "synthetic-backup",
       };
     throw new Error("Unexpected synthetic IPC");
   });

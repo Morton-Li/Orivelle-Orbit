@@ -89,17 +89,11 @@ const current = computed(() => {
     )
       return false;
     const source = preview.restore_source;
-    if (
-      !source?.backup_group_id ||
-      (source.kind !== "switch" &&
-        (!Number.isFinite(Date.parse(source.expires_at)) ||
-          Date.parse(source.expires_at) <= now.value))
-    )
+    if (!source?.snapshot_id || !Number.isFinite(Date.parse(source.expires_at)))
       return false;
-    return store.state.backups.some(
+    return store.state.switch_snapshots.some(
       (backup) =>
-        backup.id === source.backup_group_id &&
-        backup.kind === source.kind &&
+        backup.id === source.snapshot_id &&
         backup.account_id === preview.restore_owner.account_id &&
         backup.panel_origin === preview.restore_owner.panel_origin &&
         backup.installation_id === preview.restore_owner.installation_id &&

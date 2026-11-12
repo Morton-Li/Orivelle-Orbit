@@ -206,8 +206,8 @@ export async function fixture(
             return { deleted: ids.length };
           }
           if (command === "preview_restore") {
-            const backup = current.backups.find(
-              (item) => item.id === request.backup_group_id,
+            const backup = current.switch_snapshots.find(
+              (item) => item.id === request.snapshot_id,
             )!;
             return {
               id: "synthetic-restore-preview",
@@ -237,30 +237,28 @@ export async function fixture(
                 installation_id: backup.installation_id,
               },
               restore_source: {
-                backup_group_id: backup.id,
+                snapshot_id: backup.id,
                 expires_at: backup.expires_at,
-                kind: backup.kind,
               },
               impact: ["Synthetic complete original operation group"],
               redacted_diff: "- mixed fixture state\n+ original fixture group",
               expires_at: new Date(Date.now() + 60000).toISOString(),
               can_apply:
-                backup.kind === "switch" || restoreMode === "recoverable",
+                backup.state === "available" || restoreMode === "recoverable",
               can_export_import: false,
               blocking_reason:
-                backup.kind === "switch" || restoreMode === "recoverable"
+                backup.state === "available" || restoreMode === "recoverable"
                   ? null
                   : "config_conflict",
             };
           }
           if (command === "restore_client_config") {
-            const backup = current.backups.find(
+            const backup = current.switch_snapshots.find(
               (item) =>
-                item.id ===
-                control.lastRequests.preview_restore?.backup_group_id,
+                item.id === control.lastRequests.preview_restore?.snapshot_id,
             )!;
-            if (backup.kind === "switch") {
-              current.backups = current.backups.filter(
+            {
+              current.switch_snapshots = current.switch_snapshots.filter(
                 (item) => item.id !== backup.id,
               );
               current.clients.find(
@@ -272,7 +270,7 @@ export async function fixture(
               client: backup.client,
               state: "restored",
               loaded_state: "unconfirmed",
-              backup_group_id: null,
+              snapshot_id: null,
             };
           }
           if (command === "apply_client_config") {
@@ -286,9 +284,8 @@ export async function fixture(
             client.connection_state = "not_tested";
             client.loaded_evidence = null;
             client.connection_evidence = null;
-            current.backups.push({
+            current.switch_snapshots.push({
               id: "synthetic-config-backup",
-              kind: "switch",
               client: client.client,
               account_id: current.session.account!.id,
               account_label: current.session.account!.label,
@@ -304,7 +301,7 @@ export async function fixture(
               client: client.client,
               state: "saved",
               loaded_state: "restart_required",
-              backup_group_id: "synthetic-config-backup",
+              snapshot_id: "synthetic-config-backup",
             };
           }
           if (command === "preview_client_config") {

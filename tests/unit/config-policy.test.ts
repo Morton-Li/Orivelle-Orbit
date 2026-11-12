@@ -146,7 +146,7 @@ describe("configuration confirmation follows current policy", () => {
               client: kind,
               state: "saved",
               loaded_state: "restart_required",
-              backup_group_id: "synthetic-backup",
+              snapshot_id: "synthetic-backup",
             },
       );
       await apply.trigger("click");
@@ -433,7 +433,7 @@ describe("Codex catalog confirmation", () => {
       store.state.session.status = "logged_out";
       store.state.session.account = null;
       store.state.session.inference_credential_status = "unavailable";
-      store.state.backups.push({
+      store.state.switch_snapshots.push({
         ...owner,
         id: "synthetic-backup",
         client: kind,
@@ -449,7 +449,7 @@ describe("Codex catalog confirmation", () => {
         context: null,
         restore_owner: owner,
         restore_source: {
-          backup_group_id: "synthetic-backup",
+          snapshot_id: "synthetic-backup",
           expires_at: "2099-01-01T00:00:00Z",
         },
         codex_catalog: null,
@@ -469,7 +469,7 @@ describe("Codex catalog confirmation", () => {
               client: kind,
               state,
               loaded_state: "unconfirmed",
-              backup_group_id: null,
+              snapshot_id: null,
             },
       );
       await button.trigger("click");
@@ -644,7 +644,7 @@ describe("Codex catalog confirmation", () => {
     ],
     [
       "claude_configuration_context_unverified",
-      "Claude 备份缺少可核验的恢复上下文",
+      "Claude 原配置记录缺少可核验的恢复上下文",
     ],
     [
       "claude_configuration_context_changed",

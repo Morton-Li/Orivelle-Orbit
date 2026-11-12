@@ -14,7 +14,6 @@ fn main() {
         "apply_client_config",
         "export_claude_import",
         "preview_restore",
-        "backup_client_config",
         "restore_client_config",
         "select_image_inputs",
         "use_history_as_input",

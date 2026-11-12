@@ -21,7 +21,6 @@ const zh = {
   "action.continue": "继续",
   "action.preview": "预览配置",
   "action.apply": "确认应用",
-  "action.restore": "预览恢复",
   "action.logout": "退出登录",
   "action.save": "保存",
   "action.copy": "复制图片",
@@ -120,20 +119,9 @@ const zh = {
   "access.paths": "目标文件",
   "access.impact": "影响范围",
   "access.changes": "脱敏配置差异",
-  "access.backups": "配置备份",
-  "access.noBackups": "这个账户暂无手动或历史备份。",
-  "access.backupNow": "立即备份",
-  "access.backupSaved": "已保存配置备份。",
-  "access.backupHint":
-    "可为当前原配置创建加密备份。每个工具保留最多 5 份、最长 30 天。",
-  "access.backupAccount": "备份所属账户",
-  "access.selectBackupAccount": "选择备份所属账户",
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
   "access.restoreLocalConfiguration": "确认恢复配置",
-  "access.preserveClaudePreferences": "保留偏好后预览恢复",
-  "access.preferencesRestoreHint":
-    "仅协调 Claude 主配置中的偏好变化；其他字段或配置库变化仍会阻止恢复。",
   "access.restorePreservingPreferences": "确认保留偏好并恢复接入",
   "access.restoredPreservingPreferences":
     "接入配置已恢复，后续偏好已保留。请完整退出目标应用并重新打开，载入和连接仍待确认。",
@@ -147,7 +135,7 @@ const zh = {
   "access.previewExpired":
     "预览已失效，或账户、节点、凭据、模型、组织策略及客户端版本已变化，请重新预览。",
   "access.restorePreviewExpired":
-    "恢复预览已失效，或所选备份已删除、到期或发生变化，请重新预览恢复。",
+    "恢复预览已失效，或原配置记录已删除或发生变化，请重新预览切回。",
   "access.policyUnverified":
     "尚未确认目标应用的本地配置写入资格或组织管理限制，暂时无法变更或导出配置。请重新检测并预览。",
   "access.policyChanged":
@@ -169,7 +157,7 @@ const zh = {
   "access.claudeConfigurationChanged":
     "Claude Desktop 配置目标或本地写入资格已变化，本次确认已失效。请重新预览。",
   "access.claudeRestoreContextUnavailable":
-    "此 Claude 备份缺少可核验的恢复上下文，暂时无法自动恢复。请核对原配置。",
+    "此 Claude 原配置记录缺少可核验的恢复上下文，暂时无法自动恢复。请核对原配置。",
   "access.claudeContextChanged":
     "Claude 配置的账户、节点、授权或文件状态已变化，本次确认已失效。请重新预览。",
   "access.claudeSourceUnsupported":
@@ -200,7 +188,7 @@ const zh = {
   "access.codexRuntimeChanged":
     "本机接入：目标桌面应用的执行来源已变化，本次确认已失效。请重新预览配置。",
   "access.codexRestoreContextUnavailable":
-    "此备份缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
+    "此原配置记录缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
   "access.codexOverrideUnavailable":
     "现有显式设置可能覆盖本次配置，暂时不能自动应用。请先手动核对后重新预览。",
   "access.codexEvidenceBoundary":
@@ -337,9 +325,9 @@ const zh = {
   "settings.cache": "预览缓存上限",
   "settings.security": "安全存储",
   "settings.securityHint":
-    "账户会话、推理凭据、安装身份和备份密钥分别保存在原生系统安全存储。拒绝访问时操作会明确失败。",
+    "账户会话、推理凭据、安装身份和配置恢复密钥分别保存在原生系统安全存储。拒绝访问时操作会明确失败。",
   "settings.logoutHint":
-    "退出清除账户和推理凭据，保留安装证明和备份恢复密钥。目标应用可能缓存凭据。",
+    "退出清除账户和推理凭据，保留安装证明和配置恢复密钥。目标应用可能缓存凭据。",
   "settings.window": "窗口行为",
   "settings.close": "关闭窗口时",
   "settings.keepRunning": "收起到菜单栏 / 系统托盘",
@@ -405,7 +393,6 @@ const en: Record<keyof typeof zh, string> = {
   "action.continue": "Continue",
   "action.preview": "Preview configuration",
   "action.apply": "Confirm and apply",
-  "action.restore": "Preview restore",
   "action.logout": "Sign out",
   "action.save": "Save",
   "action.copy": "Copy image",
@@ -515,20 +502,9 @@ const en: Record<keyof typeof zh, string> = {
   "access.paths": "Target files",
   "access.impact": "Impact",
   "access.changes": "Redacted changes",
-  "access.backups": "Configuration backups",
-  "access.noBackups": "No manual or historical backups for this account.",
-  "access.backupNow": "Back up now",
-  "access.backupSaved": "Configuration backup saved.",
-  "access.backupHint":
-    "Create an encrypted backup of the current original configuration. Keep up to five per tool for 30 days.",
-  "access.backupAccount": "Backup account",
-  "access.selectBackupAccount": "Select the backup account",
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
   "access.restoreLocalConfiguration": "Confirm configuration restore",
-  "access.preserveClaudePreferences": "Preview restore keeping preferences",
-  "access.preferencesRestoreHint":
-    "Only coordinates Claude main-config preference changes. Other fields or configuration-library changes still block restoration.",
   "access.restorePreservingPreferences":
     "Keep preferences and restore connection settings",
   "access.restoredPreservingPreferences":
@@ -543,7 +519,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.previewExpired":
     "This preview is no longer valid, or the account, node, credential, model, organization policy or client version changed. Create a new preview.",
   "access.restorePreviewExpired":
-    "This restore preview is no longer valid, or the selected backup was removed, expired or changed. Create a new restore preview.",
+    "This restore preview is no longer valid, or the original configuration record was removed or changed. Preview switching back again.",
   "access.policyUnverified":
     "Local configuration write eligibility or organization restrictions are unconfirmed. Configuration cannot be changed or exported. Check again and create a new preview.",
   "access.policyChanged":
@@ -566,7 +542,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.claudeConfigurationChanged":
     "The Claude Desktop configuration target or local write eligibility changed. This confirmation is no longer valid. Create a new preview.",
   "access.claudeRestoreContextUnavailable":
-    "This Claude backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration.",
+    "This Claude configuration record has no verifiable recovery context and cannot be restored automatically. Check the original configuration.",
   "access.claudeContextChanged":
     "The Claude configuration account, node, authorization or file state changed. This confirmation is no longer valid. Create a new preview.",
   "access.claudeSourceUnsupported":
@@ -599,7 +575,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexRuntimeChanged":
     "The target Desktop application's local backend execution source changed. This confirmation is no longer valid. Create a new preview.",
   "access.codexRestoreContextUnavailable":
-    "This backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
+    "This configuration record has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
   "access.codexOverrideUnavailable":
     "Existing explicit settings may override this configuration, so it cannot be applied automatically. Check the settings manually before creating a new preview.",
   "access.codexEvidenceBoundary":
@@ -753,9 +729,9 @@ const en: Record<keyof typeof zh, string> = {
   "settings.cache": "Preview cache limit",
   "settings.security": "Secure storage",
   "settings.securityHint":
-    "Account sessions, inference credentials, installation identity and backup keys use separate native secure-storage entries. Denied access fails explicitly.",
+    "Account sessions, inference credentials, installation identity and configuration recovery keys use separate native secure-storage entries. Denied access fails explicitly.",
   "settings.logoutHint":
-    "Signing out clears account and inference credentials, retaining installation identity and backup keys. Target applications may cache credentials.",
+    "Signing out clears account and inference credentials, retaining installation identity and configuration recovery keys. Target applications may cache credentials.",
   "settings.window": "Window behavior",
   "settings.close": "When closing the window",
   "settings.keepRunning": "Keep running in the menu bar / system tray",

@@ -20,10 +20,6 @@ use std::{
 };
 use toml_edit::{DocumentMut, Item, Table, value};
 
-#[path = "config_manual.rs"]
-mod manual;
-pub(crate) use manual::ManualTarget;
-
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CodexModelInput {
@@ -213,9 +209,6 @@ struct Operation {
     claude_context: Option<ClaudeContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_main_preferences_restore_v1: Option<ClaudeMainPreferencesRestoreV1>,
-    #[zeroize(skip)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    manual_target: Option<ManualTarget>,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -224,8 +217,9 @@ pub(crate) enum JournalPurpose {
     Historical,
     Switch,
     SwitchRestore,
-    ManualBackup,
-    ManualRestore,
+    // Retired backup operations deserialize only to block unsafe legacy replay.
+    #[serde(other)]
+    Retired,
 }
 impl JournalPurpose {
     fn is_historical(&self) -> bool {
@@ -258,21 +252,8 @@ pub struct Journal {
     pub ciphertext: String,
 }
 impl Journal {
-    pub(crate) fn requires_recovery(&self, store: &Store) -> Result<bool> {
-        Ok(matches!(self.phase.as_str(), "publishing" | "conflict")
-            || self.phase == "committed"
-                && self.purpose == JournalPurpose::Historical
-                && store.get::<Self>("backup", &self.id)?.is_none())
-    }
-    pub(crate) fn backup_kind(&self) -> Option<crate::dto::BackupKind> {
-        use crate::dto::BackupKind;
-        match self.purpose {
-            JournalPurpose::Switch | JournalPurpose::SwitchRestore => Some(BackupKind::Switch),
-            JournalPurpose::ManualBackup | JournalPurpose::ManualRestore => {
-                Some(BackupKind::Manual)
-            }
-            JournalPurpose::Historical => None,
-        }
+    pub(crate) fn requires_recovery(&self) -> bool {
+        matches!(self.phase.as_str(), "publishing" | "conflict")
     }
     pub(crate) fn require_unexpired(&self) -> Result<()> {
         if self.purpose != JournalPurpose::Switch
@@ -354,14 +335,8 @@ impl ConfigEngine<'_> {
         operation: &Operation,
         restoring: bool,
     ) -> Result<()> {
-        if let Some(target) = &operation.manual_target {
-            return self.check_manual_context(journal, operation, target);
-        }
-        if matches!(
-            journal.purpose,
-            JournalPurpose::ManualBackup | JournalPurpose::ManualRestore
-        ) {
-            return Err(fail("backup_invalid"));
+        if journal.purpose == JournalPurpose::Retired {
+            return Err(fail("configuration_recovery_required"));
         }
         if journal.client == ClientKind::Claude {
             return self.check_claude_context(journal, operation, restoring);
@@ -956,8 +931,7 @@ impl ConfigEngine<'_> {
             aad.push_str(match journal.purpose {
                 JournalPurpose::Switch => "switch",
                 JournalPurpose::SwitchRestore => "switch_restore",
-                JournalPurpose::ManualBackup => "manual_backup",
-                JournalPurpose::ManualRestore => "manual_restore",
+                JournalPurpose::Retired => "retired",
                 JournalPurpose::Historical => unreachable!(),
             });
         }
@@ -1097,7 +1071,6 @@ impl ConfigEngine<'_> {
         }
         let now = chrono::Utc::now();
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-        let retention = self.store.settings()?.backup_retention_days.min(30);
         let mut journal = Journal {
             id: uuid(),
             client,
@@ -1105,7 +1078,7 @@ impl ConfigEngine<'_> {
             account_label: account.into(),
             installation: installation.clone(),
             created_at: now.to_rfc3339(),
-            expires_at: (now + chrono::Duration::days(retention as i64)).to_rfc3339(),
+            expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(),
             phase: "prepared".into(),
             purpose: JournalPurpose::Historical,
             paths: files.iter().map(|f| f.path.clone()).collect(),
@@ -1134,7 +1107,6 @@ impl ConfigEngine<'_> {
             codex_context,
             claude_context,
             claude_main_preferences_restore_v1: None,
-            manual_target: None,
         };
         let mut operation = operation;
         for id in operation
@@ -1299,8 +1271,7 @@ impl ConfigEngine<'_> {
         self.persist_operation(journal, &operation)
     }
     fn publish(&self, journal: &mut Journal, operation: &Operation) -> Result<()> {
-        let manual = operation.manual_target.as_ref();
-        if journal.client == ClientKind::Claude && manual.is_none() {
+        if journal.client == ClientKind::Claude {
             let result = self.publish_claude(journal, operation);
             if result
                 .as_ref()
@@ -1315,10 +1286,7 @@ impl ConfigEngine<'_> {
 
         self.check_policy()?;
         self.check_context(journal, operation)?;
-        let source = operation
-            .source_journal_id
-            .as_deref()
-            .filter(|_| manual.is_none());
+        let source = operation.source_journal_id.as_deref();
         if let Some(id) = source {
             let source = self
                 .store
@@ -1378,9 +1346,7 @@ impl ConfigEngine<'_> {
         }
         // Inspect every file before any repair write. External changes stop the whole recovery.
         for file in &operation.files {
-            if manual.is_none() {
-                self.validate_path(Path::new(&file.path), operation.codex_context.as_ref())?;
-            }
+            self.validate_path(Path::new(&file.path), operation.codex_context.as_ref())?;
             if !equal_current(file, &file.before)? && !equal_current(file, &file.after)? {
                 journal.phase = "conflict".into();
                 self.store
@@ -1393,12 +1359,7 @@ impl ConfigEngine<'_> {
         self.store
             .put("journal", &journal.id, &journal.account_id, journal)?;
         if operation.files.iter().any(|file| file.after.is_some()) {
-            if let Some(target) = manual {
-                target.ensure_root(&|| {
-                    self.check_policy()?;
-                    self.check_context(journal, operation)
-                })?;
-            } else if let Some(target) = operation
+            if let Some(target) = operation
                 .codex_context
                 .as_ref()
                 .and_then(|context| context.configuration_target.as_ref())
@@ -1465,7 +1426,6 @@ impl ConfigEngine<'_> {
         self.check_policy()?;
         self.check_context(journal, operation)?;
         self.store.commit_configuration(journal, source)?;
-        self.prune_backups_locked(journal.client)?;
         Ok(())
     }
 
@@ -1705,7 +1665,7 @@ impl ConfigEngine<'_> {
         journal.phase = "committed".into();
         self.store
             .commit_configuration(journal, operation.source_journal_id.as_deref())?;
-        self.prune_backups_locked(ClientKind::Claude)
+        Ok(())
     }
     pub fn apply(&self, id: &str) -> Result<Journal> {
         Ok(self.apply_with_claude_mode(id, None)?.0)
@@ -1760,7 +1720,7 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         if journal.phase == "committed" {
-            if journal.client == ClientKind::Claude && operation.manual_target.is_none() {
+            if journal.client == ClientKind::Claude {
                 self.claude_boundary(&journal, &operation, true)?;
             } else {
                 for file in &operation.files {
@@ -1771,13 +1731,8 @@ impl ConfigEngine<'_> {
                 self.check_policy()?;
                 self.check_context(&journal, &operation)?;
             }
-            self.store.commit_configuration(
-                &journal,
-                operation
-                    .source_journal_id
-                    .as_deref()
-                    .filter(|_| operation.manual_target.is_none()),
-            )?;
+            self.store
+                .commit_configuration(&journal, operation.source_journal_id.as_deref())?;
             return Ok(journal);
         }
         if journal.phase != "publishing" {
@@ -1788,13 +1743,11 @@ impl ConfigEngine<'_> {
     }
     pub fn prepare_restore(&self, id: &str) -> Result<Journal> {
         self.check_policy()?;
-        let journal =
-            self.store
-                .get::<Journal>("backup", id)?
-                .or(self.store.get::<Journal>("journal", id)?.filter(|j| {
-                    ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
-                }))
-                .ok_or_else(|| fail("backup_invalid"))?;
+        let journal = self
+            .store
+            .get::<Journal>("journal", id)?
+            .filter(|j| ["publishing", "conflict", "committed"].contains(&j.phase.as_str()))
+            .ok_or_else(|| fail("backup_invalid"))?;
         journal.require_unexpired()?;
         let original = self.decrypt(&journal)?;
         self.check_context_for(&journal, &original, true)?;
@@ -1887,8 +1840,7 @@ impl ConfigEngine<'_> {
         self.check_policy()?;
         let selected = self
             .store
-            .get::<Journal>("backup", id)?
-            .or(self.store.get::<Journal>("journal", id)?)
+            .get::<Journal>("journal", id)?
             .ok_or_else(|| fail("backup_invalid"))?;
         // This fixed mode is never a fallback for other clients or an
         // incomplete publication, and rejects them before accessing the Vault.
@@ -1985,35 +1937,6 @@ impl ConfigEngine<'_> {
             .clone()
             .ok_or_else(|| fail("backup_invalid"))?;
         Ok((restored, context, original_mode.deployment_mode))
-    }
-    pub fn prune_backups(&self, client: ClientKind) -> Result<()> {
-        let _lock = self.lock(client)?;
-        self.prune_backups_locked(client)
-    }
-    fn prune_backups_locked(&self, client: ClientKind) -> Result<()> {
-        let settings = self.store.settings()?;
-        let mut backups = self
-            .store
-            .list::<Journal>("backup", None)?
-            .into_iter()
-            .filter(|b| b.client == client)
-            .collect::<Vec<_>>();
-        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        for (index, backup) in backups.into_iter().enumerate() {
-            let expired = chrono::DateTime::parse_from_rfc3339(&backup.expires_at)
-                .map_or(true, |at| at <= chrono::Utc::now());
-            if expired || index >= settings.backup_max_groups.min(5) as usize {
-                self.store.delete("backup", &backup.id)?;
-                if self
-                    .store
-                    .get::<Journal>("journal", &backup.id)?
-                    .is_some_and(|j| ["committed", "restored"].contains(&j.phase.as_str()))
-                {
-                    self.store.delete("journal", &backup.id)?;
-                }
-            }
-        }
-        Ok(())
     }
 }
 pub fn codex_patch(

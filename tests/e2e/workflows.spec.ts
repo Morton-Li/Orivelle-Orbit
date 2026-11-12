@@ -307,7 +307,7 @@ test("update maintenance disables image submission and settings without losing a
 
 for (const client of ["codex", "claude"] as const) {
   for (const recoverable of [false, true]) {
-    test(`${client === "claude" ? "Claude" : "Codex"} conflicted backup offers a gated preview while logged out; recoverable=${recoverable}`, async ({
+    test(`${client === "claude" ? "Claude" : "Codex"} conflicted switch snapshot offers a gated preview while logged out; recoverable=${recoverable}`, async ({
       page,
     }) => {
       const state = bootstrap();
@@ -315,7 +315,7 @@ for (const client of ["codex", "claude"] as const) {
       state.session.account = null;
       state.session.inference_credential_status = "unavailable";
       if (client === "claude") state.clients[1]!.managed = "unknown";
-      state.backups = [
+      state.switch_snapshots = [
         {
           id: "synthetic-conflict-backup",
           client,
@@ -334,8 +334,10 @@ for (const client of ["codex", "claude"] as const) {
         restoreMode: recoverable ? "recoverable" : "blocked",
       });
       await page.goto("/#/access");
-      await choose(page, "backup-account", "Fixture A");
-      await page.getByRole("button", { name: "预览恢复", exact: true }).click();
+      await page
+        .locator(`#client-${client}`)
+        .getByRole("button", { name: "切回原配置", exact: true })
+        .click();
       const apply = page
         .getByRole("dialog")
         .getByRole("button", { name: "确认恢复配置", exact: true });

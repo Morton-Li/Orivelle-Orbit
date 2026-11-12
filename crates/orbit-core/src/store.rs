@@ -219,7 +219,6 @@ impl Store {
             "previews",
             "inputs",
             "pending-save",
-            "backups",
             "journals",
             "locks",
             "updates",
@@ -411,6 +410,27 @@ impl Store {
         tx.commit().map_err(|_| fail("database_unavailable"))?;
         Ok(current)
     }
+    /// Remove the retired feature's data without touching active switch/recovery journals.
+    pub(crate) fn retire_configuration_backups(&self) -> Result<()> {
+        let mut db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
+        let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
+        let mut changed = tx
+            .execute("DELETE FROM records WHERE kind='backup'", [])
+            .map_err(|_| fail("database_unavailable"))?;
+        changed += tx.execute(
+            "DELETE FROM records WHERE kind='journal'
+             AND COALESCE(json_extract(payload,'$.purpose'),'historical') IN ('historical','manual_backup','manual_restore')
+             AND json_extract(payload,'$.phase') IN ('prepared','committed','restored')", [],
+        ).map_err(|_| fail("database_unavailable"))?;
+        changed += tx.execute(
+            "UPDATE records SET payload=json_remove(payload,'$.backup_retention_days','$.backup_max_groups')
+             WHERE kind='settings' AND (json_type(payload,'$.backup_retention_days') IS NOT NULL OR json_type(payload,'$.backup_max_groups') IS NOT NULL)", [],
+        ).map_err(|_| fail("database_unavailable"))?;
+        if changed > 0 {
+            Self::advance(&tx)?;
+        }
+        tx.commit().map_err(|_| fail("database_unavailable"))
+    }
     pub fn commit_configuration(
         &self,
         journal: &crate::config::Journal,
@@ -423,12 +443,7 @@ impl Store {
         }
         let mut db = self.db.lock().map_err(|_| fail("database_unavailable"))?;
         let tx = db.transaction().map_err(|_| fail("database_unavailable"))?;
-        for kind in ["journal", "backup"] {
-            if kind == "backup" && journal.purpose != JournalPurpose::Historical {
-                continue;
-            }
-            tx.execute("INSERT INTO records(kind,id,scope,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET scope=excluded.scope,payload=excluded.payload",params![kind,journal.id,journal.account_id,payload]).map_err(|_|fail("database_unavailable"))?;
-        }
+        tx.execute("INSERT INTO records(kind,id,scope,payload) VALUES('journal',?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET scope=excluded.scope,payload=excluded.payload",params![journal.id,journal.account_id,payload]).map_err(|_|fail("database_unavailable"))?;
         if let Some(source) = source {
             let changed=tx.execute("UPDATE records SET payload=json_set(payload,'$.phase','restored') WHERE kind='journal' AND id=?1 AND scope=?2 AND json_extract(payload,'$.installation.id')=?3 AND json_extract(payload,'$.installation.origin')=?4",params![source,journal.account_id,journal.installation.id,journal.installation.origin]).map_err(|_|fail("database_unavailable"))?;
             if changed != 1 {
@@ -455,13 +470,6 @@ impl Store {
                  AND ((json_extract(payload,'$.purpose')='switch' AND json_extract(payload,'$.phase')='restored')
                    OR (json_extract(payload,'$.purpose')='switch_restore' AND json_extract(payload,'$.phase')='committed'))",
                 [journal.client.as_str()],
-            ).map_err(|_| fail("database_unavailable"))?;
-        }
-        if journal.purpose == JournalPurpose::ManualRestore {
-            tx.execute(
-                "DELETE FROM records WHERE kind='journal' AND id<>?1 AND json_extract(payload,'$.client')=?2
-                 AND json_extract(payload,'$.purpose')='manual_restore' AND json_extract(payload,'$.phase')='committed'",
-                params![journal.id, journal.client.as_str()],
             ).map_err(|_| fail("database_unavailable"))?;
         }
         Self::advance(&tx)?;
@@ -535,7 +543,7 @@ impl Store {
         let mut records = vec![];
         let mut size = 0usize;
         {
-            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind IN ('backup','journal') THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','backup','journal','settings','client-state','authorization-pending') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
+            let mut stmt=tx.prepare("SELECT kind,id,scope,CASE WHEN kind='journal' THEN json_remove(payload,'$.ciphertext') ELSE payload END FROM records WHERE kind IN ('connection','installation','account-cache','task','task-snapshot','image','journal','settings','client-state','authorization-pending') ORDER BY rowid DESC").map_err(|_|fail("database_unavailable"))?;
             for row in stmt
                 .query_map([], |r| {
                     Ok((
@@ -693,6 +701,71 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retiring_configuration_backups_preserves_active_switch_and_recovery_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        for (id, purpose, phase) in [
+            ("history", "historical", "committed"),
+            ("manual", "manual_backup", "committed"),
+            ("manual-preview", "manual_restore", "prepared"),
+            ("manual-pending", "manual_restore", "publishing"),
+            ("recovery", "historical", "conflict"),
+            ("switch", "switch", "committed"),
+        ] {
+            store
+                .put(
+                    "journal",
+                    id,
+                    "actor",
+                    &serde_json::json!({
+                        "purpose": purpose, "phase": phase, "ciphertext": "synthetic"
+                    }),
+                )
+                .unwrap();
+        }
+        store
+            .put(
+                "backup",
+                "old",
+                "actor",
+                &serde_json::json!({"retired": true}),
+            )
+            .unwrap();
+        let mut settings = serde_json::to_value(SettingsView::default()).unwrap();
+        settings["backup_retention_days"] = 30.into();
+        settings["backup_max_groups"] = 5.into();
+        store.put("settings", "local", "local", &settings).unwrap();
+        store.retire_configuration_backups().unwrap();
+        assert!(
+            store
+                .list::<serde_json::Value>("backup", None)
+                .unwrap()
+                .is_empty()
+        );
+        for id in ["history", "manual", "manual-preview"] {
+            assert!(
+                store
+                    .get::<serde_json::Value>("journal", id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for id in ["switch", "recovery", "manual-pending"] {
+            assert!(
+                store
+                    .get::<serde_json::Value>("journal", id)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let settings = store
+            .get::<serde_json::Value>("settings", "local")
+            .unwrap()
+            .unwrap();
+        assert!(settings.get("backup_retention_days").is_none());
+        assert!(settings.get("backup_max_groups").is_none());
+    }
     #[test]
     fn migration_and_scope_isolation_survive_reopen() {
         let dir = tempfile::tempdir().unwrap();
