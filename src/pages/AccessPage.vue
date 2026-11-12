@@ -15,7 +15,17 @@ import ConfigReviewDialog from "../components/ConfigReviewDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import StatusBadge from "../components/StatusBadge.vue";
+import { useNodeLatency } from "../composables/useNodeLatency";
 const store = useOrbitStore();
+const latency = useNodeLatency();
+const nodeOptions = computed(() =>
+  store.state.nodes.map((node, index) => ({
+    value: node.id,
+    label: nodeName(node, index),
+    detail: latency.label(node),
+    disabled: !node.available,
+  })),
+);
 const claudeRoles = [
   { key: "primary", label: "access.rolePrimary" },
   { key: "fallback", label: "access.roleFallback" },
@@ -291,17 +301,29 @@ async function backupNow(client: ClientKind) {
               : 'access.noNode',
           )
         "
-        :options="
-          store.state.nodes.map((node, index) => ({
-            value: node.id,
-            label: node.available
-              ? nodeName(node, index)
-              : `${nodeName(node, index)} · ${t('access.nodeUnavailable')}`,
-            disabled: !node.available,
-          }))
-        "
+        :options="nodeOptions"
         @update:model-value="store.selectNode"
       />
+      <div class="node-latency-controls">
+        <span class="muted">{{ latency.updatedLabel.value }}</span>
+        <button
+          type="button"
+          class="button ghost node-latency-refresh"
+          :disabled="!latency.active.value || latency.refreshing.value"
+          :aria-busy="latency.refreshing.value"
+          @click="latency.refresh"
+        >
+          <OrbitIcon name="refresh" :size="13" />
+          {{
+            t(
+              latency.refreshing.value
+                ? "access.latencyRefreshing"
+                : "access.latencyRefresh",
+            )
+          }}
+        </button>
+      </div>
+      <p class="field-hint">{{ t("access.latencyHint") }}</p>
     </div>
   </section>
   <p

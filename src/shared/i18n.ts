@@ -102,6 +102,16 @@ const zh = {
   "access.noNode": "尚无可用节点",
   "access.selectNode": "选择获准的节点",
   "access.nodeUnavailable": "节点当前不可用",
+  "access.latencyRefresh": "刷新延时",
+  "access.latencyRefreshing": "正在测速",
+  "access.latencyMeasuring": "检测中",
+  "access.latencyUnknown": "待检测",
+  "access.latencyTimeout": "探测超时",
+  "access.latencyFailed": "连接失败",
+  "access.latencyStale": "已过期",
+  "access.latencyUpdated": "更新于",
+  "access.latencyHint":
+    "本机到节点的连接延时，前台每 30 秒更新。模型响应速度还受上游和负载影响。",
   "access.readonly":
     "只读账户可查看预算和消费，自动取得接入凭据需现有业务写权限。",
   "access.previewTitle": "确认配置与影响范围",
@@ -487,6 +497,16 @@ const en: Record<keyof typeof zh, string> = {
   "access.noNode": "No available nodes",
   "access.selectNode": "Select an authorized node",
   "access.nodeUnavailable": "Node is currently unavailable",
+  "access.latencyRefresh": "Refresh latency",
+  "access.latencyRefreshing": "Measuring latency",
+  "access.latencyMeasuring": "Measuring",
+  "access.latencyUnknown": "Not measured",
+  "access.latencyTimeout": "Probe timed out",
+  "access.latencyFailed": "Connection failed",
+  "access.latencyStale": "Stale",
+  "access.latencyUpdated": "Updated at",
+  "access.latencyHint":
+    "Connection latency from this device to the node, updated every 30 seconds in the foreground. Model response speed also depends on upstream service and load.",
   "access.readonly":
     "Read-only accounts can view budgets and usage. Automatic credential delivery requires existing business write permissions.",
   "access.previewTitle": "Review configuration and impact",

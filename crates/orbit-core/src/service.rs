@@ -45,6 +45,8 @@ mod claude;
 mod claude_authority_tests;
 #[path = "service_config_backup.rs"]
 mod config_backup;
+#[path = "service_node_latency.rs"]
+mod node_latency;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ConnectionRecord {
@@ -277,6 +279,7 @@ pub struct Service {
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     network_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     received_memory: Mutex<HashMap<String, Vec<images::ReceivedImage>>>,
+    node_probes: node_latency::NodeProbes,
 }
 impl Service {
     pub(crate) fn validate_upgrade_store(store: &Store) -> Result<()> {
@@ -372,6 +375,7 @@ impl Service {
             session_locks: Mutex::new(HashMap::new()),
             network_locks: Mutex::new(HashMap::new()),
             received_memory: Mutex::new(HashMap::new()),
+            node_probes: Default::default(),
         });
         let active = service.store.meta("active_connection")?;
         for record in service.store.list::<ConnectionRecord>("connection", None)? {
@@ -6350,7 +6354,7 @@ mod tests {
         assert_eq!(fixture.service.store.snapshot().unwrap().revision, revision);
     }
 
-    fn setup() -> (
+    pub(super) fn setup() -> (
         tempfile::TempDir,
         Arc<Service>,
         Arc<FakeVault>,

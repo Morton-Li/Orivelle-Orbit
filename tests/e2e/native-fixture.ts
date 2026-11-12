@@ -131,6 +131,19 @@ export async function fixture(
             return structuredClone(current);
           }
           if (command === "list_models") return models;
+          if (command === "probe_nodes")
+            return current.nodes
+              .filter((node) =>
+                (request.node_ids as string[]).includes(node.id),
+              )
+              .map((node, index) => ({
+                node_id: node.id,
+                node_revision: node.revision,
+                status: "available",
+                milliseconds: 82 + index * 50,
+                measured_at: new Date().toISOString(),
+              }));
+          if (command === "cancel_node_probes") return null;
           if (command === "update_settings") {
             current.settings = {
               ...current.settings,

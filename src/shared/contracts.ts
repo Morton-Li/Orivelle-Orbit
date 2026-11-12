@@ -137,6 +137,13 @@ export type NodeView = {
   capabilities: string[];
   revision: string;
 };
+export type NodeLatencyView = {
+  node_id: string;
+  node_revision: string;
+  status: "available" | "timeout" | "failed";
+  milliseconds: number | null;
+  measured_at: string;
+};
 export type ClientView = {
   client: ClientKind;
   installed: boolean;
@@ -446,6 +453,16 @@ export interface IpcCommands {
     result: BootstrapView;
   };
   list_models: { args: { connection_id: string }; result: ModelView[] };
+  probe_nodes: {
+    args: {
+      connection_id: string;
+      expected_revision: number;
+      node_ids: string[];
+      probe_id: string;
+    };
+    result: NodeLatencyView[];
+  };
+  cancel_node_probes: { args: { probe_id: string }; result: null };
   preview_client_config: {
     args: {
       connection_id: string;
