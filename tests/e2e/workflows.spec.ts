@@ -32,7 +32,7 @@ async function choose(page: Page, id: string, label: string) {
   await page.getByRole("option", { name: label, exact: true }).click();
 }
 async function chooseClaudeRoles(page: Page) {
-  for (const role of ["primary", "fallback", "auxiliary"]) {
+  for (const role of ["sonnet", "opus", "haiku"]) {
     await choose(page, `claude-${role}`, "synthetic-text");
   }
 }
@@ -85,7 +85,7 @@ test("real capability names populate client models and image edit options", asyn
   await fixture(page);
   await page.goto("/#/access");
   await expect(page.locator("#model-codex")).toHaveCount(0);
-  await page.locator("#claude-primary").click();
+  await page.locator("#claude-sonnet").click();
   await expect(
     page.getByRole("option", { name: "synthetic-text", exact: true }),
   ).toHaveCount(1);
@@ -713,13 +713,72 @@ test("deleting one local image never deletes other results of the same task", as
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
+test("home uses concise subtitles and Claude uses explicit model mappings", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/");
+  await expect(
+    page.getByText("接入全部兼容模型", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("自定义模型映射", { exact: true })).toBeVisible();
+  await page.goto("/#/access");
+  for (const name of ["Sonnet", "Opus", "Haiku"]) {
+    await expect(page.getByLabel(name, { exact: true })).toBeVisible();
+  }
+  await expect(page.getByText("角色模型", { exact: true })).toHaveCount(0);
+});
+
+test("manual update builds hide unavailable controls", async ({ page }) => {
+  const state = bootstrap();
+  state.in_app_updates = false;
+  state.settings.check_updates_on_start = true;
+  await fixture(page, { state });
+  await page.goto("/#/settings");
+  await expect(page.locator(".update-status")).toHaveText(
+    "当前版本需手动下载安装包更新",
+  );
+  await expect(
+    page.getByRole("button", { name: "检查更新", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("启动时检查更新")).toHaveCount(0);
+  expect(await calls(page, "check_update")).toBe(0);
+});
+
+test("startup update checking runs once and its result survives page navigation", async ({
+  page,
+}) => {
+  const state = bootstrap();
+  state.settings.check_updates_on_start = true;
+  await fixture(page, { state });
+  await page.goto("/");
+  await expect.poll(() => calls(page, "check_update")).toBe(1);
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "设置", exact: true })
+    .click();
+  await expect(page.locator(".update-status")).toHaveText("当前已是最新版本");
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "首页", exact: true })
+    .click();
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "设置", exact: true })
+    .click();
+  await expect(page.locator(".update-status")).toHaveText("当前已是最新版本");
+  expect(await calls(page, "check_update")).toBe(1);
+  expect(await calls(page, "download_update")).toBe(0);
+  expect(await calls(page, "install_update")).toBe(0);
+});
+
 test("access and settings show the supported controls and the installed version", async ({
   page,
 }) => {
   await fixture(page);
   await page.goto("/#/access");
   await expect(
-    page.getByRole("heading", { name: "角色模型", exact: true }),
+    page.getByRole("heading", { name: "模型映射", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("更多操作", { exact: true })).toHaveCount(0);
   await page

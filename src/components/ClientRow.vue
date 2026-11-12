@@ -24,7 +24,7 @@ const configurationAccess = computed(() => {
     return "client.configurationBlocked";
   return props.client.configuration_access === "allowed" &&
     props.client.configuration_access_revision
-    ? "client.configurationAllowed"
+    ? null
     : "client.configurationUnverified";
 });
 const loaded = computed(
@@ -67,7 +67,7 @@ const verified = computed(
           t(client.client === "codex" ? "home.codexHint" : "home.claudeHint")
         }}
       </p>
-      <p class="muted">
+      <p v-if="configurationAccess" class="muted">
         {{ t(configurationAccess) }}
       </p>
       <p v-if="client.managed === 'unknown'" class="muted">

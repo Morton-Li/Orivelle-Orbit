@@ -377,6 +377,8 @@ pub struct BootstrapView {
     pub platform: Option<String>,
     pub pending_authorization: Option<LoginStart>,
     pub maintenance_active: bool,
+    #[serde(default)]
+    pub in_app_updates: bool,
     pub session: SessionView,
     pub connections: Vec<ConnectionView>,
     pub nodes: Vec<NodeView>,
@@ -405,14 +407,14 @@ pub struct RestoreSource {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ClaudeRoleModels {
-    pub primary: String,
-    pub fallback: String,
-    pub auxiliary: String,
+pub struct ClaudeModelMapping {
+    pub sonnet: String,
+    pub opus: String,
+    pub haiku: String,
 }
-impl ClaudeRoleModels {
+impl ClaudeModelMapping {
     pub(crate) fn ids(&self) -> [&str; 3] {
-        [&self.primary, &self.fallback, &self.auxiliary]
+        [&self.sonnet, &self.opus, &self.haiku]
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

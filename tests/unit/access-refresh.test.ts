@@ -130,7 +130,7 @@ async function showAccess() {
       },
     },
   });
-  for (const role of ["primary", "fallback", "auxiliary"]) {
+  for (const role of ["sonnet", "opus", "haiku"]) {
     await wrapper.get(`#claude-${role}`).setValue(claudeModel().id);
   }
   return wrapper.get<HTMLButtonElement>(".access-client .button.primary");

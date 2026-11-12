@@ -1,9 +1,9 @@
 /** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
 export type ClientKind = "codex" | "claude";
-export type ClaudeRoleModels = {
-  primary: string;
-  fallback: string;
-  auxiliary: string;
+export type ClaudeModelMapping = {
+  sonnet: string;
+  opus: string;
+  haiku: string;
 };
 export type Theme = "system" | "light" | "dark";
 export type Locale = "zh-CN" | "en";
@@ -325,6 +325,7 @@ export type BootstrapView = {
   platform: "macos" | "windows" | null;
   pending_authorization: LoginStart | null;
   maintenance_active: boolean;
+  in_app_updates: boolean;
   session: SessionView;
   connections: ConnectionView[];
   nodes: NodeView[];
@@ -464,7 +465,7 @@ export interface IpcCommands {
       connection_id: string;
       expected_revision: number;
       client: ClientKind;
-      claude_models?: ClaudeRoleModels;
+      claude_mapping?: ClaudeModelMapping;
     };
     result: ConfigPreview;
   };

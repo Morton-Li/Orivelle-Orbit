@@ -922,7 +922,7 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
         preview
             .impact
             .iter()
-            .any(|line| line.contains("同一个获准模型"))
+            .any(|line| line.contains("Sonnet、Opus、Haiku 均映射至"))
     );
     assert_eq!(f.service.claude_mappings.inflight(), 0);
     assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
@@ -982,18 +982,18 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
 async fn role_switch_routes_each_alias_and_restores_original() {
     let f = mapping_fixture();
     let mut cache = f.service.account_cache(&f.record).unwrap();
-    let roles = ClaudeRoleModels {
-        primary: f.model.clone(),
-        fallback: "synthetic-fallback".into(),
-        auxiliary: "synthetic-auxiliary".into(),
+    let roles = ClaudeModelMapping {
+        sonnet: f.model.clone(),
+        opus: "synthetic-fallback".into(),
+        haiku: "synthetic-auxiliary".into(),
     };
     let original = cache
         .models
         .iter()
-        .find(|model| model.id == roles.primary)
+        .find(|model| model.id == roles.sonnet)
         .unwrap()
         .clone();
-    for id in [&roles.fallback, &roles.auxiliary] {
+    for id in [&roles.opus, &roles.haiku] {
         let mut model = original.clone();
         model.id = id.clone();
         cache.models.push(model);
@@ -1029,7 +1029,7 @@ async fn role_switch_routes_each_alias_and_restores_original() {
         .preview_claude_config(
             &f.record.view.id,
             f.record.view.revision,
-            &roles.primary,
+            &roles.sonnet,
             Some(&roles),
         )
         .unwrap();

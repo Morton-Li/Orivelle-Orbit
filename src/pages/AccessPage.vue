@@ -5,7 +5,7 @@ import { t } from "../shared/i18n";
 import { nodeName } from "../shared/format";
 import type {
   ClaudeRestoreCoordination,
-  ClaudeRoleModels,
+  ClaudeModelMapping,
   ClientKind,
   ConfigPreview,
 } from "../shared/contracts";
@@ -25,15 +25,15 @@ const nodeOptions = computed(() =>
     disabled: !node.available,
   })),
 );
-const claudeRoles = [
-  { key: "primary", label: "access.rolePrimary" },
-  { key: "fallback", label: "access.roleFallback" },
-  { key: "auxiliary", label: "access.roleAuxiliary" },
+const claudeMappings = [
+  { key: "sonnet", label: "access.mappingSonnet" },
+  { key: "opus", label: "access.mappingOpus" },
+  { key: "haiku", label: "access.mappingHaiku" },
 ] as const;
-const selectedRoles = ref<ClaudeRoleModels>({
-  primary: "",
-  fallback: "",
-  auxiliary: "",
+const selectedMapping = ref<ClaudeModelMapping>({
+  sonnet: "",
+  opus: "",
+  haiku: "",
 });
 const preview = ref<ConfigPreview | null>(null);
 const previewing = ref<Record<ClientKind, boolean>>({
@@ -88,23 +88,23 @@ const codexModelsAvailable = computed(() =>
       model.capabilities.includes(CAPABILITIES.responses),
   ),
 );
-const rolesReady = computed(() =>
-  claudeRoles.every(({ key }) =>
-    claudeModels.value.some((model) => model.id === selectedRoles.value[key]),
+const mappingReady = computed(() =>
+  claudeMappings.every(({ key }) =>
+    claudeModels.value.some((model) => model.id === selectedMapping.value[key]),
   ),
 );
 watch(
   () => store.scope,
   () => {
     previewGeneration++;
-    selectedRoles.value = { primary: "", fallback: "", auxiliary: "" };
+    selectedMapping.value = { sonnet: "", opus: "", haiku: "" };
   },
   { flush: "sync" },
 );
 watch(claudeModels, (models) => {
-  for (const { key } of claudeRoles) {
-    if (!models.some((model) => model.id === selectedRoles.value[key]))
-      selectedRoles.value[key] = "";
+  for (const { key } of claudeMappings) {
+    if (!models.some((model) => model.id === selectedMapping.value[key]))
+      selectedMapping.value[key] = "";
   }
 });
 async function requestPreview(client: ClientKind) {
@@ -112,14 +112,15 @@ async function requestPreview(client: ClientKind) {
   if (
     !connection ||
     switchSnapshot(client) ||
-    (client === "claude" ? !rolesReady.value : !codexModelsAvailable.value) ||
+    (client === "claude" ? !mappingReady.value : !codexModelsAvailable.value) ||
     !previewAllowed(client) ||
     previewing.value[client]
   )
     return;
   const scope = store.scope;
   const origin = connection.panel_origin;
-  const roles = client === "claude" ? { ...selectedRoles.value } : undefined;
+  const mapping =
+    client === "claude" ? { ...selectedMapping.value } : undefined;
   const generation = ++previewGeneration;
   const current = () =>
     generation === previewGeneration &&
@@ -134,7 +135,7 @@ async function requestPreview(client: ClientKind) {
         connection_id: connection.id,
         expected_revision: connection.revision,
         client,
-        ...(roles ? { claude_models: roles } : {}),
+        ...(mapping ? { claude_mapping: mapping } : {}),
       },
     );
     if (!result || !current()) return;
@@ -155,11 +156,11 @@ async function requestPreview(client: ClientKind) {
       result.operation !== "apply" ||
       result.client !== client ||
       !store.ready ||
-      (roles &&
-        (result.model_id !== roles.primary ||
-          !rolesReady.value ||
-          claudeRoles.some(
-            ({ key }) => roles[key] !== selectedRoles.value[key],
+      (mapping &&
+        (result.model_id !== mapping.sonnet ||
+          !mappingReady.value ||
+          claudeMappings.some(
+            ({ key }) => mapping[key] !== selectedMapping.value[key],
           ))) ||
       result.context.connection_id !== active?.id ||
       result.context.account_id !== active.account_id ||
@@ -279,7 +280,6 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
           }}
         </button>
       </div>
-      <p class="field-hint">{{ t("access.latencyHint") }}</p>
     </div>
   </section>
   <p
@@ -342,20 +342,20 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
             class="claude-model-config"
             aria-labelledby="claude-model-heading"
           >
-            <h3 id="claude-model-heading">{{ t("access.roleModels") }}</h3>
-            <p class="muted">{{ t("access.claudeRolesHint") }}</p>
-            <div class="claude-roles">
+            <h3 id="claude-model-heading">{{ t("access.modelMapping") }}</h3>
+            <p class="muted">{{ t("access.claudeMappingHint") }}</p>
+            <div class="claude-mappings">
               <div
-                v-for="role in claudeRoles"
-                :key="role.key"
-                class="claude-role"
+                v-for="entry in claudeMappings"
+                :key="entry.key"
+                class="claude-mapping"
               >
-                <label :for="`claude-${role.key}`" class="field-label">{{
-                  t(role.label)
+                <label :for="`claude-${entry.key}`" class="field-label">{{
+                  t(entry.label)
                 }}</label>
                 <OrbitSelect
-                  :id="`claude-${role.key}`"
-                  v-model="selectedRoles[role.key]"
+                  :id="`claude-${entry.key}`"
+                  v-model="selectedMapping[entry.key]"
                   :options="claudeOptions"
                   :placeholder="
                     t(
@@ -380,7 +380,7 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
               !store.ready ||
               !previewAllowed(client.client) ||
               (client.client === 'claude'
-                ? !rolesReady
+                ? !mappingReady
                 : !codexModelsAvailable) ||
               store.modelsLoading ||
               previewing[client.client] ||

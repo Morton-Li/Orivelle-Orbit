@@ -766,20 +766,20 @@ textarea::placeholder {
   margin-bottom: 4px;
   font-size: 15px;
 }
-.claude-roles {
+.claude-mappings {
   margin-top: 8px;
 }
-.claude-role {
+.claude-mapping {
   display: grid;
   grid-template-columns: minmax(125px, 1fr) minmax(0, 1.55fr);
   align-items: center;
   gap: 16px;
   padding: 10px 0;
 }
-.claude-role + .claude-role {
+.claude-mapping + .claude-mapping {
   border-top: 1px solid var(--line);
 }
-.claude-role .field-label {
+.claude-mapping .field-label {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
@@ -1481,7 +1481,7 @@ textarea::placeholder {
   .access-client-controls .button {
     width: 100%;
   }
-  .claude-role {
+  .claude-mapping {
     grid-template-columns: minmax(0, 1fr);
     gap: 7px;
   }
