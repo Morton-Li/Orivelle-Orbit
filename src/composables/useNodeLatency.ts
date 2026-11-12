@@ -2,7 +2,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import { call } from "../shared/bridge";
 import type { NodeLatencyView, NodeView } from "../shared/contracts";
-import { locale, t } from "../shared/i18n";
+import { t } from "../shared/i18n";
 
 const refreshInterval = 30_000;
 const staleAfter = 60_000;
@@ -221,10 +221,5 @@ export function useNodeLatency() {
       ? `${text} · ${t("access.latencyStale")}`
       : text;
   }
-  const updatedLabel = computed(() =>
-    updatedAt.value === null
-      ? ""
-      : `${t("access.latencyUpdated")} ${new Date(updatedAt.value).toLocaleTimeString(locale.value, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`,
-  );
-  return { measurements, refreshing, active, refresh, label, updatedLabel };
+  return { measurements, refreshing, active, refresh, label };
 }

@@ -92,7 +92,7 @@ const zh = {
   "access.mappingOpus": "Opus",
   "access.mappingHaiku": "Haiku",
   "access.originalRequired": "请先切回原配置。",
-  "access.node": "推理节点",
+  "access.node": "节点",
   "access.model": "模型",
   "access.selectModel": "选择获准的模型",
   "access.noModels": "连接账户和节点后取得模型",
@@ -107,7 +107,6 @@ const zh = {
   "access.latencyTimeout": "探测超时",
   "access.latencyFailed": "连接失败",
   "access.latencyStale": "已过期",
-  "access.latencyUpdated": "更新于",
   "access.readonly":
     "只读账户可查看预算和消费，自动取得接入凭据需现有业务写权限。",
   "access.previewTitle": "确认配置与影响范围",
@@ -477,7 +476,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.mappingOpus": "Opus",
   "access.mappingHaiku": "Haiku",
   "access.originalRequired": "Switch back to the original configuration first.",
-  "access.node": "Inference node",
+  "access.node": "Node",
   "access.model": "Model",
   "access.selectModel": "Select an authorized model",
   "access.noModels": "Connect an account and node to obtain models",
@@ -492,7 +491,6 @@ const en: Record<keyof typeof zh, string> = {
   "access.latencyTimeout": "Probe timed out",
   "access.latencyFailed": "Connection failed",
   "access.latencyStale": "Stale",
-  "access.latencyUpdated": "Updated at",
   "access.readonly":
     "Read-only accounts can view budgets and usage. Automatic credential delivery requires existing business write permissions.",
   "access.previewTitle": "Review configuration and impact",
