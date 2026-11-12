@@ -86,6 +86,23 @@ pub struct NodeView {
     pub capabilities: Vec<String>,
     pub revision: String,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeLatencyView {
+    pub node_id: String,
+    pub node_revision: String,
+    pub status: NodeLatencyStatus,
+    pub milliseconds: Option<u64>,
+    pub measured_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLatencyStatus {
+    Available,
+    Timeout,
+    Failed,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientEvidence {
     pub kind: String,

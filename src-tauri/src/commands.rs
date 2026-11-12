@@ -59,6 +59,19 @@ pub struct Node {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NodeProbe {
+    connection_id: String,
+    expected_revision: u64,
+    node_ids: Vec<String>,
+    probe_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelNodeProbes {
+    probe_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Preview {
     connection_id: String,
     expected_revision: u64,
@@ -219,6 +232,25 @@ pub fn select_node(native: State<'_, Native>, request: Node) -> Result<Bootstrap
 #[tauri::command]
 pub async fn list_models(native: State<'_, Native>, request: Connection) -> Result<Vec<ModelView>> {
     native.service.list_models(&request.connection_id).await
+}
+#[tauri::command]
+pub async fn probe_nodes(
+    native: State<'_, Native>,
+    request: NodeProbe,
+) -> Result<Vec<NodeLatencyView>> {
+    native
+        .service
+        .probe_nodes(
+            &request.connection_id,
+            request.expected_revision,
+            &request.node_ids,
+            &request.probe_id,
+        )
+        .await
+}
+#[tauri::command]
+pub fn cancel_node_probes(native: State<'_, Native>, request: CancelNodeProbes) -> Result<()> {
+    native.service.cancel_node_probes(&request.probe_id)
 }
 #[tauri::command]
 pub async fn preview_client_config(

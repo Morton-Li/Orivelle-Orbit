@@ -160,6 +160,8 @@ pub fn run() {
             logout,
             select_node,
             list_models,
+            probe_nodes,
+            cancel_node_probes,
             preview_client_config,
             apply_client_config,
             export_claude_import,

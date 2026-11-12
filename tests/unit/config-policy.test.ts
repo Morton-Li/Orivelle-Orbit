@@ -384,7 +384,12 @@ describe("Codex catalog confirmation", () => {
       await nextTick();
       expect(button.element.disabled).toBe(true);
       await button.trigger("click");
-      expect(bridge.call).not.toHaveBeenCalled();
+      expect(
+        bridge.call.mock.calls.filter(
+          ([command]) =>
+            !["probe_nodes", "cancel_node_probes"].includes(command),
+        ),
+      ).toEqual([]);
       client.configuration_access = "allowed";
       await nextTick();
       expect(button.element.disabled).toBe(false);
