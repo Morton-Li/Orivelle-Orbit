@@ -164,28 +164,12 @@ pre {
   font-weight: 650;
 }
 .brand-mark {
-  border: 1.5px solid var(--accent);
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  transform: rotate(-35deg);
-  position: relative;
-}
-.brand-mark:before {
-  content: "";
-  position: absolute;
-  width: 33px;
-  height: 11px;
-  border: 1.3px solid var(--accent);
-  border-radius: 50%;
-}
-.brand-mark span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+  display: block;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
   background: var(--accent);
+  mask: url("./assets/orbit-mark.svg?no-inline") center / contain no-repeat;
 }
 .sidebar nav {
   display: flex;
@@ -1524,11 +1508,8 @@ textarea::placeholder {
     padding-left: 0;
   }
   .brand-mark {
-    width: 24px;
-    height: 24px;
-  }
-  .brand-mark:before {
-    width: 29px;
+    width: 32px;
+    height: 32px;
   }
   .sidebar nav {
     flex-direction: row;

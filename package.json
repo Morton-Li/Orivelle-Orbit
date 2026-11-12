@@ -10,6 +10,7 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "brand:generate": "node scripts/generate-brand-assets.mjs",
     "build": "vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint src tests vite.config.ts playwright.config.ts --max-warnings 0",

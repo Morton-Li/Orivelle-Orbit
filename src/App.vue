@@ -111,10 +111,10 @@ onUnmounted(() => {
   </header>
   <div class="app-shell">
     <aside class="sidebar">
-      <RouterLink to="/" class="brand" aria-label="Orivelle Orbit"
-        ><span class="brand-mark" aria-hidden="true"><span /></span
-        ><span>Orivelle <strong>Orbit</strong></span></RouterLink
-      >
+      <RouterLink to="/" class="brand" aria-label="Orivelle Orbit">
+        <span class="brand-mark" aria-hidden="true" />
+        <span>Orivelle <strong>Orbit</strong></span>
+      </RouterLink>
       <nav :aria-label="t('nav.label')">
         <RouterLink
           v-for="item in navigation"

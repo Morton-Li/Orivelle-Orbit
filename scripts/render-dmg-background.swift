@@ -40,19 +40,12 @@ text("Orivelle Orbit", x: 48, top: 38, size: 25, weight: .semibold, ink: 0x213e3
 text("连接所需，专注所想。", x: 49, top: 76, size: 13)
 
 // Use the same orbit geometry and green as src/assets/orbit-mark.svg.
-graphics.cgContext.saveGState()
-graphics.cgContext.translateBy(x: 582, y: 350)
-graphics.cgContext.rotate(by: 35 * .pi / 180)
-color(0x326b58).setStroke()
-let sphere = NSBezierPath(ovalIn: NSRect(x: -18, y: -18, width: 36, height: 36))
-sphere.lineWidth = 2.1
-sphere.stroke()
-let orbit = NSBezierPath(ovalIn: NSRect(x: -23, y: -6.8, width: 46, height: 13.6))
-orbit.lineWidth = 2.1
-orbit.stroke()
-color(0x326b58).setFill()
-NSBezierPath(ovalIn: NSRect(x: -3, y: -3, width: 6, height: 6)).fill()
-graphics.cgContext.restoreGState()
+let brandURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent("../src/assets/orbit-mark.svg").standardizedFileURL
+guard let brand = NSImage(contentsOf: brandURL) else {
+    fatalError("Cannot load the Orbit vector mark.")
+}
+brand.draw(in: NSRect(x: 550, y: 318, width: 64, height: 64))
 
 color(0xd7e3d9).setStroke()
 let divider = NSBezierPath()

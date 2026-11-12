@@ -1,8 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="#eef4ef"/>
-  <g transform="rotate(-35 512 512)" fill="none" stroke="#326b58" stroke-width="34">
-    <circle cx="512" cy="512" r="284"/>
-    <ellipse cx="512" cy="512" rx="348" ry="106"/>
-  </g>
-  <circle cx="512" cy="512" r="48" fill="#326b58"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="orbit-title orbit-description">
+  <title id="orbit-title">Orbit</title>
+  <desc id="orbit-description">森林绿色的正圆断环，右上方的独立圆点位于加宽的缺口中。</desc>
+  <path d="M 205.274 107.294 A 80 80 0 1 1 148.706 50.726" fill="none" stroke="#326b58" stroke-width="24" stroke-linecap="butt"/>
+  <circle cx="191.640" cy="64.360" r="18" fill="#326b58"/>
 </svg>
