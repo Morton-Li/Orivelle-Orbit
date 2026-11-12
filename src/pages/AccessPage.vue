@@ -240,9 +240,27 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
       </button>
     </div>
     <div class="field">
-      <label for="access-node" class="field-label">{{
-        t("access.node")
-      }}</label>
+      <div class="field-heading">
+        <label for="access-node" class="field-label">{{
+          t("access.node")
+        }}</label>
+        <button
+          type="button"
+          class="button ghost node-latency-refresh"
+          :disabled="!latency.active.value || latency.refreshing.value"
+          :aria-busy="latency.refreshing.value"
+          @click="latency.refresh"
+        >
+          <OrbitIcon name="refresh" :size="13" />
+          {{
+            t(
+              latency.refreshing.value
+                ? "access.latencyRefreshing"
+                : "access.latencyRefresh",
+            )
+          }}
+        </button>
+      </div>
       <OrbitSelect
         id="access-node"
         :model-value="store.activeConnection?.node_id ?? ''"
@@ -261,25 +279,6 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
         :options="nodeOptions"
         @update:model-value="store.selectNode"
       />
-      <div class="node-latency-controls">
-        <span class="muted">{{ latency.updatedLabel.value }}</span>
-        <button
-          type="button"
-          class="button ghost node-latency-refresh"
-          :disabled="!latency.active.value || latency.refreshing.value"
-          :aria-busy="latency.refreshing.value"
-          @click="latency.refresh"
-        >
-          <OrbitIcon name="refresh" :size="13" />
-          {{
-            t(
-              latency.refreshing.value
-                ? "access.latencyRefreshing"
-                : "access.latencyRefresh",
-            )
-          }}
-        </button>
-      </div>
     </div>
   </section>
   <p

@@ -655,17 +655,9 @@ textarea:disabled {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.node-latency-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 5px;
-  font-size: 11px;
-}
 .node-latency-refresh {
-  min-height: 28px;
-  padding: 3px 0;
+  min-height: 0;
+  padding: 0;
   font-size: 11px;
 }
 .select-trigger[data-placeholder],
