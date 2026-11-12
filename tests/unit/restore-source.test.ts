@@ -13,7 +13,7 @@ vi.mock("../../src/shared/bridge", async (original) => ({
 import ConfigReviewDialog from "../../src/components/ConfigReviewDialog.vue";
 import AccessPage from "../../src/pages/AccessPage.vue";
 import { useOrbitStore } from "../../src/stores/orbit";
-import type { BackupGroup, ConfigPreview } from "../../src/shared/contracts";
+import type { SwitchSnapshot, ConfigPreview } from "../../src/shared/contracts";
 import {
   bootstrap,
   orbitSelectStub,
@@ -21,7 +21,7 @@ import {
 } from "../fixtures";
 
 let view: VueWrapper | undefined;
-function backup(id = "selected-backup"): BackupGroup {
+function snapshot(id = "selected-snapshot"): SwitchSnapshot {
   return {
     id,
     client: "claude",
@@ -35,7 +35,7 @@ function backup(id = "selected-backup"): BackupGroup {
     state: "available",
   };
 }
-function preview(source: BackupGroup): ConfigPreview {
+function preview(source: SwitchSnapshot): ConfigPreview {
   return {
     id: "restore-preview",
     client: "claude",
@@ -55,7 +55,7 @@ function preview(source: BackupGroup): ConfigPreview {
       installation_id: source.installation_id,
     },
     restore_source: {
-      backup_group_id: source.id,
+      snapshot_id: source.id,
       expires_at: source.expires_at,
     },
     impact: [],
@@ -93,20 +93,20 @@ function show(value: ConfigPreview) {
   });
   return view.get<HTMLButtonElement>(".button.primary");
 }
-describe("Claude restore confirmation binds the selected backup", () => {
-  it("retires the selected source when it disappears even though another same-owner backup remains", async () => {
-    const selected = backup();
+describe("Claude restore confirmation binds the selected snapshot", () => {
+  it("retires the selected source when it disappears even though another same-owner snapshot remains", async () => {
+    const selected = snapshot();
     const store = useOrbitStore();
-    store.state.backups = [selected, backup("another-backup")];
+    store.state.switch_snapshots = [selected, snapshot("another-snapshot")];
     const button = show(preview(selected));
     expect(store.ready).toBe(false);
     expect(button.element.disabled).toBe(false);
-    store.state.backups = [backup("another-backup")];
+    store.state.switch_snapshots = [snapshot("another-snapshot")];
     await nextTick();
     expect(button.element.disabled).toBe(true);
     await button.trigger("click");
     expect(bridge.call).not.toHaveBeenCalled();
-    store.state.backups.push(selected);
+    store.state.switch_snapshots.push(selected);
     await nextTick();
     expect(button.element.disabled).toBe(true);
   });
@@ -120,11 +120,11 @@ describe("Claude restore confirmation binds the selected backup", () => {
     "deadline",
     "unavailable",
   ] as const)(
-    "permanently retires the confirmation when the selected backup's %s changes",
+    "permanently retires the confirmation when the selected snapshot's %s changes",
     async (change) => {
-      const selected = backup();
+      const selected = snapshot();
       const store = useOrbitStore();
-      store.state.backups = [selected, backup("another-backup")];
+      store.state.switch_snapshots = [selected, snapshot("another-snapshot")];
       const button = show(preview(selected));
       expect(button.element.disabled).toBe(false);
       const changed = { ...selected };
@@ -138,10 +138,10 @@ describe("Claude restore confirmation binds the selected backup", () => {
       else if (change === "deadline")
         changed.expires_at = new Date(Date.now() + 45_000).toISOString();
       else changed.state = "unavailable";
-      store.state.backups[0] = changed;
+      store.state.switch_snapshots[0] = changed;
       await nextTick();
       expect(button.element.disabled).toBe(true);
-      store.state.backups[0] = selected;
+      store.state.switch_snapshots[0] = selected;
       await nextTick();
       expect(button.element.disabled).toBe(true);
       await button.trigger("click");
@@ -149,15 +149,15 @@ describe("Claude restore confirmation binds the selected backup", () => {
     },
   );
 
-  it("expires the selected source without a bootstrap refresh or a live login", async () => {
-    const selected = backup();
-    useOrbitStore().state.backups = [selected];
+  it("expires the preview without a bootstrap refresh or a live login", async () => {
+    const selected = snapshot();
+    useOrbitStore().state.switch_snapshots = [selected];
     const button = show(preview(selected));
     expect(button.element.disabled).toBe(false);
-    vi.advanceTimersByTime(31_000);
+    vi.advanceTimersByTime(61_000);
     await nextTick();
     expect(button.element.disabled).toBe(true);
-    expect(view!.text()).toContain("所选备份");
+    expect(view!.text()).toContain("原配置记录");
     await button.trigger("click");
     expect(bridge.call).not.toHaveBeenCalled();
   });
@@ -165,11 +165,11 @@ describe("Claude restore confirmation binds the selected backup", () => {
   it.each([
     "missing source",
     "invalid deadline",
-    "expired source",
+    "mismatched source deadline",
     "invalid preview deadline",
   ] as const)("rejects a restore preview with %s", (fault) => {
-    const selected = backup();
-    useOrbitStore().state.backups = [selected];
+    const selected = snapshot();
+    useOrbitStore().state.switch_snapshots = [selected];
     const value = preview(selected);
     if (value.operation !== "restore")
       throw new Error("Expected restore fixture");
@@ -177,11 +177,10 @@ describe("Claude restore confirmation binds the selected backup", () => {
       delete (value as Partial<typeof value>).restore_source;
     else if (fault === "invalid deadline")
       value.restore_source.expires_at = "invalid";
-    else if (fault === "expired source") {
+    else if (fault === "mismatched source deadline") {
       value.restore_source.expires_at = new Date(
         Date.now() - 1000,
       ).toISOString();
-      selected.expires_at = value.restore_source.expires_at;
     } else value.expires_at = "invalid";
     expect(show(value).element.disabled).toBe(true);
     expect(bridge.call).not.toHaveBeenCalled();
@@ -190,13 +189,16 @@ describe("Claude restore confirmation binds the selected backup", () => {
   it.each(["source", "owner", "client", "deadline", "file count"] as const)(
     "rejects a native restore response for a different %s than the selected row",
     async (change) => {
-      const selected = backup();
-      useOrbitStore().state.backups = [selected, backup("another-backup")];
+      const selected = snapshot();
+      useOrbitStore().state.switch_snapshots = [
+        selected,
+        snapshot("another-snapshot"),
+      ];
       const result = preview(selected);
       if (result.operation !== "restore")
         throw new Error("Expected restore fixture");
       if (change === "source")
-        result.restore_source.backup_group_id = "another-backup";
+        result.restore_source.snapshot_id = "another-snapshot";
       else if (change === "owner")
         result.restore_owner.account_id = "another-account";
       else if (change === "client") result.client = "codex";
@@ -216,25 +218,22 @@ describe("Claude restore confirmation binds the selected backup", () => {
           },
         },
       });
-      await view
-        .get("#backup-account")
-        .setValue("https://panel.invalid/synthetic-account-a");
-      await view.get(".backup-row .button.secondary").trigger("click");
+      await view.get("#client-claude .button.secondary").trigger("click");
       await flushPromises();
       expect(bridge.call).toHaveBeenCalledWith("preview_restore", {
-        backup_group_id: selected.id,
+        snapshot_id: selected.id,
       });
       expect(
         view.findComponent(ConfigReviewDialog).props("preview"),
       ).toBeNull();
-      expect(useOrbitStore().notice?.text).toContain("所选备份");
+      expect(useOrbitStore().notice?.text).toContain("原配置记录");
     },
   );
 
   it("freezes the selected owner instead of adopting an in-place row mutation during preview", async () => {
-    const selected = backup();
+    const selected = snapshot();
     const store = useOrbitStore();
-    store.state.backups = [selected];
+    store.state.switch_snapshots = [selected];
     let resolve!: (value: ConfigPreview) => void;
     bridge.call.mockReturnValueOnce(
       new Promise<ConfigPreview>((done) => {
@@ -251,21 +250,18 @@ describe("Claude restore confirmation binds the selected backup", () => {
         },
       },
     });
-    await view
-      .get("#backup-account")
-      .setValue("https://panel.invalid/synthetic-account-a");
-    await view.get(".backup-row .button.secondary").trigger("click");
-    store.state.backups[0]!.account_id = "another-account";
-    resolve(preview(store.state.backups[0]!));
+    await view.get("#client-claude .button.secondary").trigger("click");
+    store.state.switch_snapshots[0]!.account_id = "another-account";
+    resolve(preview(store.state.switch_snapshots[0]!));
     await flushPromises();
     expect(view.findComponent(ConfigReviewDialog).props("preview")).toBeNull();
-    expect(store.notice?.text).toContain("所选备份");
+    expect(store.notice?.text).toContain("原配置记录");
   });
 
-  it("restores the explicitly selected backup while logged out without a model or inference request", async () => {
-    const selected = backup();
+  it("restores the explicitly selected snapshot while logged out without a model or inference request", async () => {
+    const selected = snapshot();
     const store = useOrbitStore();
-    store.state.backups = [selected, backup("another-backup")];
+    store.state.switch_snapshots = [selected, snapshot("another-snapshot")];
     const refreshed = {
       ...store.state,
       state_revision: store.state.state_revision + 1,
@@ -276,7 +272,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
         client: "claude",
         state: "restored",
         loaded_state: "restart_required",
-        backup_group_id: "completed-restore",
+        snapshot_id: "completed-restore",
       })
       .mockResolvedValueOnce(refreshed);
     view = mount(AccessPage, {
@@ -291,10 +287,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
         },
       },
     });
-    await view
-      .get("#backup-account")
-      .setValue("https://panel.invalid/synthetic-account-a");
-    await view.get(".backup-row .button.secondary").trigger("click");
+    await view.get("#client-claude .button.secondary").trigger("click");
     await flushPromises();
     const confirm = view.get<HTMLButtonElement>(
       '[role="dialog"] .button.primary',
@@ -303,7 +296,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
     await confirm.trigger("click");
     await flushPromises();
     expect(bridge.call.mock.calls).toEqual([
-      ["preview_restore", { backup_group_id: selected.id }],
+      ["preview_restore", { snapshot_id: selected.id }],
       [
         "restore_client_config",
         { preview_id: "restore-preview", confirmed: true },
@@ -315,8 +308,8 @@ describe("Claude restore confirmation binds the selected backup", () => {
   });
 
   it("only previews preference coordination after its separate explicit action", async () => {
-    const selected = backup();
-    useOrbitStore().state.backups = [selected];
+    const selected = snapshot();
+    useOrbitStore().state.switch_snapshots = [selected];
     const result = Object.assign(preview(selected), {
       restore_coordination: "claude_main_preferences_v1" as const,
     });
@@ -331,12 +324,9 @@ describe("Claude restore confirmation binds the selected backup", () => {
         },
       },
     });
-    await view
-      .get("#backup-account")
-      .setValue("https://panel.invalid/synthetic-account-a");
     const action = view
-      .findAll(".backup-row button")
-      .find((button) => button.text() === "保留偏好后预览恢复");
+      .findAll("#client-claude button")
+      .find((button) => button.text() === "保留 Claude 偏好后切回");
     expect(
       action,
       "separate preference coordination preview action",
@@ -347,7 +337,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
       [
         "preview_restore",
         {
-          backup_group_id: selected.id,
+          snapshot_id: selected.id,
           coordination: "claude_main_preferences_v1",
         },
       ],
@@ -364,8 +354,8 @@ describe("Claude restore confirmation binds the selected backup", () => {
   ] as const)(
     "rejects a mismatched native mode for %s",
     async (_description, coordinated, nativeMode) => {
-      const selected = backup();
-      useOrbitStore().state.backups = [selected];
+      const selected = snapshot();
+      useOrbitStore().state.switch_snapshots = [selected];
       bridge.call.mockResolvedValueOnce(
         Object.assign(preview(selected), { restore_coordination: nativeMode }),
       );
@@ -379,29 +369,26 @@ describe("Claude restore confirmation binds the selected backup", () => {
           },
         },
       });
-      await view
-        .get("#backup-account")
-        .setValue("https://panel.invalid/synthetic-account-a");
       const action = coordinated
         ? view
-            .findAll(".backup-row button")
-            .find((button) => button.text() === "保留偏好后预览恢复")
-        : view.get(".backup-row .button.secondary");
+            .findAll("#client-claude button")
+            .find((button) => button.text() === "保留 Claude 偏好后切回")
+        : view.get("#client-claude .button.secondary");
       expect(action).toBeDefined();
       await action!.trigger("click");
       await flushPromises();
       expect(
         view.findComponent(ConfigReviewDialog).props("preview"),
       ).toBeNull();
-      expect(useOrbitStore().notice?.text).toContain("所选备份");
+      expect(useOrbitStore().notice?.text).toContain("原配置记录");
       expect(bridge.call.mock.calls).toHaveLength(1);
     },
   );
 
   it("requires the explicit preserving-preferences confirmation without sending file content", async () => {
-    const selected = backup();
+    const selected = snapshot();
     const store = useOrbitStore();
-    store.state.backups = [selected];
+    store.state.switch_snapshots = [selected];
     const value = Object.assign(preview(selected), {
       restore_coordination: "claude_main_preferences_v1" as const,
       impact: ["保留后续偏好，只恢复原接入模式。"],
@@ -416,7 +403,7 @@ describe("Claude restore confirmation binds the selected backup", () => {
         client: "claude",
         state: "restored",
         loaded_state: "restart_required",
-        backup_group_id: "coordinated-restore",
+        snapshot_id: "coordinated-restore",
       })
       .mockResolvedValueOnce(refreshed);
     const button = show(value);
@@ -433,8 +420,8 @@ describe("Claude restore confirmation binds the selected backup", () => {
   });
 
   it("disables confirmation for an unknown native coordination mode", () => {
-    const selected = backup();
-    useOrbitStore().state.backups = [selected];
+    const selected = snapshot();
+    useOrbitStore().state.switch_snapshots = [selected];
     const value = Object.assign(preview(selected), {
       restore_coordination: "unknown_coordination",
     });
@@ -443,10 +430,10 @@ describe("Claude restore confirmation binds the selected backup", () => {
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
-  it("does not offer preference coordination for another client or an unavailable backup", async () => {
-    const other = { ...backup("other-client"), client: "codex" as const };
-    const unavailable = { ...backup(), state: "unavailable" as const };
-    useOrbitStore().state.backups = [other, unavailable];
+  it("does not offer preference coordination for another client or an unavailable snapshot", async () => {
+    const other = { ...snapshot("other-client"), client: "codex" as const };
+    const unavailable = { ...snapshot(), state: "unavailable" as const };
+    useOrbitStore().state.switch_snapshots = [other, unavailable];
     view = mount(AccessPage, {
       global: {
         stubs: {
@@ -457,10 +444,11 @@ describe("Claude restore confirmation binds the selected backup", () => {
         },
       },
     });
-    await view
-      .get("#backup-account")
-      .setValue("https://panel.invalid/synthetic-account-a");
-    expect(view.text()).not.toContain("保留偏好后预览恢复");
+    expect(view.find("#client-codex .text-button").exists()).toBe(false);
+    expect(
+      view.get<HTMLButtonElement>("#client-claude .text-button").element
+        .disabled,
+    ).toBe(true);
     expect(bridge.call).not.toHaveBeenCalled();
   });
 });

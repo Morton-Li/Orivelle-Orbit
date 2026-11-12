@@ -787,12 +787,6 @@ textarea::placeholder {
 .claude-connect {
   justify-self: end;
 }
-.manual-backup-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
-}
 .section-block {
   margin-top: 30px;
 }
@@ -806,10 +800,6 @@ textarea::placeholder {
   font-size: 12px;
   margin-bottom: 17px;
 }
-.backup-scope {
-  margin-bottom: 17px;
-  max-width: 520px;
-}
 .empty-inline {
   display: flex;
   align-items: center;
@@ -818,25 +808,6 @@ textarea::placeholder {
   font-size: 12px;
   padding: 20px 0;
   border-top: 1px solid var(--line);
-}
-.backup-row {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  padding: 14px 0;
-  border-top: 1px solid var(--line);
-}
-.backup-row strong {
-  font-size: 12px;
-}
-.backup-row p {
-  font-size: 11px;
-}
-.backup-row > .button {
-  margin-left: auto;
-}
-.backup-row > .icon {
-  color: var(--muted);
 }
 .info-box {
   display: flex;
@@ -1529,12 +1500,6 @@ textarea::placeholder {
   }
   .image-entry-art {
     display: none;
-  }
-  .backup-row {
-    flex-wrap: wrap;
-  }
-  .backup-row .button {
-    margin-left: 32px;
   }
   .result-grid {
     grid-template-columns: 1fr;

@@ -148,7 +148,7 @@ struct RecoveryRecord {
     state: &'static str,
     store: &'static str,
     references: Vec<ReferenceState>,
-    backup_group_id: Option<String>,
+    snapshot_id: Option<String>,
     original_present: [bool; 2],
     original_modes: [Option<u32>; 2],
     exact_restore_proven: bool,
@@ -670,7 +670,7 @@ impl NativeRun {
                 deleted: false,
             })
             .collect(),
-            backup_group_id: None,
+            snapshot_id: None,
             original_present: [false; 2],
             original_modes: [None; 2],
             exact_restore_proven: false,
@@ -916,11 +916,11 @@ impl NativeRun {
         )?;
         let preview = self
             .service
-            .preview_client_config_refreshed(
+            .preview_switch_config(
                 &self.connection.view.id,
                 self.connection.view.revision,
                 ClientKind::Codex,
-                "synthetic-responses",
+                None,
             )
             .await
             .map_err(|_| "native_joint_preview_failed")?;
@@ -948,7 +948,7 @@ impl NativeRun {
                 .recovery
                 .lock()
                 .map_err(|_| "recovery_record_unavailable")?;
-            record.backup_group_id = Some(journal_id);
+            record.snapshot_id = Some(journal_id);
             record.step = "joint_preview_encrypted";
             record.state = "confirmation_pending";
             record.persist()?;
@@ -984,7 +984,7 @@ impl NativeRun {
             .map_err(|_| "native_joint_apply_failed")?;
         if saved.state != "saved"
             || saved.loaded_state != "restart_required"
-            || saved.backup_group_id != self.backup_id
+            || saved.snapshot_id != self.backup_id
         {
             return Err("native_saved_state_invalid");
         }
@@ -993,7 +993,7 @@ impl NativeRun {
             .service
             .store
             .get::<Journal>(
-                "backup",
+                "journal",
                 self.backup_id.as_deref().ok_or("native_backup_missing")?,
             )
             .map_err(|_| "native_backup_read_failed")?

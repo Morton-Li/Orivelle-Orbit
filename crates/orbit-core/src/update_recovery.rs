@@ -714,12 +714,7 @@ fn publish(
 /// Caller holds the maintenance lease and one helper-update exclusive lock.
 pub(crate) fn ensure_configuration_idle(store: &Store) -> Result<()> {
     for journal in store.list::<crate::config::Journal>("journal", None)? {
-        if !["committed", "restored"].contains(&journal.phase.as_str())
-            || journal.phase == "committed"
-                && store
-                    .get::<crate::config::Journal>("backup", &journal.id)?
-                    .is_none()
-        {
+        if !["committed", "restored"].contains(&journal.phase.as_str()) {
             return Err(fail("update_configuration_pending"));
         }
     }
@@ -2021,7 +2016,7 @@ mod tests {
     }
     #[test]
     fn unfinished_configuration_prevents_maintenance_and_preparation_before_any_material_change() {
-        for phase in ["prepared", "publishing", "conflict", "committed", "unknown"] {
+        for phase in ["prepared", "publishing", "conflict", "unknown"] {
             let (f, store) = fixture();
             let store = Arc::new(store);
             let vault = Arc::new(NoCallsVault::default());

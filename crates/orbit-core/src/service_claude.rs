@@ -489,7 +489,7 @@ impl Service {
         for journal in self.store.list::<Journal>("journal", None)? {
             if journal.client == ClientKind::Claude
                 && journal.id != own_journal_id
-                && journal.requires_recovery(&self.store)?
+                && journal.requires_recovery()
             {
                 return Err(fail("configuration_recovery_required"));
             }
@@ -930,7 +930,7 @@ impl Service {
             client: ClientKind::Claude,
             state: if restore { "restored" } else { "saved" }.into(),
             loaded_state: "restart_required".into(),
-            backup_group_id: Some(journal.id),
+            snapshot_id: Some(journal.id),
         })
     }
 
@@ -1023,15 +1023,7 @@ impl Service {
         let context_guard =
             |context: &ClaudeContext, _: bool| self.validate_claude_context(context, true);
         let engine = self.claude_engine(&guard, &context_guard);
-        let source_expiry = chrono::DateTime::parse_from_rfc3339(&backup.expires_at)
-            .map_err(|_| fail("backup_invalid"))?;
-        let preview_deadline = chrono::Utc::now() + chrono::Duration::minutes(5);
-        let expires_at = if backup.purpose == JournalPurpose::Switch {
-            preview_deadline
-        } else {
-            preview_deadline.min(source_expiry.with_timezone(&chrono::Utc))
-        }
-        .to_rfc3339();
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
         let mut frozen = None;
         let mut original_mode = None;
         let mut paths = backup.paths.clone();
@@ -1067,9 +1059,8 @@ impl Service {
             model_id: None,
             context: None,
             restore_source: Some(RestoreSource {
-                backup_group_id: backup_id.into(),
+                snapshot_id: backup_id.into(),
                 expires_at: backup.expires_at.clone(),
-                kind: backup.backup_kind(),
             }),
             restore_coordination: coordination,
             restore_owner: Some(RestoreOwner {
@@ -1131,7 +1122,7 @@ impl Service {
             return Ok(());
         };
         let journal = &current;
-        if journal.client != ClientKind::Claude || !journal.requires_recovery(&self.store)? {
+        if journal.client != ClientKind::Claude || !journal.requires_recovery() {
             return Ok(());
         }
         let observation = self.observe_configuration(ClientKind::Claude)?;

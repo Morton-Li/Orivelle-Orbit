@@ -29,8 +29,6 @@ const defaultSettings: SettingsView = {
   close_behavior: "keep_running",
   image_disk_limit_bytes: 2 * 1024 ** 3,
   preview_cache_limit_bytes: 128 * 1024 ** 2,
-  backup_retention_days: 30,
-  backup_max_groups: 5,
   check_updates_on_start: false,
 };
 function undetectedClient(client: ClientKind): ClientView {
@@ -76,7 +74,7 @@ export function emptyState(): BootstrapView {
     settings: { ...defaultSettings },
     tasks: [],
     image_history: [],
-    backups: [],
+    switch_snapshots: [],
   };
 }
 
@@ -161,8 +159,8 @@ export const useOrbitStore = defineStore("orbit", () => {
         tasks.value.some((task) => task.id === image.task_id),
     ),
   );
-  const backups = computed(() =>
-    state.value.backups.filter(
+  const switchSnapshots = computed(() =>
+    state.value.switch_snapshots.filter(
       (backup) =>
         backup.account_id === account.value?.id &&
         backup.panel_origin === activeConnection.value?.panel_origin,
@@ -484,7 +482,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     ready,
     tasks,
     history,
-    backups,
+    switchSnapshots,
     textModels,
     imageModels,
     notify,

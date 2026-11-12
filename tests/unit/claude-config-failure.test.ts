@@ -15,7 +15,7 @@ import { publicFailure } from "../../src/shared/bridge";
 import { configPolicyMessage } from "../../src/shared/format";
 import {
   CAPABILITIES,
-  type BackupGroup,
+  type SwitchSnapshot,
   type ConfigPreview,
 } from "../../src/shared/contracts";
 import {
@@ -30,7 +30,7 @@ function state(account = "synthetic-account-a", revision = 1) {
   value.clients = value.clients.filter((client) => client.client === "claude");
   return value;
 }
-function backup(): BackupGroup {
+function backup(): SwitchSnapshot {
   return {
     id: "selected-backup",
     client: "claude",
@@ -46,7 +46,7 @@ function backup(): BackupGroup {
 }
 function preview(
   operation: "apply" | "restore",
-  source: BackupGroup,
+  source: SwitchSnapshot,
 ): ConfigPreview {
   const base = {
     id: "claude-confirmation",
@@ -81,7 +81,7 @@ function preview(
         installation_id: source.installation_id,
       },
       restore_source: {
-        backup_group_id: source.id,
+        snapshot_id: source.id,
         expires_at: source.expires_at,
       },
     };
@@ -106,7 +106,7 @@ function preview(
 }
 function show(operation: "apply" | "restore" = "apply") {
   const source = backup();
-  useOrbitStore().state.backups = [source];
+  useOrbitStore().state.switch_snapshots = [source];
   view = mount(ConfigReviewDialog, {
     props: { preview: preview(operation, source) },
     global: { stubs: { OrbitDialog: { template: "<div><slot /></div>" } } },
@@ -148,7 +148,7 @@ describe("Claude failed confirmation refreshes recovery state", () => {
     async (operation) => {
       const refreshed = state("synthetic-account-a", 2);
       const pending = { ...backup(), state: "conflict" as const };
-      refreshed.backups = [pending];
+      refreshed.switch_snapshots = [pending];
       refreshed.clients[0]!.configuration_state = "conflict";
       bridge.call
         .mockRejectedValueOnce(signatureFailure())
@@ -166,7 +166,7 @@ describe("Claude failed confirmation refreshes recovery state", () => {
         ["bootstrap", {}],
       ]);
       const store = useOrbitStore();
-      expect(store.backups).toEqual([pending]);
+      expect(store.switchSnapshots).toEqual([pending]);
       expect(store.state.clients[0]!.configuration_state).toBe("conflict");
       expect(store.notice?.text).toBe(
         configPolicyMessage("claude_signature_verification_timeout"),
