@@ -18,6 +18,7 @@ export function bootstrap(
   state.state_revision = revision;
   state.source = "synthetic";
   state.platform = "macos";
+  state.in_app_updates = true;
   state.session = {
     status: "authenticated",
     panel_origin: "https://panel.invalid",

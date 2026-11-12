@@ -113,6 +113,14 @@ export async function fixture(
           const request = (args.request ?? {}) as Record<string, unknown>;
           control.lastRequests[command] = structuredClone(request);
           if (command === "bootstrap") return structuredClone(current);
+          if (command === "check_update") {
+            return {
+              status: current.in_app_updates ? "up_to_date" : "disabled",
+              current_version: "0.1.0",
+              version: null,
+              reason: null,
+            };
+          }
           if (command === "refresh_account") return structuredClone(current);
           if (command === "start_login") {
             current.pending_authorization = {
@@ -330,8 +338,8 @@ export async function fixture(
                 request.client === "codex" ? codexConfigurationTarget : null,
               codex_runtime: request.client === "codex" ? codexRuntime : null,
               model_id:
-                (request.claude_models as { primary: string } | undefined)
-                  ?.primary ?? codexCatalog.default_alias,
+                (request.claude_mapping as { sonnet: string } | undefined)
+                  ?.sonnet ?? codexCatalog.default_alias,
               context: {
                 account_id: connection.account_id,
                 account_label: current.session.account!.label,

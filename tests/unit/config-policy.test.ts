@@ -333,7 +333,7 @@ describe("Codex catalog confirmation", () => {
       },
       global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } },
     });
-    expect(wrapper.text()).toContain("可预览本地用户配置");
+    expect(wrapper.text()).not.toContain("可预览本地用户配置");
     expect(wrapper.text()).toContain("远端组织策略未确认");
     expect(wrapper.text()).toContain("配置已保存");
     expect(wrapper.text()).toContain("待重启 / 载入未确认");
@@ -360,7 +360,7 @@ describe("Codex catalog confirmation", () => {
         },
       });
       if (kind === "claude") {
-        for (const role of ["primary", "fallback", "auxiliary"]) {
+        for (const role of ["sonnet", "opus", "haiku"]) {
           await wrapper.get(`#claude-${role}`).setValue(model.id);
         }
       }
@@ -402,10 +402,10 @@ describe("Codex catalog confirmation", () => {
         client: kind,
         ...(kind === "claude"
           ? {
-              claude_models: {
-                primary: model.id,
-                fallback: model.id,
-                auxiliary: model.id,
+              claude_mapping: {
+                sonnet: model.id,
+                opus: model.id,
+                haiku: model.id,
               },
             }
           : {}),

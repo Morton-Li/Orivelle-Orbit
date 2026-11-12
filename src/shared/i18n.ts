@@ -56,8 +56,8 @@ const zh = {
   "home.permissionDenied": "当前账户无自动取得接入凭据的权限",
   "home.codex": "Codex 桌面",
   "home.claude": "Claude Desktop",
-  "home.codexHint": "Responses 接入 · 用户配置可能与 CLI / IDE 共享",
-  "home.claudeHint": "第三方推理配置影响整个桌面应用：Chat、Code 与 Cowork",
+  "home.codexHint": "接入全部兼容模型",
+  "home.claudeHint": "自定义模型映射",
   "home.images": "也可以从图片开始",
   "home.imagesHint": "生成、编辑和管理本地结果，所有任务使用获准的连接。",
   "client.pending": "待检测",
@@ -72,7 +72,6 @@ const zh = {
   "client.conflict": "配置冲突",
   "client.unsupported": "版本或配置格式待验证",
   "client.managed": "组织管理配置",
-  "client.configurationAllowed": "可预览本地用户配置",
   "client.configurationBlocked": "本地用户配置写入受阻",
   "client.configurationUnverified": "本地用户配置写入资格待确认",
   "client.remotePolicyUnknown": "远端组织策略未确认，可能影响配置生效。",
@@ -86,12 +85,12 @@ const zh = {
   "access.switchHint": "Orbit 已保存接入配置。切回后请完整重启桌面工具。",
   "access.allCodexModels":
     "接入当前账户和节点可用的全部兼容模型。在 Codex 内切换使用。",
-  "access.claudeRolesHint":
-    "为三个角色分别选模型。使用 Claude Desktop 时需保持 Orbit 运行。",
-  "access.roleModels": "角色模型",
-  "access.rolePrimary": "主模型",
-  "access.roleFallback": "备用主模型",
-  "access.roleAuxiliary": "辅助模型",
+  "access.claudeMappingHint":
+    "选择 Claude 各模型入口实际使用的模型。使用时请保持 Orbit 运行。",
+  "access.modelMapping": "模型映射",
+  "access.mappingSonnet": "Sonnet",
+  "access.mappingOpus": "Opus",
+  "access.mappingHaiku": "Haiku",
   "access.originalRequired": "请先切回原配置。",
   "access.node": "推理节点",
   "access.model": "模型",
@@ -109,8 +108,6 @@ const zh = {
   "access.latencyFailed": "连接失败",
   "access.latencyStale": "已过期",
   "access.latencyUpdated": "更新于",
-  "access.latencyHint":
-    "本机到节点的连接延时，前台每 30 秒更新。模型响应速度还受上游和负载影响。",
   "access.readonly":
     "只读账户可查看预算和消费，自动取得接入凭据需现有业务写权限。",
   "access.previewTitle": "确认配置与影响范围",
@@ -342,7 +339,14 @@ const zh = {
   "settings.check": "检查更新",
   "settings.download": "下载并验证",
   "settings.install": "安装并重启",
-  "settings.disabledUpdate": "发布渠道尚未配置",
+  "settings.notChecked": "尚未检查更新",
+  "settings.checkingUpdate": "正在检查更新…",
+  "settings.manualUpdate": "当前版本需手动下载安装包更新",
+  "settings.updateCheckFailed": "检查更新失败，请重试",
+  "settings.downloadingUpdate": "正在下载并验证更新…",
+  "settings.installingUpdate": "正在安装更新…",
+  "settings.updateBlocked": "当前暂时无法安装更新，请稍后重试",
+  "settings.updateFailed": "更新失败，请重试",
   "settings.upToDate": "当前已是最新版本",
   "settings.updateAvailable": "有新版本可用",
   "settings.updateVerified": "更新包已验证",
@@ -433,10 +437,8 @@ const en: Record<keyof typeof zh, string> = {
     "This account cannot obtain automatic connection credentials",
   "home.codex": "Codex desktop",
   "home.claude": "Claude Desktop",
-  "home.codexHint":
-    "Responses connection · user configuration may be shared with CLI / IDE",
-  "home.claudeHint":
-    "Third-party inference affects the whole app: Chat, Code and Cowork",
+  "home.codexHint": "Connect all compatible models",
+  "home.claudeHint": "Customize model mappings",
   "home.images": "Start with an image, too",
   "home.imagesHint":
     "Generate, edit and keep local results using an authorized connection.",
@@ -452,7 +454,6 @@ const en: Record<keyof typeof zh, string> = {
   "client.conflict": "Configuration conflict",
   "client.unsupported": "Version or format needs verification",
   "client.managed": "Managed configuration",
-  "client.configurationAllowed": "Local user configuration can be previewed",
   "client.configurationBlocked": "Local user configuration writes blocked",
   "client.configurationUnverified": "Local configuration write check pending",
   "client.remotePolicyUnknown":
@@ -469,12 +470,12 @@ const en: Record<keyof typeof zh, string> = {
     "Orbit access is configured. Quit and reopen the desktop app after switching back.",
   "access.allCodexModels":
     "Connect all compatible models available to this account and node. Choose a model in Codex.",
-  "access.claudeRolesHint":
-    "Choose a model for each role. Keep Orbit running while using Claude Desktop.",
-  "access.roleModels": "Role models",
-  "access.rolePrimary": "Primary model",
-  "access.roleFallback": "Fallback model",
-  "access.roleAuxiliary": "Auxiliary model",
+  "access.claudeMappingHint":
+    "Choose the actual model for each Claude model entry. Keep Orbit running during use.",
+  "access.modelMapping": "Model mapping",
+  "access.mappingSonnet": "Sonnet",
+  "access.mappingOpus": "Opus",
+  "access.mappingHaiku": "Haiku",
   "access.originalRequired": "Switch back to the original configuration first.",
   "access.node": "Inference node",
   "access.model": "Model",
@@ -492,8 +493,6 @@ const en: Record<keyof typeof zh, string> = {
   "access.latencyFailed": "Connection failed",
   "access.latencyStale": "Stale",
   "access.latencyUpdated": "Updated at",
-  "access.latencyHint":
-    "Connection latency from this device to the node, updated every 30 seconds in the foreground. Model response speed also depends on upstream service and load.",
   "access.readonly":
     "Read-only accounts can view budgets and usage. Automatic credential delivery requires existing business write permissions.",
   "access.previewTitle": "Review configuration and impact",
@@ -746,7 +745,16 @@ const en: Record<keyof typeof zh, string> = {
   "settings.check": "Check updates",
   "settings.download": "Download and verify",
   "settings.install": "Install and restart",
-  "settings.disabledUpdate": "Release channel is not configured",
+  "settings.notChecked": "Updates have not been checked",
+  "settings.checkingUpdate": "Checking for updates…",
+  "settings.manualUpdate":
+    "Download and install a new package to update this version",
+  "settings.updateCheckFailed": "Could not check for updates. Try again.",
+  "settings.downloadingUpdate": "Downloading and verifying the update…",
+  "settings.installingUpdate": "Installing the update…",
+  "settings.updateBlocked":
+    "The update cannot be installed right now. Try again later.",
+  "settings.updateFailed": "The update failed. Try again.",
   "settings.upToDate": "Up to date",
   "settings.updateAvailable": "Update available",
   "settings.updateVerified": "Update package verified",

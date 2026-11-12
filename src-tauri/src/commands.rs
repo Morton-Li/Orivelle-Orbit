@@ -76,7 +76,7 @@ pub struct Preview {
     connection_id: String,
     expected_revision: u64,
     client: ClientKind,
-    claude_models: Option<ClaudeRoleModels>,
+    claude_mapping: Option<ClaudeModelMapping>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -258,7 +258,7 @@ pub async fn preview_client_config(
             &request.connection_id,
             request.expected_revision,
             request.client,
-            request.claude_models.as_ref(),
+            request.claude_mapping.as_ref(),
         )
         .await
 }

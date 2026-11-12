@@ -919,6 +919,7 @@ impl Service {
                 .meta
                 .get("maintenance_active")
                 .is_some_and(|v| v == "1"),
+            in_app_updates: crate::updates::compiled_trust().is_some(),
             session,
             connections: records.into_iter().map(|r| r.view).collect(),
             nodes,
@@ -2673,18 +2674,18 @@ impl Service {
         id: &str,
         revision: u64,
         client: ClientKind,
-        roles: Option<&ClaudeRoleModels>,
+        model_mapping: Option<&ClaudeModelMapping>,
     ) -> Result<ConfigPreview> {
         self.configuration_preflight(client)?;
         self.refresh_account_cache(id, false).await?;
         self.configuration_preflight(client)?;
         let _ = self.list_models(id).await?;
-        match (client, roles) {
+        match (client, model_mapping) {
             (ClientKind::Codex, None) => {
                 self.preview_client_config_legacy(id, revision, client, "")
             }
-            (ClientKind::Claude, Some(roles)) => {
-                self.preview_claude_config(id, revision, &roles.primary, Some(roles))
+            (ClientKind::Claude, Some(model_mapping)) => {
+                self.preview_claude_config(id, revision, &model_mapping.sonnet, Some(model_mapping))
             }
             _ => Err(fail("model_unavailable")),
         }

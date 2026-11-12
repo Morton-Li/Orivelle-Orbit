@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { version } from "../../package.json";
 import { useOrbitStore } from "../stores/orbit";
 import type {
@@ -7,7 +8,6 @@ import type {
   Locale,
   SettingsView,
   Theme,
-  UpdateView,
 } from "../shared/contracts";
 import { redactServiceUrls } from "../shared/format";
 import { t } from "../shared/i18n";
@@ -18,9 +18,29 @@ import StatusBadge from "../components/StatusBadge.vue";
 const store = useOrbitStore();
 const diagnostics = ref<DiagnosticsPreview | null>(null);
 const logoutConnectionId = ref<string | null>(null);
-const update = ref<UpdateView | null>(null);
+const { update } = storeToRefs(store);
 const installOpen = ref(false);
 const updateBusy = computed(() => store.busy.has("update"));
+const updateMessage = computed(() => {
+  if (!store.initialized) return t("settings.notChecked");
+  if (!store.inAppUpdates) return t("settings.manualUpdate");
+  if (store.updateOperation === "check") return t("settings.checkingUpdate");
+  if (store.updateOperation === "download")
+    return t("settings.downloadingUpdate");
+  if (store.updateOperation === "install")
+    return t("settings.installingUpdate");
+  if (store.updateCheckFailed) return t("settings.updateCheckFailed");
+  if (update.value?.status === "up_to_date") return t("settings.upToDate");
+  if (update.value?.status === "available")
+    return `${t("settings.updateAvailable")} · ${update.value.version}`;
+  if (update.value?.status === "verified")
+    return `${t("settings.updateVerified")} · ${update.value.version}`;
+  if (update.value?.status === "downloading")
+    return t("settings.downloadingUpdate");
+  if (update.value?.status === "blocked") return t("settings.updateBlocked");
+  if (update.value?.status === "failed") return t("settings.updateFailed");
+  return t("settings.notChecked");
+});
 const settingsDisabled = computed(
   () =>
     !store.native ||
@@ -60,24 +80,8 @@ async function exportDiagnostics() {
   );
   if (result?.saved) store.notify(t("common.saved"), "success");
 }
-async function checkUpdate() {
-  const result = await store.perform("update", "check_update", {});
-  if (result) update.value = result;
-}
-async function downloadUpdate() {
-  if (!update.value?.version || update.value.status !== "available") return;
-  const result = await store.perform("update", "download_update", {
-    version: update.value.version,
-    confirmed: true,
-  });
-  if (result) update.value = result;
-}
 async function installUpdate() {
-  if (!update.value?.version || update.value.status !== "verified") return;
-  const result = await store.perform("update", "install_update", {
-    version: update.value.version,
-    confirmed: true,
-  });
+  const result = await store.installUpdate();
   if (result) {
     update.value = result;
     installOpen.value = false;
@@ -228,7 +232,7 @@ async function installUpdate() {
           <strong>{{ version }}</strong>
         </p>
       </div>
-      <label class="checkbox-row"
+      <label v-if="store.inAppUpdates" class="checkbox-row"
         ><input
           type="checkbox"
           :checked="store.state.settings.check_updates_on_start"
@@ -241,29 +245,21 @@ async function installUpdate() {
           "
         />{{ t("settings.autoCheck") }}</label
       >
-      <p class="muted">
-        {{
-          update?.status === "up_to_date"
-            ? t("settings.upToDate")
-            : update?.status === "available"
-              ? `${t("settings.updateAvailable")} · ${update.version}`
-              : update?.status === "verified"
-                ? `${t("settings.updateVerified")} · ${update.version}`
-                : (update?.reason ?? t("settings.disabledUpdate"))
-        }}
+      <p class="muted update-status" role="status" aria-live="polite">
+        {{ updateMessage }}
       </p>
-      <div class="settings-actions">
+      <div v-if="store.inAppUpdates" class="settings-actions">
         <button
           class="button secondary"
-          :disabled="!store.native || updateBusy"
-          @click="checkUpdate"
+          :disabled="updateBusy || store.state.maintenance_active"
+          @click="store.checkUpdates()"
         >
           {{ t("settings.check") }}</button
         ><button
           v-if="update?.status === 'available'"
           class="button primary"
           :disabled="updateBusy"
-          @click="downloadUpdate"
+          @click="store.downloadUpdate()"
         >
           {{ t("settings.download") }}</button
         ><button

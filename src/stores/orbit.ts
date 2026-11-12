@@ -19,6 +19,7 @@ import type {
   ScopedErrorEvent,
   SettingsView,
   TaskView,
+  UpdateView,
 } from "../shared/contracts";
 import { locale, t } from "../shared/i18n";
 import { configPolicyMessage } from "../shared/format";
@@ -61,6 +62,7 @@ export function emptyState(): BootstrapView {
     platform: null,
     pending_authorization: null,
     maintenance_active: false,
+    in_app_updates: false,
     session: {
       status: "logged_out",
       panel_origin: null,
@@ -86,6 +88,16 @@ export const useOrbitStore = defineStore("orbit", () => {
   const models = ref<ModelView[]>([]);
   const modelsLoading = ref(false);
   const busy = ref(new Set<string>());
+  const update = ref<UpdateView | null>(null);
+  const updateOperation = ref<"check" | "download" | "install" | null>(null);
+  const updateCheckFailed = ref(false);
+  const inAppUpdates = computed(
+    () =>
+      native.value &&
+      initialized.value &&
+      state.value.in_app_updates &&
+      update.value?.status !== "disabled",
+  );
   const notice = ref<{
     text: string;
     tone: "success" | "error" | "neutral";
@@ -299,6 +311,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     key: string,
     command: K,
     request: IpcCommands[K]["args"],
+    options: { silent?: boolean } = {},
   ): Promise<IpcCommands[K]["result"] | undefined> {
     if (
       state.value.maintenance_active &&
@@ -312,7 +325,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     try {
       return await call(command, request);
     } catch (error) {
-      report(error);
+      if (!options.silent) report(error);
       return undefined;
     } finally {
       busy.value.delete(key);
@@ -366,6 +379,9 @@ export const useOrbitStore = defineStore("orbit", () => {
         unsubscribeAuthorization =
           await subscribeAuthorization(acceptAuthorization);
         await refresh(true);
+        if (inAppUpdates.value && state.value.settings.check_updates_on_start) {
+          void checkUpdates(true);
+        }
       } catch (error) {
         report(error);
       } finally {
@@ -445,6 +461,64 @@ export const useOrbitStore = defineStore("orbit", () => {
     }
     return result;
   }
+  async function checkUpdates(silent = false) {
+    if (
+      !inAppUpdates.value ||
+      busy.value.has("update") ||
+      state.value.maintenance_active
+    )
+      return undefined;
+    updateOperation.value = "check";
+    updateCheckFailed.value = false;
+    try {
+      const result = await perform("update", "check_update", {}, { silent });
+      if (result) update.value = result;
+      else updateCheckFailed.value = true;
+      return result;
+    } finally {
+      updateOperation.value = null;
+    }
+  }
+  async function downloadUpdate() {
+    if (
+      !inAppUpdates.value ||
+      update.value?.status !== "available" ||
+      !update.value.version ||
+      busy.value.has("update")
+    )
+      return undefined;
+    updateOperation.value = "download";
+    try {
+      const result = await perform("update", "download_update", {
+        version: update.value.version,
+        confirmed: true,
+      });
+      if (result) update.value = result;
+      return result;
+    } finally {
+      updateOperation.value = null;
+    }
+  }
+  async function installUpdate() {
+    if (
+      !inAppUpdates.value ||
+      update.value?.status !== "verified" ||
+      !update.value.version ||
+      busy.value.has("update")
+    )
+      return undefined;
+    updateOperation.value = "install";
+    try {
+      const result = await perform("update", "install_update", {
+        version: update.value.version,
+        confirmed: true,
+      });
+      if (result) update.value = result;
+      return result;
+    } finally {
+      updateOperation.value = null;
+    }
+  }
   function acceptTask(task: TaskView) {
     if (
       task.account_id !== account.value?.id ||
@@ -470,6 +544,10 @@ export const useOrbitStore = defineStore("orbit", () => {
     models,
     modelsLoading,
     busy,
+    update,
+    updateOperation,
+    updateCheckFailed,
+    inAppUpdates,
     notice,
     loginOpen,
     loginPending,
@@ -499,6 +577,9 @@ export const useOrbitStore = defineStore("orbit", () => {
     cancelLogin,
     selectNode,
     saveSettings,
+    checkUpdates,
+    downloadUpdate,
+    installUpdate,
     acceptTask,
   };
 });
