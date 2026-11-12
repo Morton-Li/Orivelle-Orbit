@@ -489,7 +489,7 @@ impl Service {
         for journal in self.store.list::<Journal>("journal", None)? {
             if journal.client == ClientKind::Claude
                 && journal.id != own_journal_id
-                && journal.requires_recovery(&self.store)?
+                && journal.requires_recovery()
             {
                 return Err(fail("configuration_recovery_required"));
             }
@@ -567,7 +567,7 @@ impl Service {
         id: &str,
         revision: u64,
         model_id: &str,
-        roles: Option<&ClaudeRoleModels>,
+        model_mapping: Option<&ClaudeModelMapping>,
     ) -> Result<ConfigPreview> {
         let _operation = self.begin_mutation()?;
         let observation = self.observe_configuration(ClientKind::Claude)?;
@@ -579,10 +579,10 @@ impl Service {
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
         let (record, cache) = self.current_connection(id, revision)?;
-        if let Some(roles) = roles {
+        if let Some(model_mapping) = model_mapping {
             self.require_original_configuration(ClientKind::Claude)?;
             let eligible = self.claude_inputs(&record, &cache);
-            if !roles.ids().into_iter().all(|id| {
+            if !model_mapping.ids().into_iter().all(|id| {
                 eligible
                     .iter()
                     .any(|model| model.id == id && model.support_status != "unsupported")
@@ -638,15 +638,19 @@ impl Service {
             let main = read_file(&target.config_root.join("claude_desktop_config.json"))?;
             let profile_id = uuid();
             let binding_id = uuid();
-            let mapping = if roles.is_some() || crate::claude_mapping::requires_mapping(model_id) {
-                let plan =
-                    self.claude_mappings
-                        .reserve(&binding_id, &profile_id, model_id, roles)?;
-                mapping_reservation = Some(self.claude_mappings.ticket(&plan));
-                Some(plan)
-            } else {
-                None
-            };
+            let mapping =
+                if model_mapping.is_some() || crate::claude_mapping::requires_mapping(model_id) {
+                    let plan = self.claude_mappings.reserve(
+                        &binding_id,
+                        &profile_id,
+                        model_id,
+                        model_mapping,
+                    )?;
+                    mapping_reservation = Some(self.claude_mappings.ticket(&plan));
+                    Some(plan)
+                } else {
+                    None
+                };
             // Compile the complete, bounded source before credentials or grants.
             let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
                 app_version: &target.app_version,
@@ -700,21 +704,20 @@ impl Service {
                     "inferenceCredentialHelper": context.helper_path,
                     "inferenceCredentialHelperArgs": [if mapping.is_some(){"claude-map"}else{"claude"}, binding_id],
                     "inferenceModels": mapping.as_ref().map(|plan|json!(plan.aliases)).unwrap_or_else(||json!([{"name": model_id}])), "modelDiscoveryEnabled": false},
-                "localModelMapping": mapping.as_ref().map(|plan|json!({"roles":plan.aliases,"loopback":plan.base_url(),"requiresOrbitRunning":true})),
+                    "localModelMapping": mapping.as_ref().map(|plan|json!({"models":plan.aliases,"loopback":plan.base_url(),"requiresOrbitRunning":true})),
                 "metadata": {"appliedId": profile_id, "appendEntry": "Orivelle Orbit"},
                 "main": {"deploymentMode": "3p"},
             }))
             .map_err(|_| fail("serialization_failed"))?;
             if mapping.is_some() {
-                if let Some(roles) = roles {
+                if let Some(model_mapping) = model_mapping {
                     view.impact.push(format!(
-                        "主模型 {}，备用主模型 {}，辅助模型 {}。",
-                        roles.primary, roles.fallback, roles.auxiliary
+                        "Sonnet → {}，Opus → {}，Haiku → {}。",
+                        model_mapping.sonnet, model_mapping.opus, model_mapping.haiku
                     ));
                 } else {
-                    view.impact.push(format!(
-                        "Claude 主模型、备用主模型与辅助角色均映射至同一个获准模型 {model_id}。"
-                    ));
+                    view.impact
+                        .push(format!("Sonnet、Opus、Haiku 均映射至 {model_id}。"));
                 }
                 view.impact.push(
                     "Claude Desktop 通过本机 Orbit 转发请求，使用时请保持 Orbit 运行。".into(),
@@ -766,7 +769,7 @@ impl Service {
                 previous,
                 context.clone(),
             )?;
-            if roles.is_some() {
+            if model_mapping.is_some() {
                 engine.mark_switch(&mut journal)?;
             }
             journal.account_label = cache.account.label.clone();
@@ -930,7 +933,7 @@ impl Service {
             client: ClientKind::Claude,
             state: if restore { "restored" } else { "saved" }.into(),
             loaded_state: "restart_required".into(),
-            backup_group_id: Some(journal.id),
+            snapshot_id: Some(journal.id),
         })
     }
 
@@ -1023,15 +1026,7 @@ impl Service {
         let context_guard =
             |context: &ClaudeContext, _: bool| self.validate_claude_context(context, true);
         let engine = self.claude_engine(&guard, &context_guard);
-        let source_expiry = chrono::DateTime::parse_from_rfc3339(&backup.expires_at)
-            .map_err(|_| fail("backup_invalid"))?;
-        let preview_deadline = chrono::Utc::now() + chrono::Duration::minutes(5);
-        let expires_at = if backup.purpose == JournalPurpose::Switch {
-            preview_deadline
-        } else {
-            preview_deadline.min(source_expiry.with_timezone(&chrono::Utc))
-        }
-        .to_rfc3339();
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
         let mut frozen = None;
         let mut original_mode = None;
         let mut paths = backup.paths.clone();
@@ -1067,9 +1062,8 @@ impl Service {
             model_id: None,
             context: None,
             restore_source: Some(RestoreSource {
-                backup_group_id: backup_id.into(),
+                snapshot_id: backup_id.into(),
                 expires_at: backup.expires_at.clone(),
-                kind: backup.backup_kind(),
             }),
             restore_coordination: coordination,
             restore_owner: Some(RestoreOwner {
@@ -1131,7 +1125,7 @@ impl Service {
             return Ok(());
         };
         let journal = &current;
-        if journal.client != ClientKind::Claude || !journal.requires_recovery(&self.store)? {
+        if journal.client != ClientKind::Claude || !journal.requires_recovery() {
             return Ok(());
         }
         let observation = self.observe_configuration(ClientKind::Claude)?;

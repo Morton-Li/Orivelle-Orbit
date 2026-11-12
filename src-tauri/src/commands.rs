@@ -59,16 +59,24 @@ pub struct Node {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NodeProbe {
+    connection_id: String,
+    expected_revision: u64,
+    node_ids: Vec<String>,
+    probe_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelNodeProbes {
+    probe_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Preview {
     connection_id: String,
     expected_revision: u64,
     client: ClientKind,
-    claude_models: Option<ClaudeRoleModels>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClientConfiguration {
-    client: ClientKind,
+    claude_mapping: Option<ClaudeModelMapping>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,8 +86,8 @@ pub struct Confirmation {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Backup {
-    backup_group_id: String,
+pub struct SwitchSnapshotRequest {
+    snapshot_id: String,
     #[serde(default, deserialize_with = "restore_coordination_selection")]
     coordination: Option<ClaudeRestoreCoordination>,
 }
@@ -221,6 +229,25 @@ pub async fn list_models(native: State<'_, Native>, request: Connection) -> Resu
     native.service.list_models(&request.connection_id).await
 }
 #[tauri::command]
+pub async fn probe_nodes(
+    native: State<'_, Native>,
+    request: NodeProbe,
+) -> Result<Vec<NodeLatencyView>> {
+    native
+        .service
+        .probe_nodes(
+            &request.connection_id,
+            request.expected_revision,
+            &request.node_ids,
+            &request.probe_id,
+        )
+        .await
+}
+#[tauri::command]
+pub fn cancel_node_probes(native: State<'_, Native>, request: CancelNodeProbes) -> Result<()> {
+    native.service.cancel_node_probes(&request.probe_id)
+}
+#[tauri::command]
 pub async fn preview_client_config(
     native: State<'_, Native>,
     request: Preview,
@@ -231,7 +258,7 @@ pub async fn preview_client_config(
             &request.connection_id,
             request.expected_revision,
             request.client,
-            request.claude_models.as_ref(),
+            request.claude_mapping.as_ref(),
         )
         .await
 }
@@ -276,23 +303,16 @@ pub async fn export_claude_import(
     Ok(Saved { saved: true })
 }
 #[tauri::command]
-pub async fn preview_restore(native: State<'_, Native>, request: Backup) -> Result<ConfigPreview> {
+pub async fn preview_restore(
+    native: State<'_, Native>,
+    request: SwitchSnapshotRequest,
+) -> Result<ConfigPreview> {
     let service = native.service.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.preview_restore_with_coordination(&request.backup_group_id, request.coordination)
+        service.preview_restore_with_coordination(&request.snapshot_id, request.coordination)
     })
     .await
     .map_err(|_| fail("state_unavailable"))?
-}
-#[tauri::command]
-pub async fn backup_client_config(
-    native: State<'_, Native>,
-    request: ClientConfiguration,
-) -> Result<BootstrapView> {
-    let service = native.service.clone();
-    tauri::async_runtime::spawn_blocking(move || service.backup_client_config(request.client))
-        .await
-        .map_err(|_| fail("state_unavailable"))?
 }
 #[tauri::command]
 pub async fn restore_client_config(
@@ -565,7 +585,7 @@ mod tests {
     fn restore_commands_keep_async_results_and_closed_request_schema() {
         async fn preview_signature(
             native: State<'_, Native>,
-            request: Backup,
+            request: SwitchSnapshotRequest,
         ) -> Result<ConfigPreview> {
             preview_restore(native, request).await
         }
@@ -577,8 +597,14 @@ mod tests {
         }
         let _ = (preview_signature, restore_signature);
         assert!(
-            serde_json::from_value::<Backup>(
-                serde_json::json!({"backup_group_id":"synthetic-backup"})
+            serde_json::from_value::<SwitchSnapshotRequest>(
+                serde_json::json!({"backup_group_id":"retired-backup"})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SwitchSnapshotRequest>(
+                serde_json::json!({"snapshot_id":"synthetic-backup"})
             )
             .is_ok()
         );
@@ -589,14 +615,14 @@ mod tests {
             .is_ok()
         );
         assert!(
-            serde_json::from_value::<Backup>(
-                serde_json::json!({"backup_group_id":"synthetic-backup","path":"/unexpected"})
+            serde_json::from_value::<SwitchSnapshotRequest>(
+                serde_json::json!({"snapshot_id":"synthetic-backup","path":"/unexpected"})
             )
             .is_err()
         );
         assert!(serde_json::from_value::<Confirmation>(serde_json::json!({"preview_id":"synthetic-preview","confirmed":true,"path":"/unexpected"})).is_err());
-        let coordinated = serde_json::from_value::<Backup>(serde_json::json!({
-            "backup_group_id":"synthetic-backup", "coordination":"claude_main_preferences_v1"
+        let coordinated = serde_json::from_value::<SwitchSnapshotRequest>(serde_json::json!({
+            "snapshot_id":"synthetic-backup", "coordination":"claude_main_preferences_v1"
         }))
         .unwrap();
         assert_eq!(
@@ -611,8 +637,8 @@ mod tests {
             serde_json::json!({"claude_main_preferences_v1":null}),
         ] {
             assert!(
-                serde_json::from_value::<Backup>(
-                    serde_json::json!({"backup_group_id":"synthetic-backup","coordination":mode})
+                serde_json::from_value::<SwitchSnapshotRequest>(
+                    serde_json::json!({"snapshot_id":"synthetic-backup","coordination":mode})
                 )
                 .is_err()
             );

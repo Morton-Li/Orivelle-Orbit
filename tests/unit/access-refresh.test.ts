@@ -103,7 +103,7 @@ beforeEach(async () => {
       return {
         state: "saved",
         loaded_state: "restart_required",
-        backup_group_id: "synthetic-backup",
+        snapshot_id: "synthetic-backup",
       };
     throw new Error("Unexpected synthetic IPC");
   });
@@ -130,7 +130,7 @@ async function showAccess() {
       },
     },
   });
-  for (const role of ["primary", "fallback", "auxiliary"]) {
+  for (const role of ["sonnet", "opus", "haiku"]) {
     await wrapper.get(`#claude-${role}`).setValue(claudeModel().id);
   }
   return wrapper.get<HTMLButtonElement>(".access-client .button.primary");

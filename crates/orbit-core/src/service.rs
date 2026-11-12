@@ -43,8 +43,8 @@ mod claude;
 #[cfg(all(test, target_os = "macos"))]
 #[path = "service_claude_tests.rs"]
 mod claude_authority_tests;
-#[path = "service_config_backup.rs"]
-mod config_backup;
+#[path = "service_node_latency.rs"]
+mod node_latency;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ConnectionRecord {
@@ -277,6 +277,7 @@ pub struct Service {
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     network_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     received_memory: Mutex<HashMap<String, Vec<images::ReceivedImage>>>,
+    node_probes: node_latency::NodeProbes,
 }
 impl Service {
     pub(crate) fn validate_upgrade_store(store: &Store) -> Result<()> {
@@ -294,11 +295,11 @@ impl Service {
         let _ = store.list::<HistoryImage>("image", None)?;
         let _ = store.list::<InputRecord>("input", None)?;
         let _ = store.list::<Journal>("journal", None)?;
-        let _ = store.list::<Journal>("backup", None)?;
         Ok(())
     }
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
         crate::update_recovery::ensure_ready(&store.root)?;
+        store.retire_configuration_backups()?;
         let mut clients = detect_clients(&paths);
         for client in &mut clients {
             if let Some(old) = store.get::<ClientView>("client-state", client.client.as_str())? {
@@ -372,6 +373,7 @@ impl Service {
             session_locks: Mutex::new(HashMap::new()),
             network_locks: Mutex::new(HashMap::new()),
             received_memory: Mutex::new(HashMap::new()),
+            node_probes: Default::default(),
         });
         let active = service.store.meta("active_connection")?;
         for record in service.store.list::<ConnectionRecord>("connection", None)? {
@@ -748,7 +750,7 @@ impl Service {
         let mut nodes = vec![];
         let mut tasks = vec![];
         let mut history = vec![];
-        let mut backups = vec![];
+        let mut switch_snapshots = vec![];
         if let Some(record) = &active {
             session.status = record.session_status.clone();
             if matches!(session.status.as_str(), "authenticated" | "refreshing")
@@ -835,51 +837,38 @@ impl Service {
             session.status = "vault_unavailable".into();
         }
         let installation_records = snapshot.list::<Installation>("installation", None)?;
-        let mut backup_candidates = snapshot.list::<Journal>("backup", None)?;
         for j in snapshot.list::<Journal>("journal", None)? {
-            if ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
-                && matches!(
-                    j.purpose,
-                    JournalPurpose::Historical | JournalPurpose::Switch
-                )
-                && !backup_candidates.iter().any(|b| b.id == j.id)
+            if j.purpose != JournalPurpose::Switch
+                || !["publishing", "conflict", "committed"].contains(&j.phase.as_str())
+                || !installation_records
+                    .iter()
+                    .any(|i| i.id == j.installation.id && i.origin == j.installation.origin)
             {
-                backup_candidates.push(j);
+                continue;
             }
-        }
-        for j in backup_candidates {
-            if installation_records
-                .iter()
-                .any(|i| i.id == j.installation.id && i.origin == j.installation.origin)
-            {
-                let kind = j.backup_kind();
-                let state = if ["publishing", "conflict"].contains(&j.phase.as_str()) {
-                    "conflict"
-                } else if j.require_unexpired().is_ok() {
-                    "available"
-                } else {
-                    "unavailable"
-                };
-                backups.push(BackupGroup {
-                    id: j.id,
-                    kind,
-                    client: j.client,
-                    owner: RestoreOwner {
-                        account_id: j.account_id.clone(),
-                        account_label: if j.account_label.is_empty() {
-                            j.account_id
-                        } else {
-                            j.account_label
-                        },
-                        panel_origin: j.installation.origin,
-                        installation_id: j.installation.id,
+            let state = if j.phase == "committed" {
+                "available"
+            } else {
+                "conflict"
+            };
+            switch_snapshots.push(SwitchSnapshot {
+                id: j.id,
+                client: j.client,
+                owner: RestoreOwner {
+                    account_id: j.account_id.clone(),
+                    account_label: if j.account_label.is_empty() {
+                        j.account_id
+                    } else {
+                        j.account_label
                     },
-                    created_at: j.created_at,
-                    expires_at: j.expires_at.clone(),
-                    file_count: j.paths.len() as u32,
-                    state: state.into(),
-                });
-            }
+                    panel_origin: j.installation.origin,
+                    installation_id: j.installation.id,
+                },
+                created_at: j.created_at,
+                expires_at: j.expires_at,
+                file_count: j.paths.len() as u32,
+                state: state.into(),
+            });
         }
         let mut clients = snapshot.list::<ClientView>("client-state", Some("local"))?;
         for client in &mut clients {
@@ -930,6 +919,7 @@ impl Service {
                 .meta
                 .get("maintenance_active")
                 .is_some_and(|v| v == "1"),
+            in_app_updates: crate::updates::compiled_trust().is_some(),
             session,
             connections: records.into_iter().map(|r| r.view).collect(),
             nodes,
@@ -938,7 +928,7 @@ impl Service {
             settings: snapshot.get("settings", "local")?.unwrap_or_default(),
             tasks,
             image_history: history,
-            backups,
+            switch_snapshots,
         })
     }
     pub async fn start_login(self: &Arc<Self>, panel_origin: &str) -> Result<(LoginStart, String)> {
@@ -2137,6 +2127,7 @@ impl Service {
             model_revision: model.revision.clone(),
         })
     }
+    #[cfg(test)]
     fn config_engine(&self) -> ConfigEngine<'_> {
         ConfigEngine {
             store: &self.store,
@@ -2556,7 +2547,7 @@ impl Service {
     }
     fn pending_configuration_recovery(&self, client: ClientKind) -> Result<bool> {
         for journal in self.store.list::<Journal>("journal", None)? {
-            if journal.client == client && journal.requires_recovery(&self.store)? {
+            if journal.client == client && journal.requires_recovery() {
                 return Ok(true);
             }
         }
@@ -2564,17 +2555,11 @@ impl Service {
     }
     fn coordinate_configuration_recovery(&self) -> Result<()> {
         for journal in self.store.list::<Journal>("journal", None)? {
-            if journal.purpose == JournalPurpose::ManualRestore {
-                if journal.requires_recovery(&self.store)? {
-                    self.recover_manual_restore(&journal)?;
-                }
-                continue;
-            }
             if journal.client == ClientKind::Claude {
                 self.coordinate_claude_journal(&journal)?;
                 continue;
             }
-            if !journal.requires_recovery(&self.store)? {
+            if !journal.requires_recovery() {
                 continue;
             }
             let observation = self.observe_configuration(journal.client)?;
@@ -2657,6 +2642,7 @@ impl Service {
         Ok(())
     }
     /// Refresh only after the native, read-only configuration gate succeeds.
+    #[cfg(test)]
     pub async fn preview_client_config_refreshed(
         &self,
         id: &str,
@@ -2670,6 +2656,7 @@ impl Service {
         let _ = self.list_models(id).await?;
         self.preview_client_config(id, revision, client, model_id)
     }
+    #[cfg(test)]
     pub fn preview_client_config(
         &self,
         id: &str,
@@ -2687,18 +2674,18 @@ impl Service {
         id: &str,
         revision: u64,
         client: ClientKind,
-        roles: Option<&ClaudeRoleModels>,
+        model_mapping: Option<&ClaudeModelMapping>,
     ) -> Result<ConfigPreview> {
         self.configuration_preflight(client)?;
         self.refresh_account_cache(id, false).await?;
         self.configuration_preflight(client)?;
         let _ = self.list_models(id).await?;
-        match (client, roles) {
+        match (client, model_mapping) {
             (ClientKind::Codex, None) => {
                 self.preview_client_config_legacy(id, revision, client, "")
             }
-            (ClientKind::Claude, Some(roles)) => {
-                self.preview_claude_config(id, revision, &roles.primary, Some(roles))
+            (ClientKind::Claude, Some(model_mapping)) => {
+                self.preview_claude_config(id, revision, &model_mapping.sonnet, Some(model_mapping))
             }
             _ => Err(fail("model_unavailable")),
         }
@@ -3205,16 +3192,6 @@ impl Service {
             return Err(fail("integration_authorization_required"));
         }
         let entry = self.take_preview(id, if restore { "restore" } else { "apply" })?;
-        if restore
-            && entry
-                .view
-                .restore_source
-                .as_ref()
-                .and_then(|source| source.kind)
-                == Some(BackupKind::Manual)
-        {
-            return self.apply_manual_restore(entry);
-        }
         if entry.view.client == ClientKind::Claude {
             return self.apply_claude_entry(entry, restore);
         }
@@ -3302,7 +3279,7 @@ impl Service {
             client: journal.client,
             state: if restore { "restored" } else { "saved" }.into(),
             loaded_state: "restart_required".into(),
-            backup_group_id: Some(journal.id),
+            snapshot_id: Some(journal.id),
         })
     }
     pub fn export_claude_import(&self, id: &str, confirmed: bool, path: &Path) -> Result<()> {
@@ -3413,26 +3390,12 @@ impl Service {
         validate_uuid(backup_id)?;
         let backup = self
             .store
-            .get::<Journal>("backup", backup_id)?
-            .or(self
-                .store
-                .get::<Journal>("journal", backup_id)?
-                .filter(|j| {
-                    matches!(
-                        j.purpose,
-                        JournalPurpose::Historical | JournalPurpose::Switch
-                    ) && ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
-                }))
+            .get::<Journal>("journal", backup_id)?
+            .filter(|j| {
+                j.purpose == JournalPurpose::Switch
+                    && ["publishing", "conflict", "committed"].contains(&j.phase.as_str())
+            })
             .ok_or_else(|| fail("backup_invalid"))?;
-        if backup.purpose != JournalPurpose::Switch && self.has_switch_snapshot(backup.client)? {
-            return Err(fail("original_configuration_required"));
-        }
-        if backup.purpose == JournalPurpose::ManualBackup {
-            if coordination.is_some() {
-                return Err(fail("backup_invalid"));
-            }
-            return self.preview_manual_restore(backup);
-        }
         if coordination.is_some()
             && (backup.client != ClientKind::Claude
                 || backup.phase != "committed"
@@ -3495,7 +3458,6 @@ impl Service {
         } else {
             None
         };
-        let kind = backup.backup_kind();
         let preview = ConfigPreview {
             id: uuid(),
             client: backup.client,
@@ -3505,9 +3467,8 @@ impl Service {
             model_id: None,
             context: None,
             restore_source: Some(RestoreSource {
-                backup_group_id: backup_id.into(),
+                snapshot_id: backup_id.into(),
                 expires_at: backup.expires_at.clone(),
-                kind,
             }),
             restore_coordination: None,
             restore_owner: Some(RestoreOwner {
@@ -4350,17 +4311,10 @@ impl Service {
             || settings.image_disk_limit_bytes < 32 * 1024 * 1024
             || settings.image_disk_limit_bytes > 64 * 1024 * 1024 * 1024
             || settings.preview_cache_limit_bytes > 1024 * 1024 * 1024
-            || settings.backup_retention_days == 0
-            || settings.backup_retention_days > 30
-            || settings.backup_max_groups == 0
-            || settings.backup_max_groups > 5
         {
             return Err(fail("invalid_settings"));
         }
         self.store.put("settings", "local", "local", &settings)?;
-        for client in [ClientKind::Codex, ClientKind::Claude] {
-            self.config_engine().prune_backups(client)?;
-        }
         self.changed();
         Ok(settings)
     }
@@ -5107,6 +5061,14 @@ mod tests {
             )
             .unwrap();
     }
+    // Legacy model fixtures also exercise transaction internals. Give selected
+    // restore sources the same authenticated purpose as the current switch flow.
+    pub(super) fn mark_switch_snapshot(service: &Service, id: &str) {
+        let mut journal: Journal = service.store.get("journal", id).unwrap().unwrap();
+        if journal.purpose == JournalPurpose::Historical {
+            service.config_engine().mark_switch(&mut journal).unwrap();
+        }
+    }
     fn prepared_catalog(f: &PolicyFixture, preview: &ConfigPreview) -> Journal {
         let previews = f.service.previews.lock().unwrap();
         let id = previews
@@ -5119,14 +5081,11 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     #[test]
-    fn switch_restores_original_and_leaves_manual_backup_independent() {
+    fn switch_restores_original_without_creating_configuration_backups() {
         let f = policy_fixture(ClientKind::Codex);
         catalog_menu(&f);
         let service = &f.service;
         let original = read_file(&service.paths.codex_config).unwrap();
-        let state = service.backup_client_config(ClientKind::Codex).unwrap();
-        let manual = &state.backups[0];
-        assert_eq!(manual.kind, Some(BackupKind::Manual));
         let preview = service
             .preview_client_config_legacy(
                 &f.record.view.id,
@@ -5137,30 +5096,20 @@ mod tests {
             .unwrap();
         let catalog = preview.codex_catalog.unwrap();
         assert_eq!(catalog.aliases, [f.model.as_str(), "menu-alias"]);
-        assert_eq!(catalog.default_alias, f.model);
         service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
         let state = service.bootstrap().unwrap();
-        let snapshot = state
-            .backups
-            .iter()
-            .find(|item| item.kind == Some(BackupKind::Switch))
-            .unwrap();
+        assert_eq!(state.switch_snapshots.len(), 1);
+        let snapshot = &state.switch_snapshots[0];
         assert!(
             service
                 .store
-                .get::<Journal>("backup", &snapshot.id)
+                .list::<Journal>("backup", None)
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
-        assert_eq!(
-            service
-                .backup_client_config(ClientKind::Codex)
-                .unwrap_err()
-                .code,
-            "original_configuration_required"
-        );
+        crate::update_recovery::ensure_configuration_idle(&service.store).unwrap();
         service.commit_logout(&f.record.view.id).unwrap();
         let restore = service.preview_restore(&snapshot.id).unwrap();
         service
@@ -5168,29 +5117,18 @@ mod tests {
             .unwrap();
         assert_eq!(read_file(&service.paths.codex_config).unwrap(), original);
         assert!(!service.paths.codex_catalog().exists());
-        let state = service.bootstrap().unwrap();
-        assert_eq!(state.backups.len(), 1);
-        assert_eq!(state.backups[0].id, manual.id);
-        std::fs::write(&service.paths.codex_config, b"model='updated'\n").unwrap();
-        let restore = service.preview_restore(&manual.id).unwrap();
-        std::fs::write(
-            &service.paths.codex_config,
-            b"model='edited-after-preview'\n",
-        )
-        .unwrap();
-        assert_eq!(
+        assert!(service.bootstrap().unwrap().switch_snapshots.is_empty());
+        assert!(
             service
-                .apply_client_config(&restore.id, true, true)
-                .unwrap_err()
-                .code,
-            "configuration_conflict"
+                .store
+                .list::<Journal>("backup", None)
+                .unwrap()
+                .is_empty()
         );
-        let restore = service.preview_restore(&manual.id).unwrap();
-        service
-            .apply_client_config(&restore.id, true, true)
-            .unwrap();
-        assert_eq!(read_file(&service.paths.codex_config).unwrap(), original);
-        assert_eq!(service.bootstrap().unwrap().backups[0].id, manual.id);
+        assert_eq!(
+            service.preview_restore(&snapshot.id).unwrap_err().code,
+            "backup_invalid"
+        );
     }
     #[cfg(not(windows))]
     #[test]
@@ -5305,6 +5243,7 @@ mod tests {
             .service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
+        mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
         assert!(
             f.service.paths.codex_config.is_file() && f.service.paths.codex_catalog().is_file()
         );
@@ -5326,7 +5265,7 @@ mod tests {
         f.service.commit_logout(&f.record.view.id).unwrap();
         let restore = f
             .service
-            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(saved.snapshot_id.as_ref().unwrap())
             .unwrap();
         assert!(restore.can_apply && restore.codex_configuration_target.is_some());
         f.service
@@ -5375,7 +5314,7 @@ mod tests {
         f.reset();
         assert_eq!(
             f.service.preview_restore(&journal.id).unwrap_err().code,
-            "codex_catalog_context_unverified"
+            "backup_invalid"
         );
         assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
         assert_eq!(f.bindings(), bindings);
@@ -5494,7 +5433,7 @@ mod tests {
         assert_eq!(document["model_reasoning_effort"].as_str(), Some("medium"));
         assert_eq!(document["plan_mode_reasoning_effort"].as_str(), Some("low"));
         assert_eq!(document["features"]["custom"].as_bool(), Some(true));
-        assert_eq!(result.backup_group_id, Some(journal.id));
+        assert_eq!(result.snapshot_id, Some(journal.id));
         assert_eq!(
             f.service
                 .apply_client_config(&preview.id, true, false)
@@ -6033,11 +5972,12 @@ mod tests {
             .service
             .apply_client_config(&f.preview().id, true, false)
             .unwrap();
-        assert_ne!(first.backup_group_id, second.backup_group_id);
+        mark_switch_snapshot(&f.service, second.snapshot_id.as_ref().unwrap());
+        assert_ne!(first.snapshot_id, second.snapshot_id);
         f.service.commit_logout(&f.record.view.id).unwrap();
         let restore = f
             .service
-            .preview_restore(second.backup_group_id.as_ref().unwrap())
+            .preview_restore(second.snapshot_id.as_ref().unwrap())
             .unwrap();
         assert!(restore.can_apply);
         f.service
@@ -6182,10 +6122,11 @@ mod tests {
             .service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
+        mark_switch_snapshot(&f.service, result.snapshot_id.as_ref().unwrap());
         let after = std::fs::read(&f.service.paths.codex_config).unwrap();
         let restore = f
             .service
-            .preview_restore(result.backup_group_id.as_ref().unwrap())
+            .preview_restore(result.snapshot_id.as_ref().unwrap())
             .unwrap();
         assert!(restore.can_apply);
         let bindings = f.bindings();
@@ -6350,7 +6291,7 @@ mod tests {
         assert_eq!(fixture.service.store.snapshot().unwrap().revision, revision);
     }
 
-    fn setup() -> (
+    pub(super) fn setup() -> (
         tempfile::TempDir,
         Arc<Service>,
         Arc<FakeVault>,
@@ -7647,12 +7588,10 @@ mod tests {
     }
     #[cfg(not(windows))]
     #[test]
-    fn codex_config_service_rebuild_coordinates_only_authenticated_pair_and_repairs_backup_projection()
-     {
+    fn codex_config_service_rebuild_coordinates_only_authenticated_pair_without_creating_backups() {
         for mode in [
             "publishing",
             "external-conflict",
-            "committed-gap",
             "prepared",
             "forgetting",
             "legacy-no-policy",
@@ -7689,10 +7628,10 @@ mod tests {
             } else if mode == "missing-context" {
                 engine.synthetic_without_context(&mut journal).unwrap();
             }
-            if mode == "committed-gap" {
-                engine.apply(&journal.id).unwrap();
-                f.service.store.delete("backup", &journal.id).unwrap();
-            } else if mode != "prepared" {
+            if mode != "legacy-no-policy" {
+                engine.mark_switch(&mut journal).unwrap();
+            }
+            if mode != "prepared" {
                 journal.phase = "publishing".into();
                 f.service
                     .store
@@ -7742,7 +7681,7 @@ mod tests {
                 f.service.paths.clone(),
             )
             .unwrap();
-            if ["publishing", "committed-gap"].contains(&mode) {
+            if mode == "publishing" {
                 for file in &files {
                     assert_eq!(
                         read_file(Path::new(&file.path)).unwrap(),
@@ -7755,7 +7694,7 @@ mod tests {
                         .store
                         .get::<Journal>("backup", &journal.id)
                         .unwrap()
-                        .is_some()
+                        .is_none()
                 );
                 assert!(
                     !rebuilt
@@ -7799,11 +7738,13 @@ mod tests {
                         .unwrap()
                 );
                 let view = rebuilt.bootstrap().unwrap();
-                assert!(
-                    view.backups
-                        .iter()
-                        .any(|backup| backup.id == journal.id && backup.state == "conflict")
-                );
+                if mode == "legacy-no-policy" {
+                    assert!(view.switch_snapshots.is_empty());
+                } else {
+                    assert!(view.switch_snapshots.iter().any(|snapshot| {
+                        snapshot.id == journal.id && snapshot.state == "conflict"
+                    }));
+                }
                 assert_eq!(
                     view.clients
                         .iter()
@@ -9238,9 +9179,9 @@ mod tests {
         thread.join().unwrap();
     }
     #[test]
-    fn legacy_backups_remain_available_after_the_connection_was_removed() {
+    fn retired_backups_are_not_exposed_or_restorable() {
         for phase in ["committed", "publishing", "conflict"] {
-            let (_d, service, vault, record, install) = setup();
+            let (_d, service, _vault, record, install) = setup();
             let path = service.paths.codex_config.clone();
             std::fs::write(&path, b"model='old'\n").unwrap();
             let mut journal = service
@@ -9258,21 +9199,21 @@ mod tests {
                     vec![],
                 )
                 .unwrap();
-            if phase == "committed" {
-                service.config_engine().apply(&journal.id).unwrap();
-            } else {
-                journal.phase = phase.into();
-                service
-                    .store
-                    .put("journal", &journal.id, &journal.account_id, &journal)
-                    .unwrap();
-            }
-            service.store.delete("connection", &record.view.id).unwrap();
-            service.store.set_meta("active_connection", "").unwrap();
-            let bootstrap = service.bootstrap().unwrap();
-            assert_eq!(bootstrap.backups.len(), 1);
-            assert_eq!(bootstrap.backups[0].owner.installation_id, install.id);
-            assert!(vault.get(&install.backup_reference).is_ok());
+            journal.phase = phase.into();
+            service
+                .store
+                .put("journal", &journal.id, &journal.account_id, &journal)
+                .unwrap();
+            service
+                .store
+                .put("backup", &journal.id, &journal.account_id, &journal)
+                .unwrap();
+            assert!(service.bootstrap().unwrap().switch_snapshots.is_empty());
+            assert_eq!(
+                service.preview_restore(&journal.id).unwrap_err().code,
+                "backup_invalid"
+            );
+            assert_eq!(read_file(&path).unwrap(), Some(b"model='old'\n".to_vec()));
         }
     }
 }

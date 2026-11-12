@@ -62,14 +62,7 @@ pub fn disabled() -> UpdateView {
         status: "disabled".into(),
         current_version: CURRENT_VERSION.into(),
         version: None,
-        reason: Some(
-            if cfg!(target_os = "windows") {
-                "请从 GitHub Releases 下载新版 Windows 安装包。"
-            } else {
-                "正式 HTTPS 更新渠道和固定公钥尚未配置。"
-            }
-            .into(),
-        ),
+        reason: Some("当前版本需手动下载安装包更新".into()),
     }
 }
 fn version_parts(version: &str) -> Result<[u64; 3]> {

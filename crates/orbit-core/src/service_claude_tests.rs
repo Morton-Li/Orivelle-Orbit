@@ -349,8 +349,9 @@ fn claude_restore_coordination_service_previews_preserves_preferences_and_persis
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let current = write_service_preferences(&f.service);
-    let source = saved.backup_group_id.as_ref().unwrap();
+    let source = saved.snapshot_id.as_ref().unwrap();
     assert_eq!(
         f.service.preview_restore(source).unwrap_err().code,
         "configuration_conflict"
@@ -456,6 +457,7 @@ fn claude_restore_coordination_service_previews_preserves_preferences_and_persis
     let saved = restarted
         .apply_client_config(&fresh.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&restarted, saved.snapshot_id.as_ref().unwrap());
     let client: ClientView = restarted
         .store
         .get("client-state", "claude")
@@ -468,7 +470,7 @@ fn claude_restore_coordination_service_previews_preserves_preferences_and_persis
             .any(|note| note == claude::PREFERENCES_RESTORED_NOTE)
     );
     let strict = restarted
-        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     assert!(strict.restore_coordination.is_none());
     assert_eq!(
@@ -505,8 +507,8 @@ fn claude_restore_coordination_rejects_wrong_client_or_phase_before_observation_
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
-    let source_id = saved.backup_group_id.as_ref().unwrap();
-    let backup: Journal = f.service.store.get("backup", source_id).unwrap().unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
+    let source_id = saved.snapshot_id.as_ref().unwrap();
     let source: Journal = f.service.store.get("journal", source_id).unwrap().unwrap();
     let mut paths = f.service.paths.clone();
     let adapter = paths.fixture_claude_configuration_target.clone().unwrap();
@@ -518,20 +520,15 @@ fn claude_restore_coordination_rejects_wrong_client_or_phase_before_observation_
     }));
     let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
     for fault in ["wrong_client", "uncommitted", "source_uncommitted"] {
-        let mut changed_backup = backup.clone();
-        let mut changed_source = source.clone();
+        let mut changed = source.clone();
         match fault {
-            "wrong_client" => changed_backup.client = ClientKind::Codex,
-            "uncommitted" => changed_backup.phase = "publishing".into(),
-            _ => changed_source.phase = "conflict".into(),
+            "wrong_client" => changed.client = ClientKind::Codex,
+            "uncommitted" => changed.phase = "publishing".into(),
+            _ => changed.phase = "conflict".into(),
         }
         service
             .store
-            .put("backup", source_id, &backup.account_id, &changed_backup)
-            .unwrap();
-        service
-            .store
-            .put("journal", source_id, &source.account_id, &changed_source)
+            .put("journal", source_id, &source.account_id, &changed)
             .unwrap();
         observed.store(0, Ordering::SeqCst);
         f.vault.calls.store(0, Ordering::SeqCst);
@@ -568,13 +565,14 @@ fn claude_restore_coordination_preview_mode_must_match_authenticated_operation()
             .service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
+        tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
         if coordinated {
             write_service_preferences(&f.service);
         }
         let restore = f
             .service
             .preview_restore_with_coordination(
-                saved.backup_group_id.as_ref().unwrap(),
+                saved.snapshot_id.as_ref().unwrap(),
                 coordinated.then_some(ClaudeRestoreCoordination::MainPreferencesV1),
             )
             .unwrap();
@@ -621,6 +619,7 @@ fn claude_restore_coordination_vault_return_rechecks_target_and_late_epoch_never
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     write_service_preferences(&f.service);
     let before = preview
         .paths
@@ -631,7 +630,7 @@ fn claude_restore_coordination_vault_return_rechecks_target_and_late_epoch_never
     let (resume, released) = std::sync::mpsc::channel();
     *f.vault.pause.lock().unwrap() = Some((entered, released));
     let service = f.service.clone();
-    let source = saved.backup_group_id.clone().unwrap();
+    let source = saved.snapshot_id.clone().unwrap();
     let worker = std::thread::spawn(move || {
         service.preview_restore_with_coordination(
             &source,
@@ -658,11 +657,12 @@ fn claude_restore_coordination_vault_return_rechecks_target_and_late_epoch_never
         .service
         .apply_client_config(&second.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     write_service_preferences(&f.service);
     let restore = f
         .service
         .preview_restore_with_coordination(
-            saved.backup_group_id.as_ref().unwrap(),
+            saved.snapshot_id.as_ref().unwrap(),
             Some(ClaudeRestoreCoordination::MainPreferencesV1),
         )
         .unwrap();
@@ -922,7 +922,7 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
         preview
             .impact
             .iter()
-            .any(|line| line.contains("同一个获准模型"))
+            .any(|line| line.contains("Sonnet、Opus、Haiku 均映射至"))
     );
     assert_eq!(f.service.claude_mappings.inflight(), 0);
     assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
@@ -949,6 +949,7 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     assert_eq!(saved.state, "saved");
     let local = crate::claude_mapping::mapped_helper_token(
         &plan.binding_id,
@@ -981,18 +982,18 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
 async fn role_switch_routes_each_alias_and_restores_original() {
     let f = mapping_fixture();
     let mut cache = f.service.account_cache(&f.record).unwrap();
-    let roles = ClaudeRoleModels {
-        primary: f.model.clone(),
-        fallback: "synthetic-fallback".into(),
-        auxiliary: "synthetic-auxiliary".into(),
+    let roles = ClaudeModelMapping {
+        sonnet: f.model.clone(),
+        opus: "synthetic-fallback".into(),
+        haiku: "synthetic-auxiliary".into(),
     };
     let original = cache
         .models
         .iter()
-        .find(|model| model.id == roles.primary)
+        .find(|model| model.id == roles.sonnet)
         .unwrap()
         .clone();
-    for id in [&roles.fallback, &roles.auxiliary] {
+    for id in [&roles.opus, &roles.haiku] {
         let mut model = original.clone();
         model.id = id.clone();
         cache.models.push(model);
@@ -1028,7 +1029,7 @@ async fn role_switch_routes_each_alias_and_restores_original() {
         .preview_claude_config(
             &f.record.view.id,
             f.record.view.revision,
-            &roles.primary,
+            &roles.sonnet,
             Some(&roles),
         )
         .unwrap();
@@ -1065,9 +1066,9 @@ async fn role_switch_routes_each_alias_and_restores_original() {
     assert_eq!(*observed.lock().unwrap(), roles.ids());
     let state = f.service.bootstrap().unwrap();
     let snapshot = state
-        .backups
+        .switch_snapshots
         .iter()
-        .find(|backup| backup.kind == Some(BackupKind::Switch))
+        .find(|snapshot| snapshot.client == ClientKind::Claude)
         .unwrap();
     let restore = f.service.preview_restore(&snapshot.id).unwrap();
     f.service
@@ -1081,7 +1082,7 @@ async fn role_switch_routes_each_alias_and_restores_original() {
             .collect::<Vec<_>>(),
         before
     );
-    assert!(f.service.bootstrap().unwrap().backups.is_empty());
+    assert!(f.service.bootstrap().unwrap().switch_snapshots.is_empty());
 }
 
 #[tokio::test]
@@ -1095,6 +1096,7 @@ async fn claude_mapping_activation_restart_reuses_only_original_port_and_preserv
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let main_path = Path::new(&preview.paths[2]);
     let mut main: Value = serde_json::from_slice(&read_file(main_path).unwrap().unwrap()).unwrap();
     main["preferences"] = json!({"syntheticDesktopNoticeDismissed":true});
@@ -1225,7 +1227,7 @@ async fn claude_mapping_activation_restart_reuses_only_original_port_and_preserv
     );
     assert_eq!(
         reopened
-            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(saved.snapshot_id.as_ref().unwrap())
             .unwrap_err()
             .code,
         "configuration_conflict",
@@ -1283,6 +1285,7 @@ async fn claude_mapping_activation_restore_old_mapping_preserves_valid_grant_and
             .service
             .apply_client_config(&second.id, true, false)
             .unwrap();
+        tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
         assert_ne!(old_plan.port, new_plan.port);
         if logout {
             f.service.commit_logout(&f.record.view.id).unwrap();
@@ -1290,7 +1293,7 @@ async fn claude_mapping_activation_restore_old_mapping_preserves_valid_grant_and
         // Match the real native restore commands: synchronous file/Vault work
         // runs in spawn_blocking, allowing the listener runtime to honor stop.
         let service = f.service.clone();
-        let source = saved.backup_group_id.clone().unwrap();
+        let source = saved.snapshot_id.clone().unwrap();
         let restore = tokio::task::spawn_blocking(move || service.preview_restore(&source))
             .await
             .unwrap()
@@ -1457,6 +1460,7 @@ async fn claude_mapping_activation_restore_success_is_independent_of_old_listene
         .service
         .apply_client_config(&second.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let mut cache = f.service.account_cache(&f.record).unwrap();
     cache.models[0].revision = sha256(b"new model permission revision");
     f.service
@@ -1469,7 +1473,7 @@ async fn claude_mapping_activation_restore_success_is_independent_of_old_listene
         )
         .unwrap();
     let service = f.service.clone();
-    let source = saved.backup_group_id.clone().unwrap();
+    let source = saved.snapshot_id.clone().unwrap();
     let restore = tokio::task::spawn_blocking(move || service.preview_restore(&source))
         .await
         .unwrap()
@@ -1485,7 +1489,7 @@ async fn claude_mapping_activation_restore_success_is_independent_of_old_listene
     assert_eq!(
         f.service
             .store
-            .get::<Journal>("journal", saved.backup_group_id.as_ref().unwrap())
+            .get::<Journal>("journal", saved.snapshot_id.as_ref().unwrap())
             .unwrap()
             .unwrap()
             .phase,
@@ -1640,6 +1644,7 @@ async fn claude_mapping_activation_active_token_outlives_backup_prune_and_cleanu
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let mut row: crate::claude_mapping::MappingRecord = f
         .service
         .store
@@ -1658,11 +1663,11 @@ async fn claude_mapping_activation_active_token_outlives_backup_prune_and_cleanu
         .unwrap();
     f.service
         .store
-        .delete("backup", saved.backup_group_id.as_ref().unwrap())
+        .delete("backup", saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     f.service
         .store
-        .delete("journal", saved.backup_group_id.as_ref().unwrap())
+        .delete("journal", saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     f.service.reconcile_claude_mappings().unwrap();
     assert!(
@@ -1861,9 +1866,10 @@ fn claude_mapping_none_keeps_legacy_scope_bytes_and_backup_restoration() {
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let restore = f
         .service
-        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     assert_eq!(
         f.service
@@ -2161,9 +2167,10 @@ fn claude_engine_full_verification_budget_preserves_three_file_roundtrip() {
         let saved = service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
+        tests::mark_switch_snapshot(&service, saved.snapshot_id.as_ref().unwrap());
         let apply_full = full.swap(0, Ordering::SeqCst);
         let restore = service
-            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(saved.snapshot_id.as_ref().unwrap())
             .unwrap();
         let restore_preview_full = full.swap(0, Ordering::SeqCst);
         service
@@ -2287,6 +2294,7 @@ fn claude_engine_restore_preview_rechecks_full_after_final_backup_key_return() {
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let before_files: Vec<_> = preview
         .paths
         .iter()
@@ -2314,7 +2322,7 @@ fn claude_engine_restore_preview_rechecks_full_after_final_backup_key_return() {
     f.vault.mutations.store(0, Ordering::SeqCst);
     assert_eq!(
         service
-            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(saved.snapshot_id.as_ref().unwrap())
             .unwrap_err()
             .code,
         "claude_signature_verification_timeout"
@@ -2361,6 +2369,7 @@ fn production_panel_origin_preserves_legacy_offline_claude_backup_restore() {
         .service
         .apply_client_config(&second.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
     fixture
         .service
         .commit_logout(&fixture.record.view.id)
@@ -2383,7 +2392,7 @@ fn production_panel_origin_preserves_legacy_offline_claude_backup_restore() {
     });
     let restore = fixture
         .service
-        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     assert!(restore.can_apply);
     let result = fixture
@@ -2490,6 +2499,7 @@ async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_rev
         .apply_client_config_refreshed(&preview.id, true)
         .await
         .unwrap();
+    tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
     assert_eq!(saved.state, "saved");
     assert_eq!(
         calls.lock().unwrap().as_slice(),
@@ -2499,7 +2509,7 @@ async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_rev
     assert_unobserved(&fixture.service, "saved");
     let restore = fixture
         .service
-        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     fixture
         .service
@@ -2531,131 +2541,97 @@ fn grants(service: &Service) -> Value {
     .unwrap()
 }
 
-fn set_claude_backup_expiry(service: &Service, id: &str, expires_at: &str) {
-    for kind in ["journal", "backup"] {
-        let mut source: Journal = service.store.get(kind, id).unwrap().unwrap();
-        source.expires_at = expires_at.into();
-        service
-            .store
-            .put(kind, id, &source.account_id, &source)
-            .unwrap();
-    }
-}
-
-fn wait_for_claude_backup_expiry(expires_at: &str) {
-    let deadline = chrono::DateTime::parse_from_rfc3339(expires_at).unwrap();
-    let limit = std::time::Instant::now() + Duration::from_secs(5);
-    while chrono::Utc::now() <= deadline {
-        assert!(std::time::Instant::now() < limit, "bounded expiry wait");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+fn set_snapshot_timestamp(service: &Service, id: &str, expires_at: &str) {
+    let mut source: Journal = service.store.get("journal", id).unwrap().unwrap();
+    source.expires_at = expires_at.into();
+    service
+        .store
+        .put("journal", id, &source.account_id, &source)
+        .unwrap();
 }
 
 #[test]
-fn claude_restore_preview_binds_exact_selected_source_and_uses_its_shorter_deadline() {
+fn claude_switch_snapshot_remains_restorable_after_its_creation_timestamp_deadline() {
     let f = tests::policy_fixture(ClientKind::Claude);
     let apply = automatic_preview(&f.service, &f);
-    assert!(serde_json::to_value(&apply).unwrap()["restore_source"].is_null());
     let saved = f
         .service
         .apply_client_config(&apply.id, true, false)
         .unwrap();
-    let source_id = saved.backup_group_id.unwrap();
-    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339();
-    set_claude_backup_expiry(&f.service, &source_id, &expires_at);
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
+    let source_id = saved.snapshot_id.unwrap();
+    let old_deadline = (chrono::Utc::now() - chrono::Duration::days(60)).to_rfc3339();
+    set_snapshot_timestamp(&f.service, &source_id, &old_deadline);
     let restore = f.service.preview_restore(&source_id).unwrap();
     assert!(restore.can_apply);
     assert_eq!(
         serde_json::to_value(&restore).unwrap()["restore_source"],
-        json!({"backup_group_id": source_id, "expires_at": expires_at})
+        json!({"snapshot_id": source_id, "expires_at": old_deadline})
     );
-    assert_eq!(restore.expires_at, expires_at);
-    assert!(apply.paths.iter().all(|path| Path::new(path).is_file()));
-    let diagnostic = f
-        .service
-        .preview_claude_diagnostic(&f.record.view.id, f.record.view.revision, &f.model)
-        .unwrap();
-    assert!(serde_json::to_value(&diagnostic).unwrap()["restore_source"].is_null());
-    let mut legacy = serde_json::to_value(&restore).unwrap();
-    legacy.as_object_mut().unwrap().remove("restore_source");
     assert!(
-        serde_json::from_value::<ConfigPreview>(legacy)
+        chrono::DateTime::parse_from_rfc3339(&restore.expires_at).unwrap() > chrono::Utc::now()
+    );
+    f.service.commit_logout(&f.record.view.id).unwrap();
+    assert_eq!(
+        f.service
+            .apply_client_config(&restore.id, true, true)
             .unwrap()
-            .restore_source
-            .is_none()
+            .state,
+        "restored"
     );
 }
 
 #[test]
-fn claude_restore_prepared_after_source_expiry_refuses_before_file_or_grant_writes() {
+fn claude_switch_restore_expired_confirmation_refuses_before_files_or_grants() {
     let f = tests::policy_fixture(ClientKind::Claude);
     let apply = automatic_preview(&f.service, &f);
     let saved = f
         .service
         .apply_client_config(&apply.id, true, false)
         .unwrap();
-    let source_id = saved.backup_group_id.unwrap();
-    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
-    set_claude_backup_expiry(&f.service, &source_id, &expires_at);
-    let restore = f.service.preview_restore(&source_id).unwrap();
-    let journal = preview_journal(&f.service, &restore);
-    assert_eq!(journal.phase, "prepared");
-    let before: Vec<_> = apply
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
+    let restore = f
+        .service
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
+        .unwrap();
+    let before = apply
         .paths
         .iter()
         .map(|path| read_file(Path::new(path)).unwrap())
-        .collect();
+        .collect::<Vec<_>>();
     let before_grants = grants(&f.service);
-    wait_for_claude_backup_expiry(&expires_at);
-    let observation = f.service.observe_configuration(ClientKind::Claude).unwrap();
-    let guard = || {
-        f.service.validate_claude_configuration(
-            &observation.policy,
-            observation.claude_configuration_target.as_ref(),
-        )
-    };
-    let context = |context: &ClaudeContext, restoring: bool| {
-        f.service.validate_claude_context(context, restoring)
-    };
-    let engine = ConfigEngine {
-        store: &f.service.store,
-        vault: f.service.vault.as_ref(),
-        allowed_roots: f.service.paths.configuration_roots.clone(),
-        policy_guard: Some(&guard),
-        context_guard: None,
-        claude_context_guard: Some(&context),
-    };
-    // The domain boundary must refuse even without relying on the UI preview TTL.
+    f.service
+        .previews
+        .lock()
+        .unwrap()
+        .get_mut(&restore.id)
+        .unwrap()
+        .view
+        .expires_at = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+    f.vault.calls.store(0, Ordering::SeqCst);
+    f.vault.mutations.store(0, Ordering::SeqCst);
     assert_eq!(
-        engine.apply(&journal.id).unwrap_err().code,
-        "backup_expired"
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap_err()
+            .code,
+        "preview_expired"
     );
-    for (path, bytes) in apply.paths.iter().zip(before) {
-        assert_eq!(read_file(Path::new(path)).unwrap(), bytes);
-    }
+    assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
     assert_eq!(grants(&f.service), before_grants);
     assert_eq!(
-        f.service
-            .store
-            .get::<Journal>("journal", &journal.id)
-            .unwrap()
-            .unwrap()
-            .phase,
-        "prepared"
-    );
-    assert_eq!(
-        f.service
-            .store
-            .get::<Journal>("journal", &source_id)
-            .unwrap()
-            .unwrap()
-            .phase,
-        "committed"
+        apply
+            .paths
+            .iter()
+            .map(|path| read_file(Path::new(path)).unwrap())
+            .collect::<Vec<_>>(),
+        before
     );
 }
 
 #[test]
-fn claude_restore_publishing_can_finish_after_source_expiry_without_reviving_revoked_grants() {
+fn claude_switch_restore_publishing_ignores_old_snapshot_timestamp_without_reviving_revoked_grants()
+{
     for logged_out in [false, true] {
         let f = tests::policy_fixture(ClientKind::Claude);
         let first = automatic_preview(&f.service, &f);
@@ -2680,12 +2656,12 @@ fn claude_restore_publishing_can_finish_after_source_expiry_without_reviving_rev
             .service
             .apply_client_config(&second.id, true, false)
             .unwrap();
-        let source_id = saved.backup_group_id.unwrap();
-        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
-        set_claude_backup_expiry(&f.service, &source_id, &expires_at);
+        tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
+        let source_id = saved.snapshot_id.unwrap();
+        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(-1)).to_rfc3339();
+        set_snapshot_timestamp(&f.service, &source_id, &expires_at);
         let restore = f.service.preview_restore(&source_id).unwrap();
         let mut restoring = preview_journal(&f.service, &restore);
-        assert!(chrono::Utc::now() < chrono::DateTime::parse_from_rfc3339(&expires_at).unwrap());
         restoring.phase = "publishing".into();
         f.service
             .store
@@ -2697,7 +2673,6 @@ fn claude_restore_publishing_can_finish_after_source_expiry_without_reviving_rev
         if logged_out {
             f.service.commit_logout(&f.record.view.id).unwrap();
         }
-        wait_for_claude_backup_expiry(&expires_at);
         let recovered = Service::new(
             f.service.store.clone(),
             f.service.vault.clone(),
@@ -2726,14 +2701,15 @@ fn claude_restore_publishing_can_finish_after_source_expiry_without_reviving_rev
                 .phase,
             "committed"
         );
-        // Successful commit permits the existing retention policy to prune
-        // this now-expired source, including its restored journal row.
-        assert!(
+        // The transaction is terminal; switch snapshots have no backup retention policy.
+        assert_eq!(
             recovered
                 .store
                 .get::<Journal>("journal", &source_id)
                 .unwrap()
-                .is_none()
+                .unwrap()
+                .phase,
+            "restored"
         );
         assert!(
             recovered
@@ -3122,6 +3098,7 @@ fn claude_b3c_account_switch_and_same_account_node_switch_manage_only_their_own_
             .service
             .apply_client_config(&first.id, true, false)
             .unwrap();
+        tests::mark_switch_snapshot(&f.service, first_saved.snapshot_id.as_ref().unwrap());
         let first_binding = f
             .service
             .store
@@ -3181,6 +3158,7 @@ fn claude_b3c_account_switch_and_same_account_node_switch_manage_only_their_own_
             .service
             .apply_client_config(&second.id, true, false)
             .unwrap();
+        tests::mark_switch_snapshot(&f.service, second_saved.snapshot_id.as_ref().unwrap());
         let profile: Value =
             serde_json::from_slice(&std::fs::read(&second.paths[0]).unwrap()).unwrap();
         assert_eq!(
@@ -3197,7 +3175,7 @@ fn claude_b3c_account_switch_and_same_account_node_switch_manage_only_their_own_
         );
         let restore = f
             .service
-            .preview_restore(second_saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(second_saved.snapshot_id.as_ref().unwrap())
             .unwrap();
         f.service
             .apply_client_config(&restore.id, true, true)
@@ -3212,7 +3190,7 @@ fn claude_b3c_account_switch_and_same_account_node_switch_manage_only_their_own_
         );
         let restore = f
             .service
-            .preview_restore(first_saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(first_saved.snapshot_id.as_ref().unwrap())
             .unwrap();
         f.service
             .apply_client_config(&restore.id, true, true)
@@ -3294,9 +3272,10 @@ async fn claude_b3c_pending_or_conflict_blocks_new_and_already_prepared_applies_
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
     let restore = f
         .service
-        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     std::fs::write(&preview.paths[1], b"external metadata edit").unwrap();
     let files: Vec<_> = preview
@@ -3408,6 +3387,7 @@ fn claude_b3b_service_saves_reopens_and_restores_exact_three_files_without_previ
             .service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
+        tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
         assert_eq!(saved.state, "saved");
         assert_eq!(saved.loaded_state, "restart_required");
         let profile: Value = serde_json::from_slice(&std::fs::read(&new_profile).unwrap()).unwrap();
@@ -3471,7 +3451,7 @@ fn claude_b3b_service_saves_reopens_and_restores_exact_three_files_without_previ
             "preview_expired"
         );
         let restore = reopened
-            .preview_restore(saved.backup_group_id.as_ref().unwrap())
+            .preview_restore(saved.snapshot_id.as_ref().unwrap())
             .unwrap();
         assert!(restore.can_apply && restore.context.is_none());
         assert_eq!(
@@ -3519,6 +3499,7 @@ fn claude_b3b_logout_restore_needs_no_live_actor_key_node_or_helper_and_never_re
         .service
         .apply_client_config(&second.id, true, false)
         .unwrap();
+    tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
     fixture
         .service
         .commit_logout(&fixture.record.view.id)
@@ -3541,7 +3522,7 @@ fn claude_b3b_logout_restore_needs_no_live_actor_key_node_or_helper_and_never_re
     drop(fixture.service);
     let reopened = Service::new(Arc::new(Store::open(&store_root).unwrap()), vault, paths).unwrap();
     let restore = reopened
-        .preview_restore(saved.backup_group_id.as_ref().unwrap())
+        .preview_restore(saved.snapshot_id.as_ref().unwrap())
         .unwrap();
     assert!(restore.can_apply);
     reopened
@@ -3570,7 +3551,8 @@ fn claude_b3b_startup_coordinates_publishing_apply_and_restore_with_honest_opera
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
-    let id = saved.backup_group_id.as_ref().unwrap();
+    tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
+    let id = saved.snapshot_id.as_ref().unwrap();
     let mut journal: Journal = fixture.service.store.get("journal", id).unwrap().unwrap();
     // Synthetic crash at the all-written/grants-persisted publishing boundary.
     journal.phase = "publishing".into();
@@ -3600,7 +3582,7 @@ fn claude_b3b_startup_coordinates_publishing_apply_and_restore_with_honest_opera
             .store
             .get::<Journal>("backup", id)
             .unwrap()
-            .is_some()
+            .is_none()
     );
     assert_unobserved(&reopened, "saved");
     let restore = reopened.preview_restore(id).unwrap();
@@ -3672,7 +3654,8 @@ fn claude_b3b_startup_skips_stale_apply_snapshot_after_newer_restore_commits() {
         .service
         .apply_client_config(&preview.id, true, false)
         .unwrap();
-    let source_id = saved.backup_group_id.as_ref().unwrap();
+    tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
+    let source_id = saved.snapshot_id.as_ref().unwrap();
     let mut source: Journal = fixture
         .service
         .store

@@ -146,7 +146,7 @@ describe("configuration confirmation follows current policy", () => {
               client: kind,
               state: "saved",
               loaded_state: "restart_required",
-              backup_group_id: "synthetic-backup",
+              snapshot_id: "synthetic-backup",
             },
       );
       await apply.trigger("click");
@@ -333,7 +333,7 @@ describe("Codex catalog confirmation", () => {
       },
       global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } },
     });
-    expect(wrapper.text()).toContain("可预览本地用户配置");
+    expect(wrapper.text()).not.toContain("可预览本地用户配置");
     expect(wrapper.text()).toContain("远端组织策略未确认");
     expect(wrapper.text()).toContain("配置已保存");
     expect(wrapper.text()).toContain("待重启 / 载入未确认");
@@ -360,7 +360,7 @@ describe("Codex catalog confirmation", () => {
         },
       });
       if (kind === "claude") {
-        for (const role of ["primary", "fallback", "auxiliary"]) {
+        for (const role of ["sonnet", "opus", "haiku"]) {
           await wrapper.get(`#claude-${role}`).setValue(model.id);
         }
       }
@@ -384,7 +384,12 @@ describe("Codex catalog confirmation", () => {
       await nextTick();
       expect(button.element.disabled).toBe(true);
       await button.trigger("click");
-      expect(bridge.call).not.toHaveBeenCalled();
+      expect(
+        bridge.call.mock.calls.filter(
+          ([command]) =>
+            !["probe_nodes", "cancel_node_probes"].includes(command),
+        ),
+      ).toEqual([]);
       client.configuration_access = "allowed";
       await nextTick();
       expect(button.element.disabled).toBe(false);
@@ -397,10 +402,10 @@ describe("Codex catalog confirmation", () => {
         client: kind,
         ...(kind === "claude"
           ? {
-              claude_models: {
-                primary: model.id,
-                fallback: model.id,
-                auxiliary: model.id,
+              claude_mapping: {
+                sonnet: model.id,
+                opus: model.id,
+                haiku: model.id,
               },
             }
           : {}),
@@ -428,7 +433,7 @@ describe("Codex catalog confirmation", () => {
       store.state.session.status = "logged_out";
       store.state.session.account = null;
       store.state.session.inference_credential_status = "unavailable";
-      store.state.backups.push({
+      store.state.switch_snapshots.push({
         ...owner,
         id: "synthetic-backup",
         client: kind,
@@ -444,7 +449,7 @@ describe("Codex catalog confirmation", () => {
         context: null,
         restore_owner: owner,
         restore_source: {
-          backup_group_id: "synthetic-backup",
+          snapshot_id: "synthetic-backup",
           expires_at: "2099-01-01T00:00:00Z",
         },
         codex_catalog: null,
@@ -464,7 +469,7 @@ describe("Codex catalog confirmation", () => {
               client: kind,
               state,
               loaded_state: "unconfirmed",
-              backup_group_id: null,
+              snapshot_id: null,
             },
       );
       await button.trigger("click");
@@ -639,7 +644,7 @@ describe("Codex catalog confirmation", () => {
     ],
     [
       "claude_configuration_context_unverified",
-      "Claude 备份缺少可核验的恢复上下文",
+      "Claude 原配置记录缺少可核验的恢复上下文",
     ],
     [
       "claude_configuration_context_changed",

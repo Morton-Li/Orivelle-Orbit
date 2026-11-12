@@ -56,7 +56,15 @@ pub fn run() {
                     fail("local_storage_unavailable")
                 })?
             } else {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/gui")
+                let identifier = &app.config().identifier;
+                let directory = if identifier == "io.orivelle.orbit" {
+                    "gui".to_owned()
+                } else {
+                    format!("gui-{identifier}")
+                };
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../runtime")
+                    .join(directory)
             };
             let instance = orbit_core::runtime_lock::RuntimeLock::acquire(&root)
                 .inspect_err(|error| eprintln!("Orbit runtime lock setup: {}", error.code))?;
@@ -160,11 +168,12 @@ pub fn run() {
             logout,
             select_node,
             list_models,
+            probe_nodes,
+            cancel_node_probes,
             preview_client_config,
             apply_client_config,
             export_claude_import,
             preview_restore,
-            backup_client_config,
             restore_client_config,
             select_image_inputs,
             use_history_as_input,

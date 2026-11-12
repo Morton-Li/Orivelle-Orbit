@@ -12,14 +12,23 @@ import {
   SelectViewport,
 } from "reka-ui";
 import OrbitIcon from "./OrbitIcon.vue";
+import { computed } from "vue";
 
-defineProps<{
+const props = defineProps<{
   id: string;
   modelValue: string;
-  options: { value: string; label: string; disabled?: boolean }[];
+  options: {
+    value: string;
+    label: string;
+    detail?: string;
+    disabled?: boolean;
+  }[];
   placeholder?: string;
   disabled?: boolean;
 }>();
+const selected = computed(() =>
+  props.options.find((option) => option.value === props.modelValue),
+);
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 </script>
 
@@ -32,7 +41,14 @@ const emit = defineEmits<{ "update:modelValue": [value: string] }>();
     "
   >
     <SelectTrigger :id="id" class="select-trigger">
-      <SelectValue :placeholder="placeholder" class="select-value" />
+      <SelectValue :placeholder="placeholder" class="select-value">
+        <span v-if="selected" class="select-choice">
+          <span class="select-choice-label">{{ selected.label }}</span>
+          <span v-if="selected.detail" class="select-detail">{{
+            selected.detail
+          }}</span>
+        </span>
+      </SelectValue>
       <SelectIcon as-child
         ><OrbitIcon name="chevron-down" :size="16"
       /></SelectIcon>
@@ -53,7 +69,14 @@ const emit = defineEmits<{ "update:modelValue": [value: string] }>();
             :disabled="option.disabled"
             class="select-option"
           >
-            <SelectItemText>{{ option.label }}</SelectItemText>
+            <SelectItemText as-child>
+              <span class="select-choice">
+                <span class="select-choice-label">{{ option.label }}</span>
+                <span v-if="option.detail" class="select-detail">{{
+                  option.detail
+                }}</span>
+              </span>
+            </SelectItemText>
             <SelectItemIndicator as-child
               ><OrbitIcon name="check" :size="16"
             /></SelectItemIndicator>

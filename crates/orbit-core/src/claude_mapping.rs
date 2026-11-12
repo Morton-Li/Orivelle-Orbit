@@ -3,7 +3,7 @@
 
 use crate::{
     config::{ClaudeContext, Journal},
-    dto::{ClaudeRoleModels, ClientKind},
+    dto::{ClaudeModelMapping, ClientKind},
     error::{Result, fail},
     identity::{HelperBinding, authorization_epoch_reference, sha256, validate_uuid},
     network::Http,
@@ -39,30 +39,35 @@ pub fn requires_mapping(model_id: &str) -> bool {
     !(model_id.starts_with("claude-") || model_id.starts_with("anthropic/claude-"))
 }
 
-fn aliases(model_id: &str, roles: Option<&ClaudeRoleModels>) -> Vec<ModelAlias> {
-    // Version 1 persisted labels are part of frozen encrypted contexts. Keep
-    // this version's rule when adding future locales or plan versions.
+fn aliases(version: u32, model_id: &str, models: Option<&ClaudeModelMapping>) -> Vec<ModelAlias> {
+    // Versions 1 and 2 are authenticated inside saved configuration contexts.
+    // Their labels must remain byte-for-byte stable when old plans are read.
     [
         (
             SONNET,
             "主模型",
-            roles.map_or(model_id, |roles| &roles.primary),
+            models.map_or(model_id, |models| &models.sonnet),
         ),
         (
             OPUS,
             "备用主模型",
-            roles.map_or(model_id, |roles| &roles.fallback),
+            models.map_or(model_id, |models| &models.opus),
         ),
         (
             HAIKU,
             "辅助模型",
-            roles.map_or(model_id, |roles| &roles.auxiliary),
+            models.map_or(model_id, |models| &models.haiku),
         ),
     ]
     .into_iter()
-    .map(|(name, role, model_id)| ModelAlias {
+    .enumerate()
+    .map(|(index, (name, legacy_label, model_id))| ModelAlias {
         name: name.into(),
-        label_override: format!("{model_id} · {role}"),
+        label_override: if version <= 2 {
+            format!("{model_id} · {legacy_label}")
+        } else {
+            format!("{} → {model_id}", ["Sonnet", "Opus", "Haiku"][index])
+        },
     })
     .collect()
 }
@@ -79,8 +84,50 @@ pub struct MappingPlan {
     pub upstream_model_id: String,
     pub aliases: Vec<ModelAlias>,
     pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roles: Option<ClaudeRoleModels>,
+    #[serde(
+        rename = "roles",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "persisted_models"
+    )]
+    pub models: Option<ClaudeModelMapping>,
+}
+
+// Keep the encrypted wire representation stable for existing context hashes.
+// The current IPC and application code use the actual Claude entry names.
+mod persisted_models {
+    use super::*;
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FrozenModels {
+        primary: String,
+        fallback: String,
+        auxiliary: String,
+    }
+    pub fn serialize<S: serde::Serializer>(
+        models: &Option<ClaudeModelMapping>,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        models
+            .as_ref()
+            .map(|models| FrozenModels {
+                primary: models.sonnet.clone(),
+                fallback: models.opus.clone(),
+                auxiliary: models.haiku.clone(),
+            })
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Option<ClaudeModelMapping>, D::Error> {
+        Ok(
+            Option::<FrozenModels>::deserialize(deserializer)?.map(|models| ClaudeModelMapping {
+                sonnet: models.primary,
+                opus: models.fallback,
+                haiku: models.auxiliary,
+            }),
+        )
+    }
 }
 
 impl MappingPlan {
@@ -98,13 +145,19 @@ impl MappingPlan {
         let valid_model = |model: &str| {
             !model.is_empty() && model.len() <= 128 && model.bytes().all(|b| b.is_ascii_graphic())
         };
-        if self.version != if self.roles.is_some() { 2 } else { 1 }
+        let valid_version = match self.version {
+            1 => self.models.is_none(),
+            2 | 3 => self.models.is_some(),
+            _ => false,
+        };
+        if !valid_version
             || self.port == 0
             || !valid_model(&self.upstream_model_id)
-            || self.roles.as_ref().is_some_and(|roles| {
-                roles.primary != self.upstream_model_id || !roles.ids().into_iter().all(valid_model)
+            || self.models.as_ref().is_some_and(|models| {
+                models.sonnet != self.upstream_model_id
+                    || !models.ids().into_iter().all(valid_model)
             })
-            || self.aliases != aliases(&self.upstream_model_id, self.roles.as_ref())
+            || self.aliases != aliases(self.version, &self.upstream_model_id, self.models.as_ref())
             || chrono::DateTime::parse_from_rfc3339(&self.created_at).is_err()
         {
             return Err(fail("invalid_configuration"));
@@ -119,9 +172,11 @@ impl MappingPlan {
             _ => return None,
         };
         Some(
-            self.roles
+            self.models
                 .as_ref()
-                .map_or(self.upstream_model_id.as_str(), |roles| roles.ids()[index]),
+                .map_or(self.upstream_model_id.as_str(), |models| {
+                    models.ids()[index]
+                }),
         )
     }
     pub fn base_path(&self) -> String {
@@ -252,13 +307,13 @@ impl MappingManager {
         binding_id: &str,
         profile_id: &str,
         model_id: &str,
-        roles: Option<&ClaudeRoleModels>,
+        models: Option<&ClaudeModelMapping>,
     ) -> Result<MappingPlan> {
         self.reserve_for(
             binding_id,
             profile_id,
             model_id,
-            roles,
+            models,
             Duration::from_secs(300),
         )
     }
@@ -267,7 +322,7 @@ impl MappingManager {
         binding_id: &str,
         profile_id: &str,
         model_id: &str,
-        roles: Option<&ClaudeRoleModels>,
+        models: Option<&ClaudeModelMapping>,
         ttl: Duration,
     ) -> Result<MappingPlan> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -275,8 +330,13 @@ impl MappingManager {
         listener
             .set_nonblocking(true)
             .map_err(|_| fail("claude_mapping_unavailable"))?;
+        let models = models.cloned().unwrap_or_else(|| ClaudeModelMapping {
+            sonnet: model_id.into(),
+            opus: model_id.into(),
+            haiku: model_id.into(),
+        });
         let plan = MappingPlan {
-            version: if roles.is_some() { 2 } else { 1 },
+            version: 3,
             binding_id: binding_id.into(),
             profile_id: profile_id.into(),
             port: listener
@@ -284,9 +344,9 @@ impl MappingManager {
                 .map_err(|_| fail("claude_mapping_unavailable"))?
                 .port(),
             upstream_model_id: model_id.into(),
-            aliases: aliases(model_id, roles),
+            aliases: aliases(3, model_id, Some(&models)),
             created_at: chrono::Utc::now().to_rfc3339(),
-            roles: roles.cloned(),
+            models: Some(models),
         };
         plan.validate()?;
         let mut slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
@@ -788,6 +848,26 @@ mod tests {
     }
 
     #[test]
+    fn saved_v1_and_v2_mapping_plans_preserve_their_authenticated_bytes() {
+        let v1 = r#"{"version":1,"binding_id":"00000000-0000-4000-8000-000000000001","profile_id":"00000000-0000-4000-8000-000000000002","port":40000,"upstream_model_id":"old-model","aliases":[{"name":"claude-sonnet-5","labelOverride":"old-model · 主模型"},{"name":"claude-opus-5","labelOverride":"old-model · 备用主模型"},{"name":"claude-haiku-4-5","labelOverride":"old-model · 辅助模型"}],"created_at":"2026-11-10T00:00:00Z"}"#;
+        let v2 = r#"{"version":2,"binding_id":"00000000-0000-4000-8000-000000000001","profile_id":"00000000-0000-4000-8000-000000000002","port":40000,"upstream_model_id":"sonnet-model","aliases":[{"name":"claude-sonnet-5","labelOverride":"sonnet-model · 主模型"},{"name":"claude-opus-5","labelOverride":"opus-model · 备用主模型"},{"name":"claude-haiku-4-5","labelOverride":"haiku-model · 辅助模型"}],"created_at":"2026-11-10T00:00:00Z","roles":{"primary":"sonnet-model","fallback":"opus-model","auxiliary":"haiku-model"}}"#;
+        for (original, expected) in [
+            (v1, ["old-model", "old-model", "old-model"]),
+            (v2, ["sonnet-model", "opus-model", "haiku-model"]),
+        ] {
+            let plan: MappingPlan = serde_json::from_str(original).unwrap();
+            plan.validate().unwrap();
+            assert_eq!(serde_json::to_string(&plan).unwrap(), original);
+            for (name, model) in [SONNET, OPUS, HAIKU].into_iter().zip(expected) {
+                assert_eq!(plan.upstream_model(name), Some(model));
+            }
+            let mut changed = plan;
+            changed.aliases[0].label_override = "Sonnet → changed".into();
+            assert!(changed.validate().is_err());
+        }
+    }
+
+    #[test]
     fn mapping_plan_reserves_exact_local_endpoint_and_bounded_role_whitelist() {
         let manager = MappingManager::default();
         let binding = crate::identity::uuid();
@@ -795,6 +875,18 @@ mod tests {
         let plan = manager
             .reserve(&binding, &profile, "gpt-6-luna", None)
             .unwrap();
+        assert_eq!(plan.version, 3);
+        assert_eq!(
+            plan.aliases
+                .iter()
+                .map(|alias| alias.label_override.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Sonnet → gpt-6-luna",
+                "Opus → gpt-6-luna",
+                "Haiku → gpt-6-luna"
+            ]
+        );
         assert_eq!(
             plan.base_url(),
             format!(

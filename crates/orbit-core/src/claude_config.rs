@@ -1078,7 +1078,7 @@ mod tests {
                         && model["labelOverride"]
                             .as_str()
                             .unwrap()
-                            .starts_with("gpt-6-luna")
+                            .ends_with(" → gpt-6-luna")
                         && model.get("supports1m").is_none()
                 })
         );

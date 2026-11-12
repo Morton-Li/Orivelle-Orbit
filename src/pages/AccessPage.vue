@@ -5,7 +5,7 @@ import { t } from "../shared/i18n";
 import { nodeName } from "../shared/format";
 import type {
   ClaudeRestoreCoordination,
-  ClaudeRoleModels,
+  ClaudeModelMapping,
   ClientKind,
   ConfigPreview,
 } from "../shared/contracts";
@@ -14,17 +14,26 @@ import ClientRow from "../components/ClientRow.vue";
 import ConfigReviewDialog from "../components/ConfigReviewDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
-import StatusBadge from "../components/StatusBadge.vue";
+import { useNodeLatency } from "../composables/useNodeLatency";
 const store = useOrbitStore();
-const claudeRoles = [
-  { key: "primary", label: "access.rolePrimary" },
-  { key: "fallback", label: "access.roleFallback" },
-  { key: "auxiliary", label: "access.roleAuxiliary" },
+const latency = useNodeLatency();
+const nodeOptions = computed(() =>
+  store.state.nodes.map((node, index) => ({
+    value: node.id,
+    label: nodeName(node, index),
+    detail: latency.label(node),
+    disabled: !node.available,
+  })),
+);
+const claudeMappings = [
+  { key: "sonnet", label: "access.mappingSonnet" },
+  { key: "opus", label: "access.mappingOpus" },
+  { key: "haiku", label: "access.mappingHaiku" },
 ] as const;
-const selectedRoles = ref<ClaudeRoleModels>({
-  primary: "",
-  fallback: "",
-  auxiliary: "",
+const selectedMapping = ref<ClaudeModelMapping>({
+  sonnet: "",
+  opus: "",
+  haiku: "",
 });
 const preview = ref<ConfigPreview | null>(null);
 const previewing = ref<Record<ClientKind, boolean>>({
@@ -35,7 +44,6 @@ let previewGeneration = 0;
 onUnmounted(() => {
   previewGeneration++;
 });
-const recoveryScope = ref("");
 function configurationAllowed(kind: ClientKind): boolean {
   const client = store.state.clients.find((item) => item.client === kind);
   return !!(
@@ -58,33 +66,11 @@ function previewAllowed(kind: ClientKind): boolean {
     )
   );
 }
-const historicalBackups = computed(() =>
-  store.state.backups.filter((backup) => backup.kind !== "switch"),
-);
 function switchSnapshot(kind: ClientKind) {
-  return store.state.backups.find(
-    (backup) => backup.client === kind && backup.kind === "switch",
+  return store.state.switch_snapshots.find(
+    (snapshot) => snapshot.client === kind,
   );
 }
-const backupScopes = computed(() =>
-  Array.from(
-    new Map(
-      historicalBackups.value.map((backup) => [
-        `${backup.panel_origin}/${backup.account_id}`,
-        {
-          id: `${backup.panel_origin}/${backup.account_id}`,
-          label: backup.account_label,
-        },
-      ]),
-    ).values(),
-  ),
-);
-const visibleBackups = computed(() =>
-  historicalBackups.value.filter(
-    (backup) =>
-      `${backup.panel_origin}/${backup.account_id}` === recoveryScope.value,
-  ),
-);
 const claudeModels = computed(() =>
   store.textModels.filter(
     (model) =>
@@ -102,32 +88,23 @@ const codexModelsAvailable = computed(() =>
       model.capabilities.includes(CAPABILITIES.responses),
   ),
 );
-const rolesReady = computed(() =>
-  claudeRoles.every(({ key }) =>
-    claudeModels.value.some((model) => model.id === selectedRoles.value[key]),
+const mappingReady = computed(() =>
+  claudeMappings.every(({ key }) =>
+    claudeModels.value.some((model) => model.id === selectedMapping.value[key]),
   ),
 );
 watch(
   () => store.scope,
   () => {
     previewGeneration++;
-    selectedRoles.value = { primary: "", fallback: "", auxiliary: "" };
+    selectedMapping.value = { sonnet: "", opus: "", haiku: "" };
   },
   { flush: "sync" },
 );
-watch(
-  () => store.scope,
-  () => {
-    recoveryScope.value = store.activeConnection
-      ? `${store.activeConnection.panel_origin}/${store.activeConnection.account_id}`
-      : "";
-  },
-  { immediate: true },
-);
 watch(claudeModels, (models) => {
-  for (const { key } of claudeRoles) {
-    if (!models.some((model) => model.id === selectedRoles.value[key]))
-      selectedRoles.value[key] = "";
+  for (const { key } of claudeMappings) {
+    if (!models.some((model) => model.id === selectedMapping.value[key]))
+      selectedMapping.value[key] = "";
   }
 });
 async function requestPreview(client: ClientKind) {
@@ -135,14 +112,15 @@ async function requestPreview(client: ClientKind) {
   if (
     !connection ||
     switchSnapshot(client) ||
-    (client === "claude" ? !rolesReady.value : !codexModelsAvailable.value) ||
+    (client === "claude" ? !mappingReady.value : !codexModelsAvailable.value) ||
     !previewAllowed(client) ||
     previewing.value[client]
   )
     return;
   const scope = store.scope;
   const origin = connection.panel_origin;
-  const roles = client === "claude" ? { ...selectedRoles.value } : undefined;
+  const mapping =
+    client === "claude" ? { ...selectedMapping.value } : undefined;
   const generation = ++previewGeneration;
   const current = () =>
     generation === previewGeneration &&
@@ -157,7 +135,7 @@ async function requestPreview(client: ClientKind) {
         connection_id: connection.id,
         expected_revision: connection.revision,
         client,
-        ...(roles ? { claude_models: roles } : {}),
+        ...(mapping ? { claude_mapping: mapping } : {}),
       },
     );
     if (!result || !current()) return;
@@ -178,11 +156,11 @@ async function requestPreview(client: ClientKind) {
       result.operation !== "apply" ||
       result.client !== client ||
       !store.ready ||
-      (roles &&
-        (result.model_id !== roles.primary ||
-          !rolesReady.value ||
-          claudeRoles.some(
-            ({ key }) => roles[key] !== selectedRoles.value[key],
+      (mapping &&
+        (result.model_id !== mapping.sonnet ||
+          !mappingReady.value ||
+          claudeMappings.some(
+            ({ key }) => mapping[key] !== selectedMapping.value[key],
           ))) ||
       result.context.connection_id !== active?.id ||
       result.context.account_id !== active.account_id ||
@@ -204,9 +182,10 @@ async function requestPreview(client: ClientKind) {
   }
 }
 async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
-  const backup = store.state.backups.find((item) => item.id === id);
+  const backup = store.state.switch_snapshots.find((item) => item.id === id);
   if (
     !backup ||
+    backup.state === "unavailable" ||
     (coordination && backup.client !== "claude") ||
     !configurationAllowed(backup.client) ||
     store.busy.has("preview-restore")
@@ -215,15 +194,14 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   const expected = { ...backup };
   const generation = ++previewGeneration;
   const result = await store.perform("preview-restore", "preview_restore", {
-    backup_group_id: id,
+    snapshot_id: id,
     ...(coordination ? { coordination } : {}),
   });
   if (!result || generation !== previewGeneration) return;
   if (
     result.operation !== "restore" ||
     (result.restore_coordination ?? undefined) !== coordination ||
-    result.restore_source?.backup_group_id !== id ||
-    result.restore_source.kind !== expected.kind ||
+    result.restore_source?.snapshot_id !== id ||
     result.client !== expected.client ||
     result.restore_owner.account_id !== expected.account_id ||
     result.restore_owner.panel_origin !== expected.panel_origin ||
@@ -235,17 +213,6 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
     return;
   }
   preview.value = result;
-}
-async function backupNow(client: ClientKind) {
-  const result = await store.perform(
-    `backup-${client}`,
-    "backup_client_config",
-    { client },
-  );
-  if (result) {
-    store.acceptState(result);
-    store.notify(t("access.backupSaved"), "success");
-  }
 }
 </script>
 <template>
@@ -273,9 +240,27 @@ async function backupNow(client: ClientKind) {
       </button>
     </div>
     <div class="field">
-      <label for="access-node" class="field-label">{{
-        t("access.node")
-      }}</label>
+      <div class="field-heading">
+        <label for="access-node" class="field-label">{{
+          t("access.node")
+        }}</label>
+        <button
+          type="button"
+          class="button ghost node-latency-refresh"
+          :disabled="!latency.active.value || latency.refreshing.value"
+          :aria-busy="latency.refreshing.value"
+          @click="latency.refresh"
+        >
+          <OrbitIcon name="refresh" :size="13" />
+          {{
+            t(
+              latency.refreshing.value
+                ? "access.latencyRefreshing"
+                : "access.latencyRefresh",
+            )
+          }}
+        </button>
+      </div>
       <OrbitSelect
         id="access-node"
         :model-value="store.activeConnection?.node_id ?? ''"
@@ -291,15 +276,7 @@ async function backupNow(client: ClientKind) {
               : 'access.noNode',
           )
         "
-        :options="
-          store.state.nodes.map((node, index) => ({
-            value: node.id,
-            label: node.available
-              ? nodeName(node, index)
-              : `${nodeName(node, index)} · ${t('access.nodeUnavailable')}`,
-            disabled: !node.available,
-          }))
-        "
+        :options="nodeOptions"
         @update:model-value="store.selectNode"
       />
     </div>
@@ -329,6 +306,7 @@ async function backupNow(client: ClientKind) {
           <button
             class="button secondary"
             :disabled="
+              switchSnapshot(client.client)?.state === 'unavailable' ||
               !configurationAllowed(client.client) ||
               store.busy.has('preview-restore')
             "
@@ -340,6 +318,7 @@ async function backupNow(client: ClientKind) {
             v-if="client.client === 'claude'"
             class="text-button"
             :disabled="
+              switchSnapshot(client.client)?.state === 'unavailable' ||
               !configurationAllowed(client.client) ||
               store.busy.has('preview-restore')
             "
@@ -362,20 +341,20 @@ async function backupNow(client: ClientKind) {
             class="claude-model-config"
             aria-labelledby="claude-model-heading"
           >
-            <h3 id="claude-model-heading">{{ t("access.roleModels") }}</h3>
-            <p class="muted">{{ t("access.claudeRolesHint") }}</p>
-            <div class="claude-roles">
+            <h3 id="claude-model-heading">{{ t("access.modelMapping") }}</h3>
+            <p class="muted">{{ t("access.claudeMappingHint") }}</p>
+            <div class="claude-mappings">
               <div
-                v-for="role in claudeRoles"
-                :key="role.key"
-                class="claude-role"
+                v-for="entry in claudeMappings"
+                :key="entry.key"
+                class="claude-mapping"
               >
-                <label :for="`claude-${role.key}`" class="field-label">{{
-                  t(role.label)
+                <label :for="`claude-${entry.key}`" class="field-label">{{
+                  t(entry.label)
                 }}</label>
                 <OrbitSelect
-                  :id="`claude-${role.key}`"
-                  v-model="selectedRoles[role.key]"
+                  :id="`claude-${entry.key}`"
+                  v-model="selectedMapping[entry.key]"
                   :options="claudeOptions"
                   :placeholder="
                     t(
@@ -400,7 +379,7 @@ async function backupNow(client: ClientKind) {
               !store.ready ||
               !previewAllowed(client.client) ||
               (client.client === 'claude'
-                ? !rolesReady
+                ? !mappingReady
                 : !codexModelsAvailable) ||
               store.modelsLoading ||
               previewing[client.client] ||
@@ -413,95 +392,6 @@ async function backupNow(client: ClientKind) {
         </template>
       </div>
     </article>
-  </section>
-  <section class="section-block">
-    <div class="section-heading">
-      <h2>{{ t("access.backups") }}</h2>
-    </div>
-    <p class="muted section-description">{{ t("access.backupHint") }}</p>
-    <div class="manual-backup-actions">
-      <button
-        v-for="client in store.state.clients"
-        :key="client.client"
-        type="button"
-        class="button secondary"
-        :disabled="
-          !store.state.active_connection_id ||
-          !configurationAllowed(client.client) ||
-          !!switchSnapshot(client.client) ||
-          store.state.maintenance_active ||
-          store.busy.has(`backup-${client.client}`)
-        "
-        @click="backupNow(client.client)"
-      >
-        <OrbitIcon name="file" />{{ t("access.backupNow") }} ·
-        {{ t(client.client === "codex" ? "home.codex" : "home.claude") }}
-      </button>
-    </div>
-    <div v-if="backupScopes.length" class="field backup-scope">
-      <label for="backup-account" class="field-label">{{
-        t("access.backupAccount")
-      }}</label
-      ><OrbitSelect
-        id="backup-account"
-        v-model="recoveryScope"
-        :options="
-          backupScopes.map((scope) => ({ value: scope.id, label: scope.label }))
-        "
-        :placeholder="t('access.selectBackupAccount')"
-      />
-    </div>
-    <div v-if="!visibleBackups.length" class="empty-inline">
-      <OrbitIcon name="history" />{{ t("access.noBackups") }}
-    </div>
-    <div v-for="backup in visibleBackups" :key="backup.id" class="backup-row">
-      <OrbitIcon name="file" />
-      <div>
-        <strong>{{
-          backup.client === "codex" ? t("home.codex") : t("home.claude")
-        }}</strong>
-        <p class="muted">{{ new Date(backup.created_at).toLocaleString() }}</p>
-      </div>
-      <StatusBadge
-        v-if="backup.state !== 'available'"
-        :text="
-          t(
-            backup.state === 'conflict'
-              ? 'client.conflict'
-              : 'common.unavailable',
-          )
-        "
-        tone="warning"
-      /><button
-        class="button secondary"
-        :disabled="
-          backup.state === 'unavailable' ||
-          !!switchSnapshot(backup.client) ||
-          !configurationAllowed(backup.client) ||
-          store.busy.has('preview-restore')
-        "
-        @click="restore(backup.id)"
-      >
-        {{ t("action.restore") }}
-      </button>
-      <button
-        v-if="
-          backup.client === 'claude' &&
-          !backup.kind &&
-          backup.state !== 'unavailable'
-        "
-        class="button secondary"
-        :disabled="
-          !!switchSnapshot(backup.client) ||
-          !configurationAllowed(backup.client) ||
-          store.busy.has('preview-restore')
-        "
-        :title="t('access.preferencesRestoreHint')"
-        @click="restore(backup.id, 'claude_main_preferences_v1')"
-      >
-        {{ t("access.preserveClaudePreferences") }}
-      </button>
-    </div>
   </section>
   <ConfigReviewDialog
     :preview="preview"

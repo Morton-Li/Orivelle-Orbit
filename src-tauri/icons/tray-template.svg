@@ -1,6 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g fill="none" stroke="#000" stroke-width="1.75">
-    <circle cx="12" cy="12" r="6.25"/>
-    <ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-35 12 12)"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 256 256" aria-label="Orbit">
+  <path d="M 205.274 107.294 A 80 80 0 1 1 148.706 50.726" fill="none" stroke="#000000" stroke-width="24" stroke-linecap="butt"/>
+  <circle cx="191.640" cy="64.360" r="18" fill="#000000"/>
 </svg>

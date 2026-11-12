@@ -1,9 +1,9 @@
 /** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
 export type ClientKind = "codex" | "claude";
-export type ClaudeRoleModels = {
-  primary: string;
-  fallback: string;
-  auxiliary: string;
+export type ClaudeModelMapping = {
+  sonnet: string;
+  opus: string;
+  haiku: string;
 };
 export type Theme = "system" | "light" | "dark";
 export type Locale = "zh-CN" | "en";
@@ -136,6 +136,13 @@ export type NodeView = {
   maximum_request_bytes: number;
   capabilities: string[];
   revision: string;
+};
+export type NodeLatencyView = {
+  node_id: string;
+  node_revision: string;
+  status: "available" | "timeout" | "failed";
+  milliseconds: number | null;
+  measured_at: string;
 };
 export type ClientView = {
   client: ClientKind;
@@ -295,9 +302,8 @@ export type RestoreOwner = {
   panel_origin: string;
   installation_id: string;
 };
-export type BackupGroup = RestoreOwner & {
+export type SwitchSnapshot = RestoreOwner & {
   id: string;
-  kind?: "switch" | "manual";
   client: ClientKind;
   created_at: string;
   expires_at: string;
@@ -310,8 +316,6 @@ export type SettingsView = {
   close_behavior: "platform_default" | "keep_running" | "quit";
   image_disk_limit_bytes: number;
   preview_cache_limit_bytes: number;
-  backup_retention_days: number;
-  backup_max_groups: number;
   check_updates_on_start: boolean;
 };
 export type BootstrapView = {
@@ -321,6 +325,7 @@ export type BootstrapView = {
   platform: "macos" | "windows" | null;
   pending_authorization: LoginStart | null;
   maintenance_active: boolean;
+  in_app_updates: boolean;
   session: SessionView;
   connections: ConnectionView[];
   nodes: NodeView[];
@@ -329,7 +334,7 @@ export type BootstrapView = {
   settings: SettingsView;
   tasks: TaskView[];
   image_history: HistoryImage[];
-  backups: BackupGroup[];
+  switch_snapshots: SwitchSnapshot[];
 };
 type ConfigPreviewBase = {
   id: string;
@@ -394,9 +399,8 @@ export type ConfigPreview = ConfigPreviewBase &
         context: null;
         restore_owner: RestoreOwner;
         restore_source: {
-          backup_group_id: string;
+          snapshot_id: string;
           expires_at: string;
-          kind?: BackupGroup["kind"];
         };
         restore_coordination?: ClaudeRestoreCoordination | null;
       }
@@ -405,7 +409,7 @@ export type ConfigResult = {
   client: ClientKind;
   state: "saved" | "restored" | "conflict";
   loaded_state: "restart_required" | "unconfirmed";
-  backup_group_id: string | null;
+  snapshot_id: string | null;
 };
 export type LoginStart = { request_id: string; expires_at: string };
 export type AuthorizationEvent = {
@@ -446,12 +450,22 @@ export interface IpcCommands {
     result: BootstrapView;
   };
   list_models: { args: { connection_id: string }; result: ModelView[] };
+  probe_nodes: {
+    args: {
+      connection_id: string;
+      expected_revision: number;
+      node_ids: string[];
+      probe_id: string;
+    };
+    result: NodeLatencyView[];
+  };
+  cancel_node_probes: { args: { probe_id: string }; result: null };
   preview_client_config: {
     args: {
       connection_id: string;
       expected_revision: number;
       client: ClientKind;
-      claude_models?: ClaudeRoleModels;
+      claude_mapping?: ClaudeModelMapping;
     };
     result: ConfigPreview;
   };
@@ -465,12 +479,11 @@ export interface IpcCommands {
   };
   preview_restore: {
     args: {
-      backup_group_id: string;
+      snapshot_id: string;
       coordination?: ClaudeRestoreCoordination;
     };
     result: ConfigPreview;
   };
-  backup_client_config: { args: { client: ClientKind }; result: BootstrapView };
   restore_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;

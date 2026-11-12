@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-node-probes"
+description = "Enables the cancel_node_probes command without any pre-configured scope."
+commands.allow = ["cancel_node_probes"]
+
+[[permission]]
+identifier = "deny-cancel-node-probes"
+description = "Denies the cancel_node_probes command without any pre-configured scope."
+commands.deny = ["cancel_node_probes"]

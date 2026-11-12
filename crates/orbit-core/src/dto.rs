@@ -86,6 +86,23 @@ pub struct NodeView {
     pub capabilities: Vec<String>,
     pub revision: String,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeLatencyView {
+    pub node_id: String,
+    pub node_revision: String,
+    pub status: NodeLatencyStatus,
+    pub milliseconds: Option<u64>,
+    pub measured_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLatencyStatus {
+    Available,
+    Timeout,
+    Failed,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientEvidence {
     pub kind: String,
@@ -321,10 +338,8 @@ pub struct RestoreOwner {
     pub installation_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackupGroup {
+pub struct SwitchSnapshot {
     pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<BackupKind>,
     pub client: ClientKind,
     #[serde(flatten)]
     pub owner: RestoreOwner,
@@ -340,8 +355,6 @@ pub struct SettingsView {
     pub close_behavior: String,
     pub image_disk_limit_bytes: u64,
     pub preview_cache_limit_bytes: u64,
-    pub backup_retention_days: u32,
-    pub backup_max_groups: u32,
     pub check_updates_on_start: bool,
 }
 impl Default for SettingsView {
@@ -352,8 +365,6 @@ impl Default for SettingsView {
             close_behavior: "keep_running".into(),
             image_disk_limit_bytes: 2 * 1024 * 1024 * 1024,
             preview_cache_limit_bytes: 128 * 1024 * 1024,
-            backup_retention_days: 30,
-            backup_max_groups: 5,
             check_updates_on_start: false,
         }
     }
@@ -366,6 +377,8 @@ pub struct BootstrapView {
     pub platform: Option<String>,
     pub pending_authorization: Option<LoginStart>,
     pub maintenance_active: bool,
+    #[serde(default)]
+    pub in_app_updates: bool,
     pub session: SessionView,
     pub connections: Vec<ConnectionView>,
     pub nodes: Vec<NodeView>,
@@ -374,7 +387,7 @@ pub struct BootstrapView {
     pub settings: SettingsView,
     pub tasks: Vec<TaskView>,
     pub image_history: Vec<HistoryImage>,
-    pub backups: Vec<BackupGroup>,
+    pub switch_snapshots: Vec<SwitchSnapshot>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreviewContext {
@@ -389,28 +402,19 @@ pub struct PreviewContext {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreSource {
-    pub backup_group_id: String,
+    pub snapshot_id: String,
     pub expires_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<BackupKind>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupKind {
-    Switch,
-    Manual,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ClaudeRoleModels {
-    pub primary: String,
-    pub fallback: String,
-    pub auxiliary: String,
+pub struct ClaudeModelMapping {
+    pub sonnet: String,
+    pub opus: String,
+    pub haiku: String,
 }
-impl ClaudeRoleModels {
+impl ClaudeModelMapping {
     pub(crate) fn ids(&self) -> [&str; 3] {
-        [&self.primary, &self.fallback, &self.auxiliary]
+        [&self.sonnet, &self.opus, &self.haiku]
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -481,7 +485,7 @@ pub struct ConfigResult {
     pub client: ClientKind,
     pub state: String,
     pub loaded_state: String,
-    pub backup_group_id: Option<String>,
+    pub snapshot_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginStart {

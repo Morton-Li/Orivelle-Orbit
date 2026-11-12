@@ -21,7 +21,6 @@ const zh = {
   "action.continue": "继续",
   "action.preview": "预览配置",
   "action.apply": "确认应用",
-  "action.restore": "预览恢复",
   "action.logout": "退出登录",
   "action.save": "保存",
   "action.copy": "复制图片",
@@ -57,8 +56,8 @@ const zh = {
   "home.permissionDenied": "当前账户无自动取得接入凭据的权限",
   "home.codex": "Codex 桌面",
   "home.claude": "Claude Desktop",
-  "home.codexHint": "Responses 接入 · 用户配置可能与 CLI / IDE 共享",
-  "home.claudeHint": "第三方推理配置影响整个桌面应用：Chat、Code 与 Cowork",
+  "home.codexHint": "接入全部兼容模型",
+  "home.claudeHint": "自定义模型映射",
   "home.images": "也可以从图片开始",
   "home.imagesHint": "生成、编辑和管理本地结果，所有任务使用获准的连接。",
   "client.pending": "待检测",
@@ -73,7 +72,6 @@ const zh = {
   "client.conflict": "配置冲突",
   "client.unsupported": "版本或配置格式待验证",
   "client.managed": "组织管理配置",
-  "client.configurationAllowed": "可预览本地用户配置",
   "client.configurationBlocked": "本地用户配置写入受阻",
   "client.configurationUnverified": "本地用户配置写入资格待确认",
   "client.remotePolicyUnknown": "远端组织策略未确认，可能影响配置生效。",
@@ -87,14 +85,14 @@ const zh = {
   "access.switchHint": "Orbit 已保存接入配置。切回后请完整重启桌面工具。",
   "access.allCodexModels":
     "接入当前账户和节点可用的全部兼容模型。在 Codex 内切换使用。",
-  "access.claudeRolesHint":
-    "为三个角色分别选模型。使用 Claude Desktop 时需保持 Orbit 运行。",
-  "access.roleModels": "角色模型",
-  "access.rolePrimary": "主模型",
-  "access.roleFallback": "备用主模型",
-  "access.roleAuxiliary": "辅助模型",
+  "access.claudeMappingHint":
+    "选择 Claude 各模型入口实际使用的模型。使用时请保持 Orbit 运行。",
+  "access.modelMapping": "模型映射",
+  "access.mappingSonnet": "Sonnet",
+  "access.mappingOpus": "Opus",
+  "access.mappingHaiku": "Haiku",
   "access.originalRequired": "请先切回原配置。",
-  "access.node": "推理节点",
+  "access.node": "节点",
   "access.model": "模型",
   "access.selectModel": "选择获准的模型",
   "access.noModels": "连接账户和节点后取得模型",
@@ -102,6 +100,13 @@ const zh = {
   "access.noNode": "尚无可用节点",
   "access.selectNode": "选择获准的节点",
   "access.nodeUnavailable": "节点当前不可用",
+  "access.latencyRefresh": "刷新延时",
+  "access.latencyRefreshing": "正在测速",
+  "access.latencyMeasuring": "检测中",
+  "access.latencyUnknown": "待检测",
+  "access.latencyTimeout": "探测超时",
+  "access.latencyFailed": "连接失败",
+  "access.latencyStale": "已过期",
   "access.readonly":
     "只读账户可查看预算和消费，自动取得接入凭据需现有业务写权限。",
   "access.previewTitle": "确认配置与影响范围",
@@ -110,20 +115,9 @@ const zh = {
   "access.paths": "目标文件",
   "access.impact": "影响范围",
   "access.changes": "脱敏配置差异",
-  "access.backups": "配置备份",
-  "access.noBackups": "这个账户暂无手动或历史备份。",
-  "access.backupNow": "立即备份",
-  "access.backupSaved": "已保存配置备份。",
-  "access.backupHint":
-    "可为当前原配置创建加密备份。每个工具保留最多 5 份、最长 30 天。",
-  "access.backupAccount": "备份所属账户",
-  "access.selectBackupAccount": "选择备份所属账户",
   "access.saved":
     "配置已保存。请完整退出目标应用并重新打开，载入和连接仍待确认。",
   "access.restoreLocalConfiguration": "确认恢复配置",
-  "access.preserveClaudePreferences": "保留偏好后预览恢复",
-  "access.preferencesRestoreHint":
-    "仅协调 Claude 主配置中的偏好变化；其他字段或配置库变化仍会阻止恢复。",
   "access.restorePreservingPreferences": "确认保留偏好并恢复接入",
   "access.restoredPreservingPreferences":
     "接入配置已恢复，后续偏好已保留。请完整退出目标应用并重新打开，载入和连接仍待确认。",
@@ -137,7 +131,7 @@ const zh = {
   "access.previewExpired":
     "预览已失效，或账户、节点、凭据、模型、组织策略及客户端版本已变化，请重新预览。",
   "access.restorePreviewExpired":
-    "恢复预览已失效，或所选备份已删除、到期或发生变化，请重新预览恢复。",
+    "恢复预览已失效，或原配置记录已删除或发生变化，请重新预览切回。",
   "access.policyUnverified":
     "尚未确认目标应用的本地配置写入资格或组织管理限制，暂时无法变更或导出配置。请重新检测并预览。",
   "access.policyChanged":
@@ -159,7 +153,7 @@ const zh = {
   "access.claudeConfigurationChanged":
     "Claude Desktop 配置目标或本地写入资格已变化，本次确认已失效。请重新预览。",
   "access.claudeRestoreContextUnavailable":
-    "此 Claude 备份缺少可核验的恢复上下文，暂时无法自动恢复。请核对原配置。",
+    "此 Claude 原配置记录缺少可核验的恢复上下文，暂时无法自动恢复。请核对原配置。",
   "access.claudeContextChanged":
     "Claude 配置的账户、节点、授权或文件状态已变化，本次确认已失效。请重新预览。",
   "access.claudeSourceUnsupported":
@@ -190,7 +184,7 @@ const zh = {
   "access.codexRuntimeChanged":
     "本机接入：目标桌面应用的执行来源已变化，本次确认已失效。请重新预览配置。",
   "access.codexRestoreContextUnavailable":
-    "此备份缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
+    "此原配置记录缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
   "access.codexOverrideUnavailable":
     "现有显式设置可能覆盖本次配置，暂时不能自动应用。请先手动核对后重新预览。",
   "access.codexEvidenceBoundary":
@@ -327,9 +321,9 @@ const zh = {
   "settings.cache": "预览缓存上限",
   "settings.security": "安全存储",
   "settings.securityHint":
-    "账户会话、推理凭据、安装身份和备份密钥分别保存在原生系统安全存储。拒绝访问时操作会明确失败。",
+    "账户会话、推理凭据、安装身份和配置恢复密钥分别保存在原生系统安全存储。拒绝访问时操作会明确失败。",
   "settings.logoutHint":
-    "退出清除账户和推理凭据，保留安装证明和备份恢复密钥。目标应用可能缓存凭据。",
+    "退出清除账户和推理凭据，保留安装证明和配置恢复密钥。目标应用可能缓存凭据。",
   "settings.window": "窗口行为",
   "settings.close": "关闭窗口时",
   "settings.keepRunning": "收起到菜单栏 / 系统托盘",
@@ -344,7 +338,14 @@ const zh = {
   "settings.check": "检查更新",
   "settings.download": "下载并验证",
   "settings.install": "安装并重启",
-  "settings.disabledUpdate": "发布渠道尚未配置",
+  "settings.notChecked": "尚未检查更新",
+  "settings.checkingUpdate": "正在检查更新…",
+  "settings.manualUpdate": "当前版本需手动下载安装包更新",
+  "settings.updateCheckFailed": "检查更新失败，请重试",
+  "settings.downloadingUpdate": "正在下载并验证更新…",
+  "settings.installingUpdate": "正在安装更新…",
+  "settings.updateBlocked": "当前暂时无法安装更新，请稍后重试",
+  "settings.updateFailed": "更新失败，请重试",
   "settings.upToDate": "当前已是最新版本",
   "settings.updateAvailable": "有新版本可用",
   "settings.updateVerified": "更新包已验证",
@@ -395,7 +396,6 @@ const en: Record<keyof typeof zh, string> = {
   "action.continue": "Continue",
   "action.preview": "Preview configuration",
   "action.apply": "Confirm and apply",
-  "action.restore": "Preview restore",
   "action.logout": "Sign out",
   "action.save": "Save",
   "action.copy": "Copy image",
@@ -436,10 +436,8 @@ const en: Record<keyof typeof zh, string> = {
     "This account cannot obtain automatic connection credentials",
   "home.codex": "Codex desktop",
   "home.claude": "Claude Desktop",
-  "home.codexHint":
-    "Responses connection · user configuration may be shared with CLI / IDE",
-  "home.claudeHint":
-    "Third-party inference affects the whole app: Chat, Code and Cowork",
+  "home.codexHint": "Connect all compatible models",
+  "home.claudeHint": "Customize model mappings",
   "home.images": "Start with an image, too",
   "home.imagesHint":
     "Generate, edit and keep local results using an authorized connection.",
@@ -455,7 +453,6 @@ const en: Record<keyof typeof zh, string> = {
   "client.conflict": "Configuration conflict",
   "client.unsupported": "Version or format needs verification",
   "client.managed": "Managed configuration",
-  "client.configurationAllowed": "Local user configuration can be previewed",
   "client.configurationBlocked": "Local user configuration writes blocked",
   "client.configurationUnverified": "Local configuration write check pending",
   "client.remotePolicyUnknown":
@@ -472,14 +469,14 @@ const en: Record<keyof typeof zh, string> = {
     "Orbit access is configured. Quit and reopen the desktop app after switching back.",
   "access.allCodexModels":
     "Connect all compatible models available to this account and node. Choose a model in Codex.",
-  "access.claudeRolesHint":
-    "Choose a model for each role. Keep Orbit running while using Claude Desktop.",
-  "access.roleModels": "Role models",
-  "access.rolePrimary": "Primary model",
-  "access.roleFallback": "Fallback model",
-  "access.roleAuxiliary": "Auxiliary model",
+  "access.claudeMappingHint":
+    "Choose the actual model for each Claude model entry. Keep Orbit running during use.",
+  "access.modelMapping": "Model mapping",
+  "access.mappingSonnet": "Sonnet",
+  "access.mappingOpus": "Opus",
+  "access.mappingHaiku": "Haiku",
   "access.originalRequired": "Switch back to the original configuration first.",
-  "access.node": "Inference node",
+  "access.node": "Node",
   "access.model": "Model",
   "access.selectModel": "Select an authorized model",
   "access.noModels": "Connect an account and node to obtain models",
@@ -487,6 +484,13 @@ const en: Record<keyof typeof zh, string> = {
   "access.noNode": "No available nodes",
   "access.selectNode": "Select an authorized node",
   "access.nodeUnavailable": "Node is currently unavailable",
+  "access.latencyRefresh": "Refresh latency",
+  "access.latencyRefreshing": "Measuring latency",
+  "access.latencyMeasuring": "Measuring",
+  "access.latencyUnknown": "Not measured",
+  "access.latencyTimeout": "Probe timed out",
+  "access.latencyFailed": "Connection failed",
+  "access.latencyStale": "Stale",
   "access.readonly":
     "Read-only accounts can view budgets and usage. Automatic credential delivery requires existing business write permissions.",
   "access.previewTitle": "Review configuration and impact",
@@ -495,20 +499,9 @@ const en: Record<keyof typeof zh, string> = {
   "access.paths": "Target files",
   "access.impact": "Impact",
   "access.changes": "Redacted changes",
-  "access.backups": "Configuration backups",
-  "access.noBackups": "No manual or historical backups for this account.",
-  "access.backupNow": "Back up now",
-  "access.backupSaved": "Configuration backup saved.",
-  "access.backupHint":
-    "Create an encrypted backup of the current original configuration. Keep up to five per tool for 30 days.",
-  "access.backupAccount": "Backup account",
-  "access.selectBackupAccount": "Select the backup account",
   "access.saved":
     "Configuration saved. Quit and reopen the client; loading and connection remain unconfirmed.",
   "access.restoreLocalConfiguration": "Confirm configuration restore",
-  "access.preserveClaudePreferences": "Preview restore keeping preferences",
-  "access.preferencesRestoreHint":
-    "Only coordinates Claude main-config preference changes. Other fields or configuration-library changes still block restoration.",
   "access.restorePreservingPreferences":
     "Keep preferences and restore connection settings",
   "access.restoredPreservingPreferences":
@@ -523,7 +516,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.previewExpired":
     "This preview is no longer valid, or the account, node, credential, model, organization policy or client version changed. Create a new preview.",
   "access.restorePreviewExpired":
-    "This restore preview is no longer valid, or the selected backup was removed, expired or changed. Create a new restore preview.",
+    "This restore preview is no longer valid, or the original configuration record was removed or changed. Preview switching back again.",
   "access.policyUnverified":
     "Local configuration write eligibility or organization restrictions are unconfirmed. Configuration cannot be changed or exported. Check again and create a new preview.",
   "access.policyChanged":
@@ -546,7 +539,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.claudeConfigurationChanged":
     "The Claude Desktop configuration target or local write eligibility changed. This confirmation is no longer valid. Create a new preview.",
   "access.claudeRestoreContextUnavailable":
-    "This Claude backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration.",
+    "This Claude configuration record has no verifiable recovery context and cannot be restored automatically. Check the original configuration.",
   "access.claudeContextChanged":
     "The Claude configuration account, node, authorization or file state changed. This confirmation is no longer valid. Create a new preview.",
   "access.claudeSourceUnsupported":
@@ -579,7 +572,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexRuntimeChanged":
     "The target Desktop application's local backend execution source changed. This confirmation is no longer valid. Create a new preview.",
   "access.codexRestoreContextUnavailable":
-    "This backup has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
+    "This configuration record has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
   "access.codexOverrideUnavailable":
     "Existing explicit settings may override this configuration, so it cannot be applied automatically. Check the settings manually before creating a new preview.",
   "access.codexEvidenceBoundary":
@@ -733,9 +726,9 @@ const en: Record<keyof typeof zh, string> = {
   "settings.cache": "Preview cache limit",
   "settings.security": "Secure storage",
   "settings.securityHint":
-    "Account sessions, inference credentials, installation identity and backup keys use separate native secure-storage entries. Denied access fails explicitly.",
+    "Account sessions, inference credentials, installation identity and configuration recovery keys use separate native secure-storage entries. Denied access fails explicitly.",
   "settings.logoutHint":
-    "Signing out clears account and inference credentials, retaining installation identity and backup keys. Target applications may cache credentials.",
+    "Signing out clears account and inference credentials, retaining installation identity and configuration recovery keys. Target applications may cache credentials.",
   "settings.window": "Window behavior",
   "settings.close": "When closing the window",
   "settings.keepRunning": "Keep running in the menu bar / system tray",
@@ -750,7 +743,16 @@ const en: Record<keyof typeof zh, string> = {
   "settings.check": "Check updates",
   "settings.download": "Download and verify",
   "settings.install": "Install and restart",
-  "settings.disabledUpdate": "Release channel is not configured",
+  "settings.notChecked": "Updates have not been checked",
+  "settings.checkingUpdate": "Checking for updates…",
+  "settings.manualUpdate":
+    "Download and install a new package to update this version",
+  "settings.updateCheckFailed": "Could not check for updates. Try again.",
+  "settings.downloadingUpdate": "Downloading and verifying the update…",
+  "settings.installingUpdate": "Installing the update…",
+  "settings.updateBlocked":
+    "The update cannot be installed right now. Try again later.",
+  "settings.updateFailed": "The update failed. Try again.",
   "settings.upToDate": "Up to date",
   "settings.updateAvailable": "Update available",
   "settings.updateVerified": "Update package verified",

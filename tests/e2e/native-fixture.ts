@@ -113,6 +113,14 @@ export async function fixture(
           const request = (args.request ?? {}) as Record<string, unknown>;
           control.lastRequests[command] = structuredClone(request);
           if (command === "bootstrap") return structuredClone(current);
+          if (command === "check_update") {
+            return {
+              status: current.in_app_updates ? "up_to_date" : "disabled",
+              current_version: "0.1.0",
+              version: null,
+              reason: null,
+            };
+          }
           if (command === "refresh_account") return structuredClone(current);
           if (command === "start_login") {
             current.pending_authorization = {
@@ -131,6 +139,19 @@ export async function fixture(
             return structuredClone(current);
           }
           if (command === "list_models") return models;
+          if (command === "probe_nodes")
+            return current.nodes
+              .filter((node) =>
+                (request.node_ids as string[]).includes(node.id),
+              )
+              .map((node, index) => ({
+                node_id: node.id,
+                node_revision: node.revision,
+                status: "available",
+                milliseconds: 82 + index * 50,
+                measured_at: new Date().toISOString(),
+              }));
+          if (command === "cancel_node_probes") return null;
           if (command === "update_settings") {
             current.settings = {
               ...current.settings,
@@ -193,8 +214,8 @@ export async function fixture(
             return { deleted: ids.length };
           }
           if (command === "preview_restore") {
-            const backup = current.backups.find(
-              (item) => item.id === request.backup_group_id,
+            const backup = current.switch_snapshots.find(
+              (item) => item.id === request.snapshot_id,
             )!;
             return {
               id: "synthetic-restore-preview",
@@ -224,30 +245,28 @@ export async function fixture(
                 installation_id: backup.installation_id,
               },
               restore_source: {
-                backup_group_id: backup.id,
+                snapshot_id: backup.id,
                 expires_at: backup.expires_at,
-                kind: backup.kind,
               },
               impact: ["Synthetic complete original operation group"],
               redacted_diff: "- mixed fixture state\n+ original fixture group",
               expires_at: new Date(Date.now() + 60000).toISOString(),
               can_apply:
-                backup.kind === "switch" || restoreMode === "recoverable",
+                backup.state === "available" || restoreMode === "recoverable",
               can_export_import: false,
               blocking_reason:
-                backup.kind === "switch" || restoreMode === "recoverable"
+                backup.state === "available" || restoreMode === "recoverable"
                   ? null
                   : "config_conflict",
             };
           }
           if (command === "restore_client_config") {
-            const backup = current.backups.find(
+            const backup = current.switch_snapshots.find(
               (item) =>
-                item.id ===
-                control.lastRequests.preview_restore?.backup_group_id,
+                item.id === control.lastRequests.preview_restore?.snapshot_id,
             )!;
-            if (backup.kind === "switch") {
-              current.backups = current.backups.filter(
+            {
+              current.switch_snapshots = current.switch_snapshots.filter(
                 (item) => item.id !== backup.id,
               );
               current.clients.find(
@@ -259,7 +278,7 @@ export async function fixture(
               client: backup.client,
               state: "restored",
               loaded_state: "unconfirmed",
-              backup_group_id: null,
+              snapshot_id: null,
             };
           }
           if (command === "apply_client_config") {
@@ -273,9 +292,8 @@ export async function fixture(
             client.connection_state = "not_tested";
             client.loaded_evidence = null;
             client.connection_evidence = null;
-            current.backups.push({
+            current.switch_snapshots.push({
               id: "synthetic-config-backup",
-              kind: "switch",
               client: client.client,
               account_id: current.session.account!.id,
               account_label: current.session.account!.label,
@@ -291,7 +309,7 @@ export async function fixture(
               client: client.client,
               state: "saved",
               loaded_state: "restart_required",
-              backup_group_id: "synthetic-config-backup",
+              snapshot_id: "synthetic-config-backup",
             };
           }
           if (command === "preview_client_config") {
@@ -320,8 +338,8 @@ export async function fixture(
                 request.client === "codex" ? codexConfigurationTarget : null,
               codex_runtime: request.client === "codex" ? codexRuntime : null,
               model_id:
-                (request.claude_models as { primary: string } | undefined)
-                  ?.primary ?? codexCatalog.default_alias,
+                (request.claude_mapping as { sonnet: string } | undefined)
+                  ?.sonnet ?? codexCatalog.default_alias,
               context: {
                 account_id: connection.account_id,
                 account_label: current.session.account!.label,

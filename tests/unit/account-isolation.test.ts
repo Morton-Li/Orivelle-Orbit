@@ -382,7 +382,7 @@ describe("account and revision isolation", () => {
         preview_url: null,
       },
     ];
-    state.backups = [
+    state.switch_snapshots = [
       {
         id: "backup",
         account_id: "synthetic-account-a",
@@ -399,7 +399,7 @@ describe("account and revision isolation", () => {
     store.acceptState(state);
     expect(store.tasks).toEqual([]);
     expect(store.history).toEqual([]);
-    expect(store.backups).toEqual([]);
+    expect(store.switchSnapshots).toEqual([]);
     store.acceptTask(task());
     expect(store.state.tasks).toHaveLength(1);
   });

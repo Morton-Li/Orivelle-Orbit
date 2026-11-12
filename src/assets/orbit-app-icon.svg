@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 112 112" aria-label="Orbit">
+  <rect x="2" y="2" width="108" height="108" rx="25" fill="#eef4ef"/>
+  <g transform="translate(12 12) scale(0.34375)">
+    <path d="M 205.274 107.294 A 80 80 0 1 1 148.706 50.726" fill="none" stroke="#326b58" stroke-width="24" stroke-linecap="butt"/>
+  <circle cx="191.640" cy="64.360" r="18" fill="#326b58"/>
+  </g>
+</svg>
