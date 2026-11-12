@@ -37,7 +37,7 @@ NSGradient(starting: color(0xf9fbf8), ending: color(0xeaf2ec))!
     .draw(in: NSRect(x: 0, y: 0, width: width, height: height), angle: -70)
 
 text("Orivelle Orbit", x: 48, top: 38, size: 25, weight: .semibold, ink: 0x213e32)
-text("让 AI 工作空间，常驻你的 Mac。", x: 49, top: 76, size: 13)
+text("连接所需，专注所想。", x: 49, top: 76, size: 13)
 
 // Use the same orbit geometry and green as src/assets/orbit-mark.svg.
 graphics.cgContext.saveGState()
@@ -56,13 +56,15 @@ graphics.cgContext.restoreGState()
 
 color(0xd7e3d9).setStroke()
 let divider = NSBezierPath()
-divider.move(to: NSPoint(x: 48, y: 302))
-divider.line(to: NSPoint(x: 612, y: 302))
+divider.move(to: NSPoint(x: 48, y: 312))
+divider.line(to: NSPoint(x: 612, y: 312))
 divider.lineWidth = 0.7
 divider.stroke()
 
 for center: CGFloat in [180, 480] {
-    let card = NSBezierPath(roundedRect: NSRect(x: center - 83, y: 109, width: 166, height: 166),
+    // Finder draws the filename below the 128-point icon. Reserve space for
+    // both, including bottom padding, rather than framing only the icon.
+    let card = NSBezierPath(roundedRect: NSRect(x: center - 95, y: 105, width: 190, height: 190),
                             xRadius: 25, yRadius: 25)
     color(0xffffff, alpha: 0.70).setFill()
     card.fill()
@@ -71,11 +73,11 @@ for center: CGFloat in [180, 480] {
     card.stroke()
 }
 let arrow = NSBezierPath()
-arrow.move(to: NSPoint(x: 310, y: 200))
-arrow.line(to: NSPoint(x: 349, y: 200))
-arrow.move(to: NSPoint(x: 340, y: 209))
-arrow.line(to: NSPoint(x: 349, y: 200))
-arrow.line(to: NSPoint(x: 340, y: 191))
+arrow.move(to: NSPoint(x: 310, y: 220))
+arrow.line(to: NSPoint(x: 349, y: 220))
+arrow.move(to: NSPoint(x: 340, y: 229))
+arrow.line(to: NSPoint(x: 349, y: 220))
+arrow.line(to: NSPoint(x: 340, y: 211))
 arrow.lineWidth = 2.5
 arrow.lineCapStyle = .round
 arrow.lineJoinStyle = .round
