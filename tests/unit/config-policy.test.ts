@@ -281,12 +281,19 @@ describe("Claude configuration target confirmation", () => {
 });
 
 describe("Codex catalog confirmation", () => {
+  it("accepts a compatible installed CLI from a different release than the catalog template", () => {
+    const value = preview();
+    value.codex_configuration_target!.cli_version = "999.1.0";
+    const view = show(value);
+    expect(
+      view.get<HTMLButtonElement>(".button.primary").element.disabled,
+    ).toBe(false);
+  });
   it.each([
     "missing access",
     "missing access revision",
     "missing preview target",
     "empty target revision",
-    "different target CLI",
   ] as const)(
     "rejects %s even when old or synthetic runtime metadata says verified",
     async (missing) => {
@@ -301,24 +308,11 @@ describe("Codex catalog confirmation", () => {
         delete (value as Partial<ConfigPreview>).codex_configuration_target;
       else if (missing === "empty target revision")
         value.codex_configuration_target!.revision = "";
-      else
-        value.codex_configuration_target!.cli_version = "synthetic-other-CLI";
       const view = show(value);
       const apply = view.get<HTMLButtonElement>(".button.primary");
       expect(apply.element.disabled).toBe(true);
       await apply.trigger("click");
       expect(bridge.call).not.toHaveBeenCalled();
-      if (missing === "different target CLI") {
-        await view.setProps({
-          preview: {
-            ...value,
-            codex_configuration_target: syntheticCodexConfigurationTarget(),
-          },
-        });
-        expect(apply.element.disabled).toBe(true);
-        await apply.trigger("click");
-        expect(bridge.call).not.toHaveBeenCalled();
-      }
     },
   );
 
@@ -636,7 +630,7 @@ describe("Codex catalog confirmation", () => {
   it.each([
     [
       "claude_configuration_target_unverified",
-      "尚未确认当前 Claude Desktop 版本的配置合同",
+      "尚未确认当前 Claude Desktop 的配置格式",
     ],
     [
       "claude_configuration_target_changed",
