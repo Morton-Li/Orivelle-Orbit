@@ -16,7 +16,7 @@
         "title": "Orivelle Orbit",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 18, "y": 25 },
+        "trafficLightPosition": { "x": 18, "y": 23 },
         "width": 1120,
         "height": 780,
         "minWidth": 640,
