@@ -153,6 +153,7 @@ pub fn run() {
             });
             app.manage(Native {
                 service,
+                downloads: Default::default(),
                 _instance: instance,
             });
             if let Err(error) = desktop::setup(app) {
@@ -189,6 +190,7 @@ pub fn run() {
             export_diagnostics,
             check_update,
             download_update,
+            cancel_update_download,
             install_update
         ])
         .on_window_event(|window, event| match event {

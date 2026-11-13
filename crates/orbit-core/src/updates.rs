@@ -1,5 +1,5 @@
 use crate::{
-    dto::UpdateView,
+    dto::{UpdateProgress, UpdateView},
     error::{Result, fail},
     identity::{sha256, uuid},
     network::Http,
@@ -181,26 +181,25 @@ impl UpdateChannel {
         accept: &str,
         limit: u64,
         timeout: Duration,
+        progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
     ) -> Result<crate::network::RemoteResponse> {
         if let Some(repository) = &self.github_repository {
             let asset = url
                 .path_segments()
                 .and_then(Iterator::last)
                 .ok_or_else(|| fail("invalid_update_channel"))?;
-            http.get_update(url.clone(), accept, limit, timeout, |from, to| {
-                github_update_redirect(from, to, repository, asset, version)
-            })
-            .await
-        } else {
-            http.request(
-                reqwest::Method::GET,
-                url.as_str(),
-                vec![],
-                vec![("Accept".into(), accept.into())],
+            http.get_update(
+                url.clone(),
+                accept,
                 limit,
                 timeout,
+                |from, to| github_update_redirect(from, to, repository, asset, version),
+                progress,
             )
             .await
+        } else {
+            http.get_update(url.clone(), accept, limit, timeout, |_, _| false, progress)
+                .await
         }
     }
 }
@@ -273,6 +272,7 @@ pub async fn check(http: &Http, store: &Store) -> Result<UpdateView> {
             "application/json",
             64 * 1024,
             Duration::from_secs(15),
+            None,
         )
         .await?;
     if response.status == 204 {
@@ -362,6 +362,8 @@ pub async fn download(
     store: &Store,
     version: &str,
     confirmed: bool,
+    request_id: &str,
+    progress: &(dyn Fn(UpdateProgress) + Send + Sync),
 ) -> Result<UpdateView> {
     if !confirmed {
         return Err(fail("confirmation_required"));
@@ -380,6 +382,14 @@ pub async fn download(
     }
     let channel = UpdateChannel::new(http, trust.endpoint)?;
     let url = channel.artifact_url(http, &candidate.url, version)?;
+    let downloaded = |downloaded_bytes, total_bytes| {
+        progress(UpdateProgress {
+            request_id: request_id.into(),
+            phase: "downloading".into(),
+            downloaded_bytes,
+            total_bytes,
+        })
+    };
     let response = channel
         .get(
             http,
@@ -387,12 +397,19 @@ pub async fn download(
             Some(version),
             "application/octet-stream",
             MAX_UPDATE_BYTES,
-            Duration::from_secs(120),
+            Duration::from_secs(15 * 60),
+            Some(&downloaded),
         )
         .await?;
     if response.status != 200 {
         return Err(fail("update_download_failed"));
     }
+    progress(UpdateProgress {
+        request_id: request_id.into(),
+        phase: "preparing".into(),
+        downloaded_bytes: response.bytes.len() as u64,
+        total_bytes: Some(response.bytes.len() as u64),
+    });
     verify_artifact(
         trust.public_key,
         &candidate.signature,

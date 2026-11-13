@@ -8,6 +8,7 @@ import {
   subscribeAuthorization,
   subscribeErrors,
   subscribeState,
+  subscribeUpdateProgress,
 } from "../shared/bridge";
 import type {
   BootstrapView,
@@ -20,9 +21,11 @@ import type {
   SettingsView,
   TaskView,
   UpdateView,
+  UpdateProgress,
 } from "../shared/contracts";
 import { locale, t } from "../shared/i18n";
 import { configPolicyMessage } from "../shared/format";
+import { updateFailureMessage } from "../shared/updates";
 
 const defaultSettings: SettingsView = {
   theme: "system",
@@ -91,6 +94,9 @@ export const useOrbitStore = defineStore("orbit", () => {
   const update = ref<UpdateView | null>(null);
   const updateOperation = ref<"check" | "download" | "install" | null>(null);
   const updateCheckFailed = ref(false);
+  const updateProgress = ref<UpdateProgress | null>(null);
+  const updateCancelling = ref(false);
+  let updateDownloadId: string | null = null;
   const inAppUpdates = computed(
     () =>
       native.value &&
@@ -311,7 +317,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     key: string,
     command: K,
     request: IpcCommands[K]["args"],
-    options: { silent?: boolean } = {},
+    options: { silent?: boolean; onError?: (error: unknown) => void } = {},
   ): Promise<IpcCommands[K]["result"] | undefined> {
     if (
       state.value.maintenance_active &&
@@ -325,7 +331,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     try {
       return await call(command, request);
     } catch (error) {
-      if (!options.silent) report(error);
+      if (options.onError) options.onError(error);
+      else if (!options.silent) report(error);
       return undefined;
     } finally {
       busy.value.delete(key);
@@ -471,9 +478,25 @@ export const useOrbitStore = defineStore("orbit", () => {
     updateOperation.value = "check";
     updateCheckFailed.value = false;
     try {
-      const result = await perform("update", "check_update", {}, { silent });
+      const result = await perform(
+        "update",
+        "check_update",
+        {},
+        {
+          onError: (error) => {
+            if (!silent) notify(updateFailureMessage(error, "check"), "error");
+          },
+        },
+      );
       if (result) update.value = result;
       else updateCheckFailed.value = true;
+      if (result?.status === "available")
+        notify(
+          `${t("settings.updateAvailable")} · ${result.version}`,
+          "success",
+        );
+      else if (result?.status === "up_to_date" && !silent)
+        notify(t("settings.upToDate"), "success");
       return result;
     } finally {
       updateOperation.value = null;
@@ -484,19 +507,66 @@ export const useOrbitStore = defineStore("orbit", () => {
       !inAppUpdates.value ||
       update.value?.status !== "available" ||
       !update.value.version ||
-      busy.value.has("update")
+      busy.value.has("update") ||
+      state.value.maintenance_active
     )
       return undefined;
+    const requestId = crypto.randomUUID();
+    clearNotice();
     updateOperation.value = "download";
+    busy.value.add("update");
+    updateDownloadId = requestId;
+    updateCancelling.value = false;
+    updateProgress.value = {
+      request_id: requestId,
+      phase: "downloading",
+      downloaded_bytes: 0,
+      total_bytes: null,
+    };
+    let unsubscribeProgress: (() => void) | undefined;
     try {
-      const result = await perform("update", "download_update", {
+      // Listen before starting, so even the first native progress event is kept.
+      unsubscribeProgress = await subscribeUpdateProgress((progress) => {
+        if (progress.request_id === updateDownloadId)
+          updateProgress.value = progress;
+      });
+      const result = await call("download_update", {
         version: update.value.version,
         confirmed: true,
+        request_id: requestId,
       });
-      if (result) update.value = result;
-      return result;
+      update.value = result;
+      if (updateCancelling.value && result.status === "verified")
+        notify(t("settings.updateVerified"));
+      return updateCancelling.value ? undefined : result;
+    } catch (error) {
+      const cancelled =
+        error instanceof OrbitError &&
+        error.code === "update_download_cancelled";
+      notify(
+        updateFailureMessage(error, "download"),
+        cancelled ? "neutral" : "error",
+      );
+      return undefined;
     } finally {
+      unsubscribeProgress?.();
+      updateDownloadId = null;
+      updateProgress.value = null;
+      updateCancelling.value = false;
+      busy.value.delete("update");
       updateOperation.value = null;
+    }
+  }
+  async function cancelUpdateDownload() {
+    if (!updateDownloadId || updateCancelling.value) return;
+    const requestId = updateDownloadId;
+    updateCancelling.value = true;
+    try {
+      await call("cancel_update_download", { request_id: requestId });
+    } catch {
+      if (updateDownloadId !== requestId) return;
+      updateCancelling.value = false;
+      notify(t("settings.cancelDownloadFailed"), "error");
     }
   }
   async function installUpdate() {
@@ -509,10 +579,15 @@ export const useOrbitStore = defineStore("orbit", () => {
       return undefined;
     updateOperation.value = "install";
     try {
-      const result = await perform("update", "install_update", {
-        version: update.value.version,
-        confirmed: true,
-      });
+      const result = await perform(
+        "update",
+        "install_update",
+        { version: update.value.version, confirmed: true },
+        {
+          onError: (error) =>
+            notify(updateFailureMessage(error, "install"), "error"),
+        },
+      );
       if (result) update.value = result;
       return result;
     } finally {
@@ -547,6 +622,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     update,
     updateOperation,
     updateCheckFailed,
+    updateProgress,
+    updateCancelling,
     inAppUpdates,
     notice,
     loginOpen,
@@ -579,6 +656,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     saveSettings,
     checkUpdates,
     downloadUpdate,
+    cancelUpdateDownload,
     installUpdate,
     acceptTask,
   };
