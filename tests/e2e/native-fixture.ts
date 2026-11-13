@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import type {
   AuthorizationEvent,
   BootstrapView,
+  ModelView,
   UpdateProgress,
   UpdateView,
 } from "../../src/shared/contracts";
@@ -28,6 +29,7 @@ export async function fixture(
   page: Page,
   options: {
     state?: BootstrapView;
+    models?: ModelView[];
     paidFailure?: boolean;
     claudeImport?: boolean;
     restoreMode?: "blocked" | "recoverable";
@@ -231,6 +233,9 @@ export async function fixture(
               ...initialTask,
               prompt: String(request.prompt),
               requested_model: String(request.model_id),
+              requested_model_label:
+                models.find((model) => model.id === request.model_id)?.label ??
+                null,
               parameters: request.parameters as object,
               state: paidFailure ? "unconfirmed" : "queued",
             };
@@ -243,18 +248,6 @@ export async function fixture(
                 retryable: false,
               };
             return created;
-          }
-          if (command === "reuse_task_parameters") {
-            const found = current.tasks.find(
-              (item) => item.id === request.task_id,
-            );
-            if (!found) throw { code: "task_unavailable" };
-            return {
-              prompt: found.prompt,
-              model_id: found.requested_model,
-              parameters: structuredClone(found.parameters),
-              inputs: [],
-            };
           }
           if (command === "retry_local_save") {
             const found = current.tasks.find(
@@ -439,7 +432,7 @@ export async function fixture(
       initial: state,
       sampleUsageSummary: usageSummary(),
       sampleUsagePage: usagePage(),
-      models: [imageModel(), syntheticCodexModel()],
+      models: options.models ?? [imageModel(), syntheticCodexModel()],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
       claudeImport: options.claudeImport ?? false,

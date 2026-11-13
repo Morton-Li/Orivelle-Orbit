@@ -300,6 +300,8 @@ pub struct TaskView {
     pub node_id: String,
     pub kind: String,
     pub requested_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model_label: Option<String>,
     pub prompt: String,
     pub parameters: ImageParameters,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -927,6 +927,7 @@ mod tests {
                 node_id: "n".into(),
                 kind: "generation".into(),
                 requested_model: "m".into(),
+                requested_model_label: Some("Image Model".into()),
                 prompt: "synthetic".into(),
                 parameters: ImageParameters {
                     n: Some(2),
@@ -1220,6 +1221,7 @@ mod tests {
             node_id: "n".into(),
             kind: "edit".into(),
             requested_model: "new-image-model".into(),
+            requested_model_label: Some("New Image Model".into()),
             prompt: "图像".into(),
             parameters: ImageParameters::default(),
             state: "queued".into(),
@@ -1248,6 +1250,9 @@ mod tests {
         };
         let body = request_bytes(&store, &snap).unwrap();
         assert!(body.len() > view.bytes as usize);
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["model"], "new-image-model");
+        assert!(payload.get("requested_model_label").is_none());
         assert!(
             String::from_utf8(body.clone())
                 .unwrap()
@@ -1382,6 +1387,7 @@ mod tests {
             node_id: "n".into(),
             kind: "generation".into(),
             requested_model: "m".into(),
+            requested_model_label: Some("Image Model".into()),
             prompt: "p".into(),
             parameters: ImageParameters::default(),
             state: "save_failed".into(),

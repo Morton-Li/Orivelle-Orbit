@@ -260,6 +260,7 @@ export type TaskView = {
   node_id: string;
   kind: "generation" | "edit";
   requested_model: string;
+  requested_model_label?: string | null;
   prompt: string;
   parameters: ImageParameters;
   result_parameters?: ImageResultParameters | null;
@@ -519,15 +520,6 @@ export interface IpcCommands {
   delete_history: {
     args: { image_ids: string[]; confirmed: true };
     result: { deleted: number };
-  };
-  reuse_task_parameters: {
-    args: { task_id: string };
-    result: {
-      prompt: string;
-      model_id: string;
-      parameters: ImageParameters;
-      inputs: ImageInput[];
-    };
   };
   use_history_as_input: {
     args: {

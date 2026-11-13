@@ -307,10 +307,7 @@ const zh = {
   "images.transparentFormat": "透明背景请选择 PNG 或 WebP 输出。",
   "images.invalidCompression":
     "压缩质量需为 0–100 的整数，且仅用于 JPEG 或 WebP。",
-  "images.requestedParameters": "请求参数",
-  "images.observedParameters": "上游返回参数",
   "images.parametersUnknown": "未返回参数",
-  "images.observedModel": "上游返回模型",
   "images.errorAccess": "当前账户无权使用此图片模型或操作。",
   "images.errorTimeout":
     "等待图片结果超时，请先核对任务状态，再决定是否重新提交。",
@@ -335,7 +332,6 @@ const zh = {
   "images.edit": "编辑图片",
   "images.ready": "准备好下一张图片",
   "images.empty": "结果将在这里预览",
-  "images.emptyHint": "没有服务端阶段事件时，只显示等待响应与经过时间。",
   "images.noHistory": "本地历史还没有图片",
   "images.noHistoryHint":
     "收到的图片会保存在本地；删除历史不会改变服务器账务。",
@@ -349,10 +345,8 @@ const zh = {
   "images.cancelHint": "取消本地等待不能保证服务端停止或不结算。",
   "images.promptLimit": "提示词超过 32768 个 UTF-8 字节。",
   "images.requestedModel": "请求模型",
-  "images.actualUnknown": "实际型号未观测",
   "images.unverified": "此模型的参数组合尚未验证",
   "images.backgroundUsageHint": "透明背景可能增加图片 token 用量。",
-  "images.settlement": "结算状态",
   "images.pendingCharge": "费用待确认",
   "images.reconciliation": "待核账",
   "images.charged": "已结算",
@@ -363,10 +357,6 @@ const zh = {
   "images.zoom": "放大预览",
   "images.deleteHint": "只删除所选本地图片与历史，不改变服务器记录和费用。",
   "images.inputLimit": "参考图数量超过当前模型上限，请先移除部分参考图。",
-  "images.reuse": "复用参数",
-  "images.execution": "服务端执行记录",
-  "images.executionConfirmed": "执行事实已确认",
-  "images.chargeItem": "费用分项",
   "meter.input": "输入 token",
   "meter.cachedInput": "缓存输入 token",
   "meter.cacheWrite": "缓存写入 token",
@@ -789,10 +779,7 @@ const en: Record<keyof typeof zh, string> = {
     "Choose PNG or WebP for a transparent background.",
   "images.invalidCompression":
     "Compression quality must be an integer from 0 to 100 and requires JPEG or WebP.",
-  "images.requestedParameters": "Requested parameters",
-  "images.observedParameters": "Upstream result parameters",
   "images.parametersUnknown": "Not reported",
-  "images.observedModel": "Upstream reported model",
   "images.errorAccess":
     "This account cannot access the selected image model or operation.",
   "images.errorTimeout":
@@ -823,8 +810,6 @@ const en: Record<keyof typeof zh, string> = {
   "images.edit": "Edit image",
   "images.ready": "Ready for your next image",
   "images.empty": "Preview results here",
-  "images.emptyHint":
-    "Without server stage events, only waiting and elapsed time are shown.",
   "images.noHistory": "No local images yet",
   "images.noHistoryHint":
     "Received images stay local. Deleting history does not change server billing.",
@@ -839,11 +824,9 @@ const en: Record<keyof typeof zh, string> = {
     "Stopping local waiting does not guarantee execution or billing stops.",
   "images.promptLimit": "Prompt exceeds 32768 UTF-8 bytes.",
   "images.requestedModel": "Requested model",
-  "images.actualUnknown": "Actual model not observed",
   "images.unverified": "This model’s parameter combination is unverified",
   "images.backgroundUsageHint":
     "Transparent backgrounds may use more image tokens.",
-  "images.settlement": "Settlement",
   "images.pendingCharge": "Charges unconfirmed",
   "images.reconciliation": "Reconciliation pending",
   "images.charged": "Settled",
@@ -856,10 +839,6 @@ const en: Record<keyof typeof zh, string> = {
     "Deletes selected local images and history only; server records and billing are unchanged.",
   "images.inputLimit":
     "Reference count exceeds the selected model limit. Remove some references first.",
-  "images.reuse": "Reuse parameters",
-  "images.execution": "Server execution record",
-  "images.executionConfirmed": "Execution facts confirmed",
-  "images.chargeItem": "Charge item",
   "meter.input": "Input tokens",
   "meter.cachedInput": "Cached input tokens",
   "meter.cacheWrite": "Cache-write tokens",
