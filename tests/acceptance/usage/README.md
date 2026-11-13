@@ -1,11 +1,11 @@
-# 用量页候选验收记录
+# 用量页验收记录
 
-2026-11-13，本地 macOS arm64。界面样式待用户确认，候选尚未合并 develop。
+2026-11-13，本地 macOS arm64。用户已确认界面样式，本轮按授权将用量功能交付到 Orbit 与 Panel 各自的本地 develop。
 
 ## 功能与分支
 
-- Orbit：`feature/usage-page`。基于已合并价格区移除与配置兼容改动的 develop `261f455bb1c950510c42a21bd5d6c8c5a30f05c3`。
-- Panel：`feature/orbit-usage`，候选 `47db1d8336721755c70a1d080bcb00ec78571901`。隔离工作区 `.worktrees/orbit-usage/Panel`；原 Panel develop 保持不变。
+- Orbit：`feature/usage-page`，产品候选 `1611b79124be72ed231bbbed2b3230b8cc7866b3`。基于已合并价格区移除与配置兼容改动的 develop `261f455bb1c950510c42a21bd5d6c8c5a30f05c3`，按授权本地合并。
+- Panel：`feature/orbit-usage`，功能提交 `47db1d8336721755c70a1d080bcb00ec78571901`，本地 develop 合并提交 `1482857ec961f2f1e3c5e781f28730520fb24392`。合并树与已验证功能树一致；隔离工作区 `.worktrees/orbit-usage/Panel` 保留。
 - 账户全部入口的时段汇总、每日请求／已确认消费趋势、调用记录结果筛选、签名游标分页和请求详情。只读账户无需推理 key 或节点即可查询本人数据。
 - 不同币种分开；金额保留十进制字符串，待确认金额不补为零；缓存与推理 Token 不重复加入总数。汇总与明细各自沿用平台原有时间及结果语义。
 
