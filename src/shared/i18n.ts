@@ -76,6 +76,21 @@ const zh = {
   "client.configurationUnverified": "本地用户配置写入资格待确认",
   "client.remotePolicyUnknown": "远端组织策略未确认，可能影响配置生效。",
   "access.title": "管理桌面接入",
+  "access.waitDetection": "正在检查桌面应用，请稍候。",
+  "access.connectAccountFirst": "请先连接 Orivelle 账户。",
+  "access.waitCredential": "接入凭据尚未就绪，请刷新账户后重试。",
+  "access.chooseNodeFirst": "请先选择可用节点。",
+  "access.waitMaintenance": "正在维护本地数据，请稍后重试。",
+  "access.installClientFirst": "尚未检测到此桌面应用，请安装后刷新。",
+  "access.platformUnavailable": "当前系统暂不支持自动配置。",
+  "access.checkConfiguration":
+    "本地配置检查尚未通过，请确认使用默认配置目录后刷新。",
+  "access.waitModels": "正在加载获准模型。",
+  "access.noCompatibleModels":
+    "当前账户和节点没有兼容模型，请检查模型权限或切换节点。",
+  "access.completeMapping": "请为 Sonnet、Opus、Haiku 分别选择实际调用的模型。",
+  "access.waitConnection": "正在刷新连接状态，请稍候。",
+  "access.preparingPreview": "正在准备配置预览。",
   "access.description":
     "为 Codex 和 Claude Desktop 接入 Orivelle，也可以切回各自的原配置。",
   "access.connection": "当前账户",
@@ -145,7 +160,7 @@ const zh = {
   "access.claudeDesktopScope":
     "第三方推理配置影响 Claude 整个桌面应用，包括 Chat、Code 与 Cowork。仅变更下列目标文件，保存后需完整重启；保存不证明客户端已载入或连接。",
   "access.claudeConfigurationUnavailable":
-    "尚未确认当前 Claude Desktop 版本的配置合同，暂时无法保存或恢复。诊断候选导出不代表配置已生效。",
+    "尚未确认当前 Claude Desktop 的配置格式，暂时无法保存或恢复。诊断候选导出不代表配置已生效。",
   "access.claudeVerificationTimeout":
     "Claude 应用身份校验超时，操作已停止。请核对状态后重新预览。",
   "access.claudeNativeMigrationRequired":
@@ -172,7 +187,7 @@ const zh = {
   "access.codexMenuAliases": "模型菜单调用名称（本次目录）",
   "access.codexDefaultAlias": "默认模型调用名称",
   "access.codexDefaultEffort": "默认推理档位",
-  "access.codexDeclaredCli": "声明目标 CLI（须匹配已安装配置目标）",
+  "access.codexDeclaredCli": "模型目录模板来源 CLI",
   "access.codexRuntime": "本机接入来源核验",
   "access.codexRuntimeCli": "本机接入 CLI 版本",
   "access.codexRuntimeVerified": "本机接入：本次预览的执行来源已核验",
@@ -457,6 +472,26 @@ const en: Record<keyof typeof zh, string> = {
   "client.remotePolicyUnknown":
     "Remote organization policy is unconfirmed and may affect configuration activation.",
   "access.title": "Manage desktop access",
+  "access.waitDetection": "Checking installed desktop apps…",
+  "access.connectAccountFirst": "Connect your Orivelle account first.",
+  "access.waitCredential":
+    "Access credentials are not ready. Refresh your account and retry.",
+  "access.chooseNodeFirst": "Select an available node first.",
+  "access.waitMaintenance":
+    "Local data maintenance is in progress. Try again shortly.",
+  "access.installClientFirst":
+    "This desktop app was not detected. Install it, then refresh.",
+  "access.platformUnavailable":
+    "Automatic configuration is unavailable on this platform.",
+  "access.checkConfiguration":
+    "Local configuration checks have not passed. Check the default configuration directory, then refresh.",
+  "access.waitModels": "Loading authorized models…",
+  "access.noCompatibleModels":
+    "No compatible models are available for this account and node. Check model access or select another node.",
+  "access.completeMapping":
+    "Choose the actual model for Sonnet, Opus and Haiku.",
+  "access.waitConnection": "Refreshing the connection. Please wait.",
+  "access.preparingPreview": "Preparing the configuration preview…",
   "access.description":
     "Connect Codex and Claude Desktop to Orivelle or switch each tool back to its original configuration.",
   "access.connection": "Current account",
@@ -530,7 +565,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.claudeDesktopScope":
     "Third-party inference affects the whole Claude desktop app, including Chat, Code and Cowork. Only the listed target files will change. Restart completely after saving; saving does not confirm loading or connection.",
   "access.claudeConfigurationUnavailable":
-    "The configuration contract for this Claude Desktop version is unconfirmed. Saving or restoring is unavailable. Exporting a diagnostic candidate does not confirm configuration activation.",
+    "The installed Claude Desktop configuration format is unconfirmed. Saving or restoring is unavailable. Exporting a diagnostic candidate does not confirm configuration activation.",
   "access.claudeVerificationTimeout":
     "Claude app identity verification timed out. The operation stopped; check its status and preview again.",
   "access.claudeNativeMigrationRequired":
@@ -557,8 +592,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexMenuAliases": "Model menu aliases in this catalog",
   "access.codexDefaultAlias": "Default model alias",
   "access.codexDefaultEffort": "Default reasoning effort",
-  "access.codexDeclaredCli":
-    "Declared CLI target (must match the installed configuration target)",
+  "access.codexDeclaredCli": "Model catalog template CLI",
   "access.codexRuntime": "Local backend source check",
   "access.codexRuntimeCli": "Local backend CLI version",
   "access.codexRuntimeVerified":

@@ -65,12 +65,7 @@ const current = computed(() => {
       target.revision !== client.configuration_access_revision
     )
       return false;
-    if (
-      preview.operation === "apply" &&
-      (!preview.codex_catalog ||
-        target.cli_version !== preview.codex_catalog.cli_version)
-    )
-      return false;
+    if (preview.operation === "apply" && !preview.codex_catalog) return false;
   } else if (!diagnosticExport) {
     const target = preview.claude_configuration_target;
     if (
@@ -144,10 +139,7 @@ const codexReady = computed(() => {
   const preview = props.preview;
   if (preview?.client !== "codex" || preview.operation !== "apply") return true;
   return (
-    !!preview.codex_catalog &&
-    !!preview.codex_configuration_target?.cli_version &&
-    preview.codex_configuration_target.cli_version ===
-      preview.codex_catalog.cli_version
+    !!preview.codex_catalog && !!preview.codex_configuration_target?.cli_version
   );
 });
 const codexRuntimeVerified = computed(() => {

@@ -192,8 +192,11 @@ fn claude_core_flow_bootstrap_keeps_unqualified_or_pending_legacy_state_conserva
         if fault == "managed" {
             assert_eq!(client.configuration_access, ConfigurationAccess::Blocked);
         }
-        if fault == "policy-unknown" || fault == "version" {
+        if fault == "policy-unknown" {
             assert_eq!(client.configuration_access, ConfigurationAccess::Unverified);
+        }
+        if fault == "version" {
+            assert_eq!(client.configuration_access, ConfigurationAccess::Allowed);
         }
         assert_eq!(service.store.snapshot().unwrap().revision, revision);
         assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0, "{fault}");
@@ -4496,4 +4499,36 @@ fn claude_b3a_diagnostic_alias_traversal_and_late_parent_swap_never_write_client
             "preview_expired"
         );
     }
+}
+
+#[tokio::test]
+async fn compatible_major_upgrade_preserves_saved_mapping_and_restore() {
+    let f = mapping_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
+    {
+        let mut clients = f.service.clients.lock().unwrap();
+        let client = clients
+            .iter_mut()
+            .find(|c| c.client == ClientKind::Claude)
+            .unwrap();
+        client.version = Some("999.0.0".into());
+    }
+    f.service
+        .configuration_preflight(ClientKind::Claude)
+        .unwrap();
+    f.service.reconcile_claude_mappings().unwrap();
+    let restore = f
+        .service
+        .preview_restore(saved.snapshot_id.as_deref().unwrap())
+        .unwrap();
+    assert!(restore.can_apply);
+    f.service
+        .apply_client_config(&restore.id, true, true)
+        .unwrap();
+    f.service.stop_claude_mappings();
 }

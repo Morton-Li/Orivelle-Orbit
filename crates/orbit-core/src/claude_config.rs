@@ -1,6 +1,6 @@
-//! Pure file planning for one pinned Claude Desktop local configuration library.
+//! Pure file planning for the Claude Desktop local configuration library dialect.
 //!
-//! Inputs assert an intended user root, installed version and source pin. This
+//! Inputs assert an intended user root and an observed configuration dialect. This
 //! module performs no I/O and establishes neither local write permission nor
 //! client loading, connectivity or model authorization. Production writes remain
 //! gated by the Service; this compiler cannot supply an installed-target receipt.
@@ -801,8 +801,13 @@ enum HelperTimeout {
 }
 
 fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Result<CompiledLibrary> {
-    if plan.app_version != SUPPORTED_APP_VERSION
-        || plan.source_member_sha256 != SOURCE_MEMBER_SHA256
+    if plan.app_version.is_empty()
+        || plan.app_version.len() > 128
+        || plan.source_member_sha256.len() != 64
+        || !plan
+            .source_member_sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
     {
         return Err(fail("claude_configuration_target_unverified"));
     }
@@ -1558,8 +1563,8 @@ mod tests {
         );
         let fixture = Fixture::new();
         let mut plan = fixture.plan();
-        plan.app_version = "2.19675.1";
-        rejected(&plan, "claude_configuration_target_unverified");
+        plan.app_version = "999.1.0";
+        assert!(compile(&plan).is_ok());
         plan.app_version = SUPPORTED_APP_VERSION;
         plan.source_member_sha256 = "unknown";
         rejected(&plan, "claude_configuration_target_unverified");

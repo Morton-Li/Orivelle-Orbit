@@ -2390,7 +2390,12 @@ impl Service {
             .as_ref()
             .ok_or_else(|| fail("codex_catalog_context_unverified"))?;
         let (target, _) = self.client_policy(ClientKind::Codex)?;
-        if self.paths.codex_configuration_target(&target)? != *frozen_target {
+        let current = self.paths.codex_configuration_target(&target)?;
+        if if restore {
+            !current.compatible_with(frozen_target)
+        } else {
+            current != *frozen_target
+        } {
             return Err(fail("codex_configuration_target_changed"));
         }
         let installation = self
@@ -5034,14 +5039,20 @@ mod tests {
                 || !target.installed
                 || !target.platform_supported
                 || target.client != ClientKind::Claude
-                || target.version.as_deref() != Some(crate::claude_config::SUPPORTED_APP_VERSION)
+                || target.version.as_deref().is_none_or(str::is_empty)
                 || target.bundle_id.as_deref() != Some("com.anthropic.claudefordesktop")
             {
                 return Err(fail("claude_configuration_target_unverified"));
             }
             let mut receipt = crate::system::ClaudeConfigurationTarget::synthetic(root.clone())?;
+            receipt.app_version = target.version.clone().unwrap();
             receipt.revision = sha256(
-                format!("synthetic-Claude-target-{}", signal.load(Ordering::SeqCst)).as_bytes(),
+                format!(
+                    "synthetic-Claude-target-{}-{}",
+                    signal.load(Ordering::SeqCst),
+                    receipt.app_version
+                )
+                .as_bytes(),
             );
             Ok(receipt)
         }));

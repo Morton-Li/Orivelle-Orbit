@@ -20,6 +20,8 @@ pub struct SystemPaths {
     pub helper_expected_sha256: Option<String>,
     pub configuration_roots: Vec<PathBuf>,
     pub writes_authorized: bool,
+    capability_cache:
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, (String, String)>>>,
     pub isolated: bool,
     pub(crate) codex_user_home: Option<PathBuf>,
     #[cfg(target_os = "macos")]
@@ -44,46 +46,12 @@ pub struct SystemPaths {
     >,
 }
 
-const CONFIGURATION_DESKTOP_VERSION: &str = "26.1013.40934";
 const CONFIGURATION_BUNDLE_ID: &str = "com.openai.codex";
 const CONFIGURATION_CLI: &str = "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
-const CONFIGURATION_CLI_BYTES: u64 = 249_954_368;
-const CONFIGURATION_CLI_SHA: &str =
-    "1afb28c01d7d49e892bd75f11076b10f1451e34e0ee308a95e5ab7f69f9c84fe";
-const CONFIGURATION_MATERIALS: [(&str, u64, &str); 3] = [
-    (
-        "Contents/Info.plist",
-        20_738,
-        "8520b12f2bcf41fe7bb2d7d0fca7043ed495497c5a5405aafea01933f1b53058",
-    ),
-    (
-        "Contents/Resources/codex-cli/codex-package.json",
-        211,
-        "558c7aabb05ccc87bdb8c8514f87659fec72929a39919c7156f8b8889f7589b3",
-    ),
-    (
-        "Contents/Resources/codex-cli/CodexCLI.app/Contents/Info.plist",
-        525,
-        "c40b0e6b87b94ef5a232ab8312678c5db2156428f57c3f3d6c32525373be7f59",
-    ),
-];
 const CLAUDE_BUNDLE_ID: &str = "com.anthropic.claudefordesktop";
 const CLAUDE_CONFIGURATION_IMPACT: &str = "Claude 第三方推理模式影响整个桌面应用，包括 Chat、Code 与 Cowork；请先核对安装版本与本地策略，未通过核验时自动接入保持禁用。";
 const CLAUDE_LEGACY_GUIDANCE: &str =
     "Claude 第三方推理模式影响整个桌面应用；configLibrary envelope 尚未验证，请使用官方导入流程。";
-#[cfg(target_os = "macos")]
-const CLAUDE_MATERIALS: [(&str, u64, &str); 2] = [
-    (
-        "Contents/Info.plist",
-        12_938,
-        "7ff3c89ba08993679d13e2b5d3b3f6de331233901aa069ae83591a5168e42344",
-    ),
-    (
-        "Contents/Resources/app.asar",
-        64_685_328,
-        "0f8f7d420223874fbcfc8de8e29a978d0a04bb2ae620d4b454dc3714f275035c",
-    ),
-];
 #[cfg(target_os = "macos")]
 const MAX_CONFIGURATION_INFO_BYTES: u64 = 1024 * 1024;
 
@@ -124,11 +92,18 @@ pub struct ClaudeConfigurationTarget {
 }
 
 impl ClaudeConfigurationTarget {
+    pub(crate) fn compatible_with(&self, previous: &Self) -> bool {
+        self.contract_version == previous.contract_version
+            && self.bundle_id == previous.bundle_id
+            && self.app_path == previous.app_path
+            && self.config_root == previous.config_root
+            && self.root_anchors == previous.root_anchors
+    }
     pub fn validate_root(&self) -> Result<()> {
         if self.contract_version != 1
             || self.bundle_id != CLAUDE_BUNDLE_ID
-            || self.app_version != crate::claude_config::SUPPORTED_APP_VERSION
-            || self.source_member_sha256 != crate::claude_config::SOURCE_MEMBER_SHA256
+            || self.app_version.is_empty()
+            || !configuration_digest(&self.source_member_sha256)
             || !configuration_digest(&self.revision)
         {
             return Err(fail("claude_configuration_target_unverified"));
@@ -294,7 +269,7 @@ fn claude_verify_cached(
     if !cached {
         verify_large_hash()?;
     }
-    // The stamp cache covers only the large pinned ASAR hash. A signature
+    // The stamp cache covers the observed configuration feature evidence. A signature
     // covers additional executable/resources that are deliberately not part of
     // that cache key, so its result must never be reused.
     verify_signature()?;
@@ -323,9 +298,17 @@ pub(crate) struct CodexConfigurationTarget {
     pub(crate) revision: String,
 }
 impl CodexConfigurationTarget {
+    pub(crate) fn compatible_with(&self, previous: &Self) -> bool {
+        self.contract_version == previous.contract_version
+            && self.bundle_id == previous.bundle_id
+            && self.app_path == previous.app_path
+            && self.config_root == previous.config_root
+            && self.root_anchor == previous.root_anchor
+            && self.profile_id == previous.profile_id
+    }
     pub(crate) fn validate_root(&self) -> Result<()> {
         if self.contract_version != 1
-            || self.cli_version != crate::codex_catalog::SUPPORTED_CLI_VERSION
+            || self.cli_version.is_empty()
             || self.profile_id != crate::codex_binding::PROFILE_ID
             || !configuration_digest(&self.revision)
         {
@@ -543,7 +526,7 @@ fn configuration_stamp(metadata: &fs::Metadata) -> String {
         metadata.ctime_nsec()
     )
 }
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn configuration_hash(path: &Path, bytes: u64) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = configuration_file(path)?;
@@ -863,8 +846,18 @@ impl SystemPaths {
         target
     }
 
-    /// Lightweight qualification projection, without a signature process or a
-    /// full ASAR hash. It is not a receipt and does not enable any writer.
+    /// Lightweight qualification using cached feature observations. It is not a
+    /// signed receipt and does not enable any writer.
+    pub(crate) fn claude_configuration_metadata(
+        &self,
+        target: &ClientView,
+    ) -> Result<ClaudeConfigurationTarget> {
+        #[cfg(test)]
+        if let Some(adapter) = &self.fixture_claude_configuration_target {
+            return adapter(target, false);
+        }
+        self.claude_configuration_draft(target)
+    }
     pub fn claude_configuration_hint(&self, target: &ClientView) -> Result<String> {
         #[cfg(test)]
         if let Some(adapter) = &self.fixture_claude_configuration_target {
@@ -914,13 +907,11 @@ impl SystemPaths {
                             .as_deref()
                             .ok_or_else(|| fail("claude_configuration_target_unverified"))?,
                     );
-                    let (relative, bytes, digest) = CLAUDE_MATERIALS[1];
-                    if configuration_hash(&app.join(relative), bytes)
-                        .map_err(claude_target_error)?
-                        != digest
-                    {
-                        return Err(fail("claude_configuration_target_unverified"));
-                    }
+                    self.configuration_features(
+                        &app.join("Contents/Resources/app.asar"),
+                        crate::client_compatibility::CLAUDE_FEATURES,
+                    )
+                    .map_err(claude_target_error)?;
                     Ok(())
                 },
             )
@@ -939,7 +930,7 @@ impl SystemPaths {
                 || !target.installed
                 || !target.platform_supported
                 || target.client != ClientKind::Claude
-                || target.version.as_deref() != Some(crate::claude_config::SUPPORTED_APP_VERSION)
+                || target.version.as_deref().is_none_or(str::is_empty)
                 || target.bundle_id.as_deref() != Some(CLAUDE_BUNDLE_ID)
                 || std::env::var_os("CLAUDE_USER_DATA_DIR").is_some()
                 || std::env::var_os("CLAUDE_E2E_MANAGED_PLIST").is_some()
@@ -962,39 +953,28 @@ impl SystemPaths {
             }
             let root_anchors = claude_configuration_root(&root)?;
             let mut materials = Vec::new();
-            for (index, (relative, bytes, digest)) in CLAUDE_MATERIALS.iter().enumerate() {
-                let path = Path::new(&app_path).join(relative);
-                let file = configuration_file(&path).map_err(claude_target_error)?;
-                let before = file
-                    .metadata()
-                    .map_err(|_| fail("claude_configuration_target_unverified"))?;
-                if before.len() != *bytes {
-                    return Err(fail("claude_configuration_target_unverified"));
-                }
-                // Info is small and pins version/bundle identity on each hint.
-                // ASAR is streamed only for a new full receipt; its complete
-                // metadata stamp participates in the receipt/cache revision.
-                if index == 0
-                    && configuration_hash(&path, *bytes).map_err(claude_target_error)? != *digest
-                {
-                    return Err(fail("claude_configuration_target_unverified"));
-                }
-                let after = configuration_file(&path)
-                    .map_err(claude_target_error)?
-                    .metadata()
-                    .map_err(|_| fail("claude_configuration_target_unverified"))?;
-                if configuration_stamp(&before) != configuration_stamp(&after) {
-                    return Err(fail("claude_configuration_target_changed"));
-                }
-                materials.push(configuration_stamp(&after));
+            for relative in ["Contents/Info.plist", "Contents/Resources/app.asar"] {
+                let file = configuration_file(&Path::new(&app_path).join(relative))
+                    .map_err(claude_target_error)?;
+                materials.push(configuration_stamp(
+                    &file
+                        .metadata()
+                        .map_err(|_| fail("claude_configuration_target_unverified"))?,
+                ));
             }
+            let source_digest = self
+                .configuration_features(
+                    &Path::new(&app_path).join("Contents/Resources/app.asar"),
+                    crate::client_compatibility::CLAUDE_FEATURES,
+                )
+                .map_err(claude_target_error)?;
             let revision = crate::identity::sha256(
                 &serde_json::to_vec(&(
                     "claude-installed-user-config-v1",
                     &app_path,
                     CLAUDE_BUNDLE_ID,
-                    crate::claude_config::SUPPORTED_APP_VERSION,
-                    crate::claude_config::SOURCE_MEMBER_SHA256,
+                    &target.version,
+                    &source_digest,
                     crate::claude_config::SCHEMA_KEYS_SHA256,
                     &root,
                     &root_anchors,
@@ -1006,8 +986,11 @@ impl SystemPaths {
                 contract_version: 1,
                 app_path,
                 bundle_id: CLAUDE_BUNDLE_ID.into(),
-                app_version: crate::claude_config::SUPPORTED_APP_VERSION.into(),
-                source_member_sha256: crate::claude_config::SOURCE_MEMBER_SHA256.into(),
+                app_version: target
+                    .version
+                    .clone()
+                    .ok_or_else(|| fail("client_unsupported"))?,
+                source_member_sha256: source_digest,
                 config_root: root,
                 root_anchors,
                 materials,
@@ -1021,6 +1004,39 @@ impl SystemPaths {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn configuration_features(&self, path: &Path, features: &[&str]) -> Result<String> {
+        let file = configuration_file(path)?;
+        let stamp = configuration_stamp(
+            &file
+                .metadata()
+                .map_err(|_| fail("configuration_unreadable"))?,
+        );
+        if let Some((cached_stamp, digest)) = self
+            .capability_cache
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .get(path)
+        {
+            if cached_stamp == &stamp {
+                return Ok(digest.clone());
+            }
+        }
+        let digest = crate::client_compatibility::observe(file, features, 1024 * 1024 * 1024)?;
+        let after = configuration_stamp(
+            &configuration_file(path)?
+                .metadata()
+                .map_err(|_| fail("configuration_unreadable"))?,
+        );
+        if after != stamp {
+            return Err(fail("configuration_conflict"));
+        }
+        self.capability_cache
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .insert(path.into(), (stamp, digest.clone()));
+        Ok(digest)
+    }
     pub fn codex_catalog(&self) -> PathBuf {
         self.codex_config
             .with_file_name("orivelle-orbit.models.json")
@@ -1129,10 +1145,7 @@ impl SystemPaths {
             }
             let mut command = Command::new("/usr/bin/codesign");
             command.args(["--verify", "--strict", "-R", "=identifier \"codex\" and anchor apple generic and certificate leaf[subject.OU] = \"2DC432GLL2\""]).arg(app.join(CONFIGURATION_CLI));
-            if bounded_command(command).is_none()
-                || configuration_hash(&app.join(CONFIGURATION_CLI), CONFIGURATION_CLI_BYTES)?
-                    != CONFIGURATION_CLI_SHA
-            {
+            if bounded_command(command).is_none() {
                 return Err(fail("codex_configuration_target_unverified"));
             }
         }
@@ -1152,7 +1165,7 @@ impl SystemPaths {
                 || !target.installed
                 || !target.platform_supported
                 || target.client != ClientKind::Codex
-                || target.version.as_deref() != Some(CONFIGURATION_DESKTOP_VERSION)
+                || target.version.as_deref().is_none_or(str::is_empty)
                 || target.bundle_id.as_deref() != Some(CONFIGURATION_BUNDLE_ID)
             {
                 return Err(fail("codex_configuration_target_unverified"));
@@ -1174,41 +1187,42 @@ impl SystemPaths {
             }
             let (_, root_anchor) = configuration_root(&root)?;
             let mut materials = Vec::new();
-            for (relative, bytes, digest) in CONFIGURATION_MATERIALS {
-                let path = app.join(relative);
-                let before = configuration_stamp(
-                    &configuration_file(&path)?
+            for relative in [
+                "Contents/Info.plist",
+                "Contents/Resources/codex-cli/codex-package.json",
+                CONFIGURATION_CLI,
+            ] {
+                let file = configuration_file(&app.join(relative))?;
+                materials.push(configuration_stamp(
+                    &file
                         .metadata()
                         .map_err(|_| fail("codex_configuration_target_unverified"))?,
-                );
-                if configuration_hash(&path, bytes)? != digest {
-                    return Err(fail("codex_configuration_target_unverified"));
-                }
-                let after = configuration_stamp(
-                    &configuration_file(&path)?
-                        .metadata()
-                        .map_err(|_| fail("codex_configuration_target_unverified"))?,
-                );
-                if before != after {
-                    return Err(fail("codex_configuration_target_changed"));
-                }
-                materials.push(after);
+                ));
             }
-            let cli = configuration_file(&app.join(CONFIGURATION_CLI))?;
-            let metadata = cli
-                .metadata()
-                .map_err(|_| fail("codex_configuration_target_unverified"))?;
-            if metadata.len() != CONFIGURATION_CLI_BYTES {
+            let package =
+                configuration_file(&app.join("Contents/Resources/codex-cli/codex-package.json"))?;
+            let package: serde_json::Value =
+                serde_json::from_reader(package.take(MAX_CONFIGURATION_INFO_BYTES))
+                    .map_err(|_| fail("codex_configuration_target_unverified"))?;
+            let cli_version = package["version"]
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() < 128)
+                .ok_or_else(|| fail("codex_configuration_target_unverified"))?;
+            if package["layoutVersion"] != 1 || package["variant"] != "codex" {
                 return Err(fail("codex_configuration_target_unverified"));
             }
-            materials.push(configuration_stamp(&metadata));
+            let features = self.configuration_features(
+                &app.join(CONFIGURATION_CLI),
+                crate::client_compatibility::CODEX_FEATURES,
+            )?;
             let revision = crate::identity::sha256(
                 &serde_json::to_vec(&(
                     1u32,
                     &app_path,
                     CONFIGURATION_BUNDLE_ID,
-                    CONFIGURATION_DESKTOP_VERSION,
-                    crate::codex_catalog::SUPPORTED_CLI_VERSION,
+                    &target.version,
+                    cli_version,
+                    features,
                     crate::codex_binding::PROFILE_ID,
                     crate::codex_catalog::SOURCE_SHA256,
                     &root,
@@ -1222,8 +1236,11 @@ impl SystemPaths {
                     contract_version: 1,
                     app_path,
                     bundle_id: CONFIGURATION_BUNDLE_ID.into(),
-                    desktop_version: CONFIGURATION_DESKTOP_VERSION.into(),
-                    cli_version: crate::codex_catalog::SUPPORTED_CLI_VERSION.into(),
+                    desktop_version: target
+                        .version
+                        .clone()
+                        .ok_or_else(|| fail("client_unsupported"))?,
+                    cli_version: cli_version.into(),
                     profile_id: crate::codex_binding::PROFILE_ID.into(),
                     config_root: root,
                     root_anchor,
@@ -1256,6 +1273,7 @@ impl SystemPaths {
             helper_expected_sha256: None,
             configuration_roots: vec![client],
             writes_authorized: false,
+            capability_cache: Default::default(),
             isolated: true,
             codex_user_home: None,
             #[cfg(target_os = "macos")]
@@ -1295,6 +1313,7 @@ impl SystemPaths {
             helper_expected_sha256: None,
             configuration_roots: vec![codex, claude],
             writes_authorized: true,
+            capability_cache: Default::default(),
             isolated: false,
             codex_user_home: Some(home.into()),
             #[cfg(target_os = "macos")]

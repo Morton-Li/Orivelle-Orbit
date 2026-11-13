@@ -3,6 +3,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub mod claude_config;
 pub mod claude_mapping;
 pub(crate) mod claude_mapping_http;
+mod client_compatibility;
 pub mod clipboard;
 pub mod codex_binding;
 pub mod codex_catalog;
