@@ -8,6 +8,8 @@ fn main() {
         "logout",
         "select_node",
         "list_models",
+        "read_usage_summary",
+        "list_usage_records",
         "probe_nodes",
         "cancel_node_probes",
         "preview_client_config",
@@ -23,12 +25,12 @@ fn main() {
         "save_image_as",
         "copy_image",
         "delete_history",
-        "reuse_task_parameters",
         "update_settings",
         "prepare_diagnostics",
         "export_diagnostics",
         "check_update",
         "download_update",
+        "cancel_update_download",
         "install_update",
     ];
     tauri_build::try_build(

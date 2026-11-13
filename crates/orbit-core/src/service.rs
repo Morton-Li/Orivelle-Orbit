@@ -2390,7 +2390,12 @@ impl Service {
             .as_ref()
             .ok_or_else(|| fail("codex_catalog_context_unverified"))?;
         let (target, _) = self.client_policy(ClientKind::Codex)?;
-        if self.paths.codex_configuration_target(&target)? != *frozen_target {
+        let current = self.paths.codex_configuration_target(&target)?;
+        if if restore {
+            !current.compatible_with(frozen_target)
+        } else {
+            current != *frozen_target
+        } {
             return Err(fail("codex_configuration_target_changed"));
         }
         let installation = self
@@ -3648,6 +3653,7 @@ impl Service {
             }
             .into(),
             requested_model: model_id.into(),
+            requested_model_label: Some(model.label.clone()),
             prompt,
             parameters,
             state: "queued".into(),
@@ -4260,29 +4266,6 @@ impl Service {
         }
         self.changed();
         Ok(ids.len() as u32)
-    }
-    pub fn reuse_task_parameters(&self, id: &str) -> Result<Value> {
-        let snapshot = self.scoped_task(id)?;
-        let (record, cache) = self.current_connection(
-            &snapshot.task.connection_id,
-            snapshot.task.connection_revision,
-        )?;
-        if record.view.credential_revision.as_deref() != Some(&snapshot.task.credential_revision)
-            || !cache.models.iter().any(|m| {
-                m.id == snapshot.task.requested_model && m.revision == snapshot.model_revision
-            })
-        {
-            return Err(fail("connection_conflict"));
-        }
-        for input in &snapshot.inputs {
-            let path = self.store.root.join("inputs").join(&input.file_name);
-            if sha256(&images::bounded_read(&path, images::MAX_IMAGE_BYTES)?) != input.hash {
-                return Err(fail("input_changed"));
-            }
-        }
-        Ok(
-            json!({"prompt":snapshot.task.prompt,"model_id":snapshot.task.requested_model,"parameters":snapshot.task.parameters,"inputs":snapshot.inputs.into_iter().map(|i|i.view).collect::<Vec<_>>()}),
-        )
     }
     pub fn update_settings(&self, patch: Value) -> Result<SettingsView> {
         let _operation = self.begin_mutation()?;
@@ -5034,14 +5017,20 @@ mod tests {
                 || !target.installed
                 || !target.platform_supported
                 || target.client != ClientKind::Claude
-                || target.version.as_deref() != Some(crate::claude_config::SUPPORTED_APP_VERSION)
+                || target.version.as_deref().is_none_or(str::is_empty)
                 || target.bundle_id.as_deref() != Some("com.anthropic.claudefordesktop")
             {
                 return Err(fail("claude_configuration_target_unverified"));
             }
             let mut receipt = crate::system::ClaudeConfigurationTarget::synthetic(root.clone())?;
+            receipt.app_version = target.version.clone().unwrap();
             receipt.revision = sha256(
-                format!("synthetic-Claude-target-{}", signal.load(Ordering::SeqCst)).as_bytes(),
+                format!(
+                    "synthetic-Claude-target-{}-{}",
+                    signal.load(Ordering::SeqCst),
+                    receipt.app_version
+                )
+                .as_bytes(),
             );
             Ok(receipt)
         }));
@@ -6427,6 +6416,7 @@ mod tests {
             node_id: record.view.node_id.clone().unwrap(),
             kind: "generation".into(),
             requested_model: "synthetic-image".into(),
+            requested_model_label: Some("Synthetic Image".into()),
             prompt: "synthetic prompt".into(),
             parameters: ImageParameters::default(),
             state: "completed".into(),
@@ -7911,6 +7901,103 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
+    async fn image_task_preserves_model_label_without_catalog_and_reads_legacy_records() {
+        let (_dir, service, _vault, mut record, install) = setup();
+        service
+            .accept_credential(
+                &mut record,
+                &install,
+                serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+            )
+            .unwrap();
+        let mut cache = service.account_cache(&record).unwrap();
+        let model = cache
+            .models
+            .iter_mut()
+            .find(|model| model.category == "image")
+            .unwrap();
+        model.label = "Image Studio".into();
+        let model_id = model.id.clone();
+        service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        let first = service.image_workers.clone().acquire_owned().await.unwrap();
+        let second = service.image_workers.clone().acquire_owned().await.unwrap();
+        let created = service
+            .create_image_task(
+                &record.view.id,
+                record.view.revision,
+                &model_id,
+                "synthetic prompt".into(),
+                ImageParameters::default(),
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(created.requested_model, model_id);
+        assert_eq!(
+            created.requested_model_label.as_deref(),
+            Some("Image Studio")
+        );
+        assert_eq!(
+            service
+                .scoped_task(&created.id)
+                .unwrap()
+                .task
+                .requested_model_label,
+            created.requested_model_label
+        );
+        service.cancel_image_task(&created.id).unwrap();
+        cache.models.retain(|model| model.id != model_id);
+        service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        let restored = service
+            .bootstrap()
+            .unwrap()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == created.id)
+            .unwrap();
+        assert_eq!(
+            restored.requested_model_label.as_deref(),
+            Some("Image Studio")
+        );
+        let mut legacy = serde_json::to_value(&restored).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("requested_model_label");
+        service
+            .store
+            .put("task", &created.id, &record.view.account_id, &legacy)
+            .unwrap();
+        assert!(
+            service
+                .bootstrap()
+                .unwrap()
+                .tasks
+                .into_iter()
+                .find(|task| task.id == created.id)
+                .unwrap()
+                .requested_model_label
+                .is_none()
+        );
+        drop((first, second));
+        tokio::task::yield_now().await;
+    }
+    #[tokio::test]
     async fn concurrent_creation_cannot_exceed_two_and_all_cancel_before_http() {
         let (_dir, service, _vault, mut record, install) = setup();
         service
@@ -9253,3 +9340,6 @@ mod tests {
         }
     }
 }
+
+#[path = "service_usage.rs"]
+mod usage_queries;

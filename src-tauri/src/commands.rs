@@ -8,12 +8,13 @@ use orbit_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 pub struct Native {
     pub service: Arc<Service>,
+    pub downloads: orbit_core::update_download::Downloads,
     pub _instance: orbit_core::runtime_lock::RuntimeLock,
 }
 struct NativeImageClipboard;
@@ -147,6 +148,18 @@ pub struct Diagnostic {
 pub struct Update {
     version: String,
     confirmed: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadUpdate {
+    version: String,
+    confirmed: bool,
+    request_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelUpdateDownload {
+    request_id: String,
 }
 #[derive(Serialize)]
 pub struct Saved {
@@ -460,10 +473,6 @@ pub fn delete_history(native: State<'_, Native>, request: DeleteImages) -> Resul
     })
 }
 #[tauri::command]
-pub fn reuse_task_parameters(native: State<'_, Native>, request: Task) -> Result<Value> {
-    native.service.reuse_task_parameters(&request.task_id)
-}
-#[tauri::command]
 pub fn update_settings(native: State<'_, Native>, request: Settings) -> Result<SettingsView> {
     native.service.update_settings(request.patch)
 }
@@ -507,15 +516,36 @@ pub async fn check_update(native: State<'_, Native>, request: Empty) -> Result<U
     updates::check(&native.service.http, &native.service.store).await
 }
 #[tauri::command]
-pub async fn download_update(native: State<'_, Native>, request: Update) -> Result<UpdateView> {
+pub async fn download_update(
+    app: AppHandle,
+    native: State<'_, Native>,
+    request: DownloadUpdate,
+) -> Result<UpdateView> {
     let _operation = native.service.begin_mutation()?;
-    updates::download(
-        &native.service.http,
-        &native.service.store,
-        &request.version,
-        request.confirmed,
-    )
-    .await
+    let download = native.downloads.begin(&request.request_id)?;
+    let progress = |event| {
+        let _ = app.emit("orbit://update-progress", event);
+    };
+    download
+        .run(
+            updates::download(
+                &native.service.http,
+                &native.service.store,
+                &request.version,
+                request.confirmed,
+                &request.request_id,
+                &progress,
+            ),
+            std::time::Duration::from_secs(15 * 60),
+        )
+        .await
+}
+#[tauri::command]
+pub fn cancel_update_download(
+    native: State<'_, Native>,
+    request: CancelUpdateDownload,
+) -> Result<()> {
+    native.downloads.cancel(&request.request_id)
 }
 #[tauri::command]
 pub async fn install_update(
@@ -661,4 +691,19 @@ mod tests {
             assert!(serde_json::from_value::<Empty>(input).is_err());
         }
     }
+}
+
+#[tauri::command]
+pub async fn read_usage_summary(
+    native: State<'_, Native>,
+    request: orbit_core::usage::UsageQuery,
+) -> Result<orbit_core::usage::UsageSummary> {
+    native.service.read_usage_summary(&request).await
+}
+#[tauri::command]
+pub async fn list_usage_records(
+    native: State<'_, Native>,
+    request: orbit_core::usage::UsageQuery,
+) -> Result<orbit_core::usage::UsagePage> {
+    native.service.list_usage_records(&request).await
 }

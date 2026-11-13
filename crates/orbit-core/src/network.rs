@@ -431,6 +431,7 @@ impl Http {
         limit: u64,
         timeout: Duration,
         allow_redirect: impl Fn(&Url, &Url) -> bool,
+        progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
     ) -> Result<RemoteResponse> {
         const MAX_REDIRECTS: usize = 3;
         self.validate_url(url.as_str())?;
@@ -439,21 +440,23 @@ impl Http {
             let remaining = deadline
                 .checked_duration_since(tokio::time::Instant::now())
                 .filter(|remaining| !remaining.is_zero())
-                .ok_or_else(|| fail("update_request_failed"))?;
-            let response = self
+                .ok_or_else(|| fail("update_request_timeout"))?;
+            let request = self
                 .client
                 .get(url.clone())
                 .header(reqwest::header::ACCEPT, accept)
                 .timeout(remaining)
-                .send()
+                .send();
+            let response = tokio::time::timeout(remaining.min(Duration::from_secs(30)), request)
                 .await
-                .map_err(|_| fail("update_request_failed"))?;
+                .map_err(|_| fail("update_request_timeout"))?
+                .map_err(update_network_error)?;
             let status = response.status().as_u16();
             if !matches!(status, 301 | 302 | 303 | 307 | 308) {
                 return Ok(RemoteResponse {
                     status,
                     request_id: None,
-                    bytes: bounded_response_body(response, limit).await?,
+                    bytes: update_response_body(response, limit, progress).await?,
                 });
             }
             let location = response
@@ -495,6 +498,18 @@ impl Http {
         credential: Option<(&Installation, &ProofSession, &dyn Vault)>,
         proof_with_bearer: bool,
     ) -> Result<PanelEnvelope<T>> {
+        self.panel_document(origin, target, method, body, credential, proof_with_bearer)
+            .await
+    }
+    pub async fn panel_document<T: DeserializeOwned>(
+        &self,
+        origin: &str,
+        target: &str,
+        method: Method,
+        body: Vec<u8>,
+        credential: Option<(&Installation, &ProofSession, &dyn Vault)>,
+        proof_with_bearer: bool,
+    ) -> Result<T> {
         self.require_panel_origin(origin)?;
         if canonical_origin(origin)? != origin
             || !target.starts_with("/api/v1/orbit/")
@@ -555,6 +570,7 @@ impl Http {
             .await?;
         if !(200..300).contains(&response.status) {
             return Err(fail(match response.status {
+                404 => "endpoint_unavailable",
                 401 => "session_expired",
                 403 => "permission_denied",
                 409 => "connection_conflict",
@@ -562,7 +578,7 @@ impl Http {
                 _ => "panel_unavailable",
             }));
         }
-        let envelope: PanelEnvelope<T> =
+        let envelope: T =
             serde_json::from_slice(&response.bytes).map_err(|_| fail("invalid_panel_response"))?;
         Ok(envelope)
     }
@@ -587,6 +603,54 @@ pub struct RemoteResponse {
     pub status: u16,
     pub request_id: Option<String>,
     pub bytes: Vec<u8>,
+}
+
+fn update_network_error(error: reqwest::Error) -> crate::error::PublicError {
+    fail(if error.is_timeout() {
+        "update_request_timeout"
+    } else {
+        "update_request_failed"
+    })
+}
+async fn update_response_body(
+    response: reqwest::Response,
+    limit: u64,
+    progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
+) -> Result<Vec<u8>> {
+    let total = response.content_length();
+    if total.is_some_and(|len| len > limit) {
+        return Err(fail("response_too_large"));
+    }
+    let mut bytes = Vec::new();
+    let mut last_progress = std::time::Instant::now();
+    if let Some(progress) = progress {
+        progress(0, total.filter(|total| *total > 0));
+    }
+    let mut stream = response.bytes_stream();
+    loop {
+        // Slow downloads can continue; a stalled connection fails with an updater error.
+        let chunk = tokio::time::timeout(Duration::from_secs(30), stream.next())
+            .await
+            .map_err(|_| fail("update_request_timeout"))?;
+        let Some(chunk) = chunk else { break };
+        let chunk = chunk.map_err(update_network_error)?;
+        if (bytes.len() as u64).saturating_add(chunk.len() as u64) > limit {
+            return Err(fail("response_too_large"));
+        }
+        bytes.extend_from_slice(&chunk);
+        if last_progress.elapsed() >= Duration::from_millis(100)
+            || total == Some(bytes.len() as u64)
+        {
+            if let Some(progress) = progress {
+                progress(bytes.len() as u64, total);
+            }
+            last_progress = std::time::Instant::now();
+        }
+    }
+    if let Some(progress) = progress {
+        progress(bytes.len() as u64, total.filter(|total| *total > 0));
+    }
+    Ok(bytes)
 }
 #[derive(Deserialize)]
 pub struct PanelEnvelope<T> {
@@ -873,10 +937,149 @@ mod tests {
                         && to.path() == "/asset"
                         && from.origin() == to.origin()
                 },
+                None,
             )
             .await;
         assert!(matches!(response, Err(error) if error.code == "response_too_large"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_progress_arrives_before_the_body_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let halfway = Arc::new(tokio::sync::Notify::new());
+        let release = halfway.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            stream.write_all(b"abc").await.unwrap();
+            release.notified().await;
+            stream.write_all(b"def").await.unwrap();
+        });
+        let events = std::sync::Mutex::new(Vec::new());
+        let progress = |received, total| {
+            events.lock().unwrap().push((received, total));
+            if received == 3 {
+                halfway.notify_one();
+            }
+        };
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            Http::fixture().get_update(
+                Url::parse(&format!("http://{addr}/asset")).unwrap(),
+                "application/octet-stream",
+                10,
+                Duration::from_secs(1),
+                |_, _| false,
+                Some(&progress),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.bytes, b"abcdef");
+        let events = events.into_inner().unwrap();
+        assert_eq!(events.first(), Some(&(0, Some(6))));
+        assert!(events.contains(&(3, Some(6))));
+        assert_eq!(events.last(), Some(&(6, Some(6))));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_update_drops_the_http_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabc")
+                .await
+                .unwrap();
+            let closed = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut request))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(closed, 0);
+        });
+        let downloads = crate::update_download::Downloads::default();
+        let id = uuid();
+        let download = downloads.begin(&id).unwrap();
+        let progress = |_, _| started.notify_one();
+        let http = Http::fixture();
+        let (result, _) = tokio::join!(
+            download.run(
+                http.get_update(
+                    Url::parse(&format!("http://{addr}/asset")).unwrap(),
+                    "application/octet-stream",
+                    10,
+                    Duration::from_secs(1),
+                    |_, _| false,
+                    Some(&progress),
+                ),
+                Duration::from_secs(2)
+            ),
+            async {
+                started.notified().await;
+                downloads.cancel(&id).unwrap();
+            }
+        );
+        assert!(matches!(result, Err(error) if error.code == "update_download_cancelled"));
+        drop(download);
+        assert!(downloads.begin(&uuid()).is_ok());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_stream_handles_unknown_size_limits_and_disconnects() {
+        for (length, limit, expected) in [
+            ("", 10, None),
+            ("", 2, Some("response_too_large")),
+            ("Content-Length: 6\r\n", 10, Some("update_request_failed")),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).await.unwrap();
+                stream
+                    .write_all(
+                        format!("HTTP/1.1 200 OK\r\n{length}Connection: close\r\n\r\nabc")
+                            .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let events = std::sync::Mutex::new(Vec::new());
+            let progress = |received, total| events.lock().unwrap().push((received, total));
+            let result = Http::fixture()
+                .get_update(
+                    Url::parse(&format!("http://{addr}/asset")).unwrap(),
+                    "application/octet-stream",
+                    limit,
+                    Duration::from_secs(1),
+                    |_, _| false,
+                    Some(&progress),
+                )
+                .await;
+            if let Some(code) = expected {
+                assert!(matches!(result, Err(error) if error.code == code));
+            } else {
+                assert_eq!(result.unwrap().bytes, b"abc");
+                assert_eq!(events.into_inner().unwrap().last(), Some(&(3, None)));
+            }
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

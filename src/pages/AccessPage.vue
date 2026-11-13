@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
-import { t } from "../shared/i18n";
+import { t, type MessageKey } from "../shared/i18n";
 import { nodeName } from "../shared/format";
 import type {
   ClaudeRestoreCoordination,
@@ -93,6 +93,32 @@ const mappingReady = computed(() =>
     claudeModels.value.some((model) => model.id === selectedMapping.value[key]),
   ),
 );
+function connectReason(kind: ClientKind): MessageKey | null {
+  const client = store.state.clients.find((item) => item.client === kind);
+  if (!store.initialized) return "access.waitDetection";
+  if (!store.account) return "access.connectAccountFirst";
+  if (store.activeConnection?.permission_state === "readonly")
+    return "access.readonly";
+  if (store.state.session.inference_credential_status !== "ready")
+    return "access.waitCredential";
+  if (!store.activeConnection?.node_id) return "access.chooseNodeFirst";
+  if (store.state.maintenance_active) return "access.waitMaintenance";
+  if (!client?.installed) return "access.installClientFirst";
+  if (!client.platform_supported) return "access.platformUnavailable";
+  if (client.managed === "yes" || client.configuration_access === "blocked")
+    return "client.configurationBlocked";
+  if (!previewAllowed(kind)) return "access.checkConfiguration";
+  if (store.modelsLoading) return "access.waitModels";
+  if (kind === "codex" && !codexModelsAvailable.value)
+    return "access.noCompatibleModels";
+  if (kind === "claude" && !claudeModels.value.length)
+    return "access.noCompatibleModels";
+  if (kind === "claude" && !mappingReady.value) return "access.completeMapping";
+  if (!store.ready) return "access.waitConnection";
+  if (previewing.value[kind] || store.busy.has(`preview-${kind}`))
+    return "access.preparingPreview";
+  return null;
+}
 watch(
   () => store.scope,
   () => {
@@ -101,12 +127,22 @@ watch(
   },
   { flush: "sync" },
 );
-watch(claudeModels, (models) => {
-  for (const { key } of claudeMappings) {
-    if (!models.some((model) => model.id === selectedMapping.value[key]))
-      selectedMapping.value[key] = "";
-  }
-});
+watch(
+  claudeModels,
+  (models) => {
+    for (const { key } of claudeMappings) {
+      if (!models.some((model) => model.id === selectedMapping.value[key]))
+        selectedMapping.value[key] = "";
+      if (!selectedMapping.value[key]) {
+        const matches = models.filter((model) =>
+          new RegExp(`\\b${key}\\b`, "i").test(`${model.id} ${model.label}`),
+        );
+        if (matches.length === 1) selectedMapping.value[key] = matches[0]!.id;
+      }
+    }
+  },
+  { immediate: true },
+);
 async function requestPreview(client: ClientKind) {
   const connection = store.activeConnection;
   if (
@@ -375,6 +411,11 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
           <button
             class="button primary"
             :class="{ 'claude-connect': client.client === 'claude' }"
+            :aria-describedby="
+              connectReason(client.client)
+                ? `connect-reason-${client.client}`
+                : undefined
+            "
             :disabled="
               !store.ready ||
               !previewAllowed(client.client) ||
@@ -389,6 +430,14 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
           >
             <OrbitIcon name="access" />{{ t("access.connectOrbit") }}
           </button>
+          <p
+            v-if="connectReason(client.client)"
+            :id="`connect-reason-${client.client}`"
+            class="field-hint"
+            role="status"
+          >
+            {{ t(connectReason(client.client)!) }}
+          </p>
         </template>
       </div>
     </article>

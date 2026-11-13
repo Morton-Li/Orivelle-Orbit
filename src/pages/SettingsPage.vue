@@ -9,7 +9,7 @@ import type {
   SettingsView,
   Theme,
 } from "../shared/contracts";
-import { redactServiceUrls } from "../shared/format";
+import { formatBytes, redactServiceUrls } from "../shared/format";
 import { t } from "../shared/i18n";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
@@ -21,12 +21,34 @@ const logoutConnectionId = ref<string | null>(null);
 const { update } = storeToRefs(store);
 const installOpen = ref(false);
 const updateBusy = computed(() => store.busy.has("update"));
+const downloadPercent = computed(() => {
+  const progress = store.updateProgress;
+  if (!progress?.total_bytes) return undefined;
+  return Math.min(
+    100,
+    Math.floor((progress.downloaded_bytes / progress.total_bytes) * 100),
+  );
+});
+const downloadSize = computed(() => {
+  const progress = store.updateProgress;
+  if (!progress) return "";
+  const downloaded = formatBytes(progress.downloaded_bytes);
+  return progress.total_bytes
+    ? `${downloaded} / ${formatBytes(progress.total_bytes)}`
+    : downloaded;
+});
 const updateMessage = computed(() => {
   if (!store.initialized) return t("settings.notChecked");
   if (!store.inAppUpdates) return t("settings.manualUpdate");
   if (store.updateOperation === "check") return t("settings.checkingUpdate");
-  if (store.updateOperation === "download")
-    return t("settings.downloadingUpdate");
+  if (store.updateOperation === "download") {
+    if (store.updateCancelling) return t("settings.cancellingDownload");
+    return t(
+      store.updateProgress?.phase === "preparing"
+        ? "settings.preparingUpdate"
+        : "settings.downloadingUpdate",
+    );
+  }
   if (store.updateOperation === "install")
     return t("settings.installingUpdate");
   if (store.updateCheckFailed) return t("settings.updateCheckFailed");
@@ -86,6 +108,10 @@ async function installUpdate() {
     update.value = result;
     installOpen.value = false;
   }
+}
+async function downloadUpdate() {
+  const result = await store.downloadUpdate();
+  if (result?.status === "verified") installOpen.value = true;
 }
 </script>
 <template>
@@ -248,24 +274,59 @@ async function installUpdate() {
       <p class="muted update-status" role="status" aria-live="polite">
         {{ updateMessage }}
       </p>
+      <div v-if="store.updateOperation === 'download'" class="update-progress">
+        <div class="update-progress-details">
+          <span>{{ downloadSize }}</span>
+          <span v-if="downloadPercent !== undefined"
+            >{{ downloadPercent }}%</span
+          >
+        </div>
+        <progress
+          :value="downloadPercent"
+          max="100"
+          :aria-label="t('settings.downloadProgress')"
+        />
+      </div>
       <div v-if="store.inAppUpdates" class="settings-actions">
         <button
           class="button secondary"
           :disabled="updateBusy || store.state.maintenance_active"
           @click="store.checkUpdates()"
         >
-          {{ t("settings.check") }}</button
+          {{
+            t(
+              store.updateOperation === "check"
+                ? "settings.checkingUpdate"
+                : "settings.check",
+            )
+          }}</button
         ><button
-          v-if="update?.status === 'available'"
+          v-if="
+            update?.status === 'available' &&
+            store.updateOperation !== 'download'
+          "
           class="button primary"
-          :disabled="updateBusy"
-          @click="store.downloadUpdate()"
+          :disabled="updateBusy || store.state.maintenance_active"
+          @click="downloadUpdate"
         >
           {{ t("settings.download") }}</button
         ><button
+          v-if="store.updateOperation === 'download'"
+          class="button secondary"
+          :disabled="store.updateCancelling"
+          @click="store.cancelUpdateDownload()"
+        >
+          {{
+            t(
+              store.updateCancelling
+                ? "settings.cancellingDownload"
+                : "settings.cancelDownload",
+            )
+          }}</button
+        ><button
           v-if="update?.status === 'verified'"
           class="button primary"
-          :disabled="updateBusy"
+          :disabled="updateBusy || store.state.maintenance_active"
           @click="installOpen = true"
         >
           {{ t("settings.install") }}

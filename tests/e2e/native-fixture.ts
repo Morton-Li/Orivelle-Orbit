@@ -1,7 +1,11 @@
+import { usageSummary, usagePage } from "../usage-fixtures";
 import type { Page } from "@playwright/test";
 import type {
   AuthorizationEvent,
   BootstrapView,
+  ModelView,
+  UpdateProgress,
+  UpdateView,
 } from "../../src/shared/contracts";
 import {
   bootstrap,
@@ -18,25 +22,32 @@ export type FixtureControl = {
   lastRequests: Record<string, Record<string, unknown>>;
   pushState: (state: BootstrapView) => void;
   pushAuthorization: (event: AuthorizationEvent) => void;
+  pushUpdateProgress: (progress: Omit<UpdateProgress, "request_id">) => void;
+  finishUpdateDownload: (errorCode?: string) => void;
 };
 export async function fixture(
   page: Page,
   options: {
     state?: BootstrapView;
+    models?: ModelView[];
     paidFailure?: boolean;
     claudeImport?: boolean;
     restoreMode?: "blocked" | "recoverable";
+    updateAvailable?: boolean;
   } = {},
 ) {
   const state = options.state ?? bootstrap();
   await page.addInitScript(
     ({
       initial,
+      sampleUsageSummary,
+      sampleUsagePage,
       models,
       initialTask,
       paidFailure,
       claudeImport,
       restoreMode,
+      updateAvailable,
       codexCatalog,
       codexConfigurationTarget,
       codexRuntime,
@@ -63,6 +74,12 @@ export async function fixture(
       const callbacks = new Map<number, (event: unknown) => void>();
       const listeners = new Map<string, Set<number>>();
       let next = 0;
+      let download: {
+        requestId: string;
+        version: string;
+        resolve: (result: UpdateView) => void;
+        reject: (error: { code: string }) => void;
+      } | null = null;
       function emit(event: string, payload: unknown) {
         for (const id of listeners.get(event) ?? [])
           callbacks.get(id)?.({ event, id, payload });
@@ -70,6 +87,25 @@ export async function fixture(
       testWindow.__ORBIT_TEST__ = {
         counts: {},
         lastRequests: {},
+        pushUpdateProgress(progress) {
+          if (download)
+            emit("orbit://update-progress", {
+              ...progress,
+              request_id: download.requestId,
+            });
+        },
+        finishUpdateDownload(errorCode) {
+          if (!download) throw new Error("No update download is active");
+          if (errorCode) download.reject({ code: errorCode });
+          else
+            download.resolve({
+              status: "verified",
+              current_version: "0.1.0",
+              version: download.version,
+              reason: null,
+            });
+          download = null;
+        },
         pushState(value) {
           current = value;
           emit("orbit://state", value);
@@ -115,11 +151,30 @@ export async function fixture(
           if (command === "bootstrap") return structuredClone(current);
           if (command === "check_update") {
             return {
-              status: current.in_app_updates ? "up_to_date" : "disabled",
+              status: current.in_app_updates
+                ? updateAvailable
+                  ? "available"
+                  : "up_to_date"
+                : "disabled",
               current_version: "0.1.0",
-              version: null,
+              version: updateAvailable ? "0.2.0" : null,
               reason: null,
             };
+          }
+          if (command === "download_update") {
+            return new Promise<UpdateView>((resolve, reject) => {
+              download = {
+                requestId: String(request.request_id),
+                version: String(request.version),
+                resolve,
+                reject,
+              };
+            });
+          }
+          if (command === "cancel_update_download") {
+            if (download?.requestId === request.request_id)
+              control.finishUpdateDownload("update_download_cancelled");
+            return null;
           }
           if (command === "refresh_account") return structuredClone(current);
           if (command === "start_login") {
@@ -137,6 +192,19 @@ export async function fixture(
               error: null,
             });
             return structuredClone(current);
+          }
+          if (command === "read_usage_summary") return sampleUsageSummary;
+          if (command === "list_usage_records") {
+            const selected = sampleUsagePage.data.filter(
+              (row) => !request.outcome || row.outcome === request.outcome,
+            );
+            return {
+              ...sampleUsagePage,
+              data: request.cursor ? selected.slice(4) : selected.slice(0, 4),
+              prev_cursor: request.cursor ? "demo-prev" : null,
+              next_cursor:
+                !request.cursor && selected.length > 4 ? "demo-next" : null,
+            };
           }
           if (command === "list_models") return models;
           if (command === "probe_nodes")
@@ -165,6 +233,9 @@ export async function fixture(
               ...initialTask,
               prompt: String(request.prompt),
               requested_model: String(request.model_id),
+              requested_model_label:
+                models.find((model) => model.id === request.model_id)?.label ??
+                null,
               parameters: request.parameters as object,
               state: paidFailure ? "unconfirmed" : "queued",
             };
@@ -177,18 +248,6 @@ export async function fixture(
                 retryable: false,
               };
             return created;
-          }
-          if (command === "reuse_task_parameters") {
-            const found = current.tasks.find(
-              (item) => item.id === request.task_id,
-            );
-            if (!found) throw { code: "task_unavailable" };
-            return {
-              prompt: found.prompt,
-              model_id: found.requested_model,
-              parameters: structuredClone(found.parameters),
-              inputs: [],
-            };
           }
           if (command === "retry_local_save") {
             const found = current.tasks.find(
@@ -371,11 +430,14 @@ export async function fixture(
     },
     {
       initial: state,
-      models: [imageModel(), syntheticCodexModel()],
+      sampleUsageSummary: usageSummary(),
+      sampleUsagePage: usagePage(),
+      models: options.models ?? [imageModel(), syntheticCodexModel()],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
       claudeImport: options.claudeImport ?? false,
       restoreMode: options.restoreMode ?? "blocked",
+      updateAvailable: options.updateAvailable ?? false,
       codexCatalog: syntheticCodexCatalog(),
       codexConfigurationTarget: syntheticCodexConfigurationTarget(),
       codexRuntime: { state: "unverified", cli_version: null, revision: null },

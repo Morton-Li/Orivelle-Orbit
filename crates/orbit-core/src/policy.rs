@@ -132,7 +132,7 @@ impl Snapshot {
             .collect();
         let local_write = if state == State::Yes {
             State::Yes
-        } else if (target.client == ClientKind::Codex || claude_pinned_target(target))
+        } else if (target.client == ClientKind::Codex || claude_configuration_identity(target))
             && local_complete
             && target.installed
             && target.version.is_some()
@@ -244,7 +244,7 @@ impl Snapshot {
     pub(crate) fn fixture_user_config(target: &ClientView, state: State, token: &str) -> Self {
         let mut snapshot = Self::fixture(target, state, token);
         if state == State::No
-            && (target.client == ClientKind::Codex || claude_pinned_target(target))
+            && (target.client == ClientKind::Codex || claude_configuration_identity(target))
         {
             snapshot.state = State::Unknown;
             snapshot.revision = sha256(format!("local-clear-global-unknown:{token}").as_bytes());
@@ -321,14 +321,17 @@ fn codex_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
             .iter()
             .all(|id| sources.iter().filter(|source| source.id == *id).count() == 1)
 }
-fn claude_pinned_target(target: &ClientView) -> bool {
+fn claude_configuration_identity(target: &ClientView) -> bool {
     target.client == ClientKind::Claude
-        && target.version.as_deref() == Some(crate::claude_config::SUPPORTED_APP_VERSION)
+        && target
+            .version
+            .as_deref()
+            .is_some_and(|version| !version.is_empty())
         && target.bundle_id.as_deref() == Some("com.anthropic.claudefordesktop")
 }
 fn claude_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
     cfg!(target_os = "macos")
-        && claude_pinned_target(target)
+        && claude_configuration_identity(target)
         && [
             "claude_machine_mdm",
             "claude_user_mdm",
@@ -710,7 +713,7 @@ fn native_sources(paths: &SystemPaths, target: &ClientView) -> Vec<Source> {
                 sources
             }
             ClientKind::Claude => {
-                let format = if claude_pinned_target(target) {
+                let format = if claude_configuration_identity(target) {
                     Format::ClaudePlist
                 } else {
                     Format::Plist
@@ -731,14 +734,14 @@ fn native_sources(paths: &SystemPaths, target: &ClientView) -> Vec<Source> {
                     None => sources.push(Source::status("claude_user_mdm", Status::Unavailable)),
                 }
                 sources.push(macos::claude_forced_keys());
-                sources.push(if claude_pinned_target(target) {
+                sources.push(if claude_configuration_identity(target) {
                     Source {
                         id: "claude_schema_pin",
                         status: Status::Present,
                         effect: Effect::None,
                         digest: sha256(
                             &serde_json::to_vec(&(
-                                crate::claude_config::SUPPORTED_APP_VERSION,
+                                &target.version,
                                 crate::claude_config::SOURCE_MEMBER_SHA256,
                                 crate::claude_config::SCHEMA_KEYS_SHA256,
                             ))
@@ -1268,7 +1271,7 @@ mod tests {
             assert!(snapshot.state == State::Yes && snapshot.require_user_config_clear().is_err());
         }
         let mut unsupported = target;
-        unsupported.version = Some("2.19675.1".into());
+        unsupported.version = None;
         assert!(
             resolve(&unsupported, &sources)
                 .require_user_config_clear()

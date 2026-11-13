@@ -516,7 +516,10 @@ test("UTF-8 bound prevents a paid submit and failed paid submission never retrie
   await expect(
     page.getByText("结果待确认", { exact: true }).first(),
   ).toBeVisible();
-  await expect(page.getByText("费用待确认", { exact: true })).toBeVisible();
+  await expect(page.locator(".task-facts dt")).toHaveText([
+    "请求模型",
+    "Request ID",
+  ]);
   expect(
     await page.evaluate(
       () =>
@@ -572,7 +575,7 @@ test("image background defaults to opaque and is submitted while advanced option
   expect(await calls(page, "create_image_task")).toBe(1);
 });
 
-test("available image controls reject legacy catalog choices and sanitize history reuse", async ({
+test("available image controls keep legacy parameters out of the workbench", async ({
   page,
 }) => {
   const state = bootstrap();
@@ -594,11 +597,11 @@ test("available image controls reject legacy catalog choices and sanitize histor
   const advanced = page.getByRole("button", { name: "高级选项" });
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
   await advanced.click();
-  await page.getByRole("button", { name: "复用参数", exact: true }).click();
-  await expect(page.locator("#image-prompt")).toHaveValue(historical.prompt);
-  await expect(advanced).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".parameter-details")).toHaveText("高级选项");
-  await advanced.click();
+  await expect(
+    page.getByRole("button", { name: "复用参数", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator("#image-prompt")).toHaveValue("");
+  await choose(page, "image-background", "透明");
   await expect(page.locator("#image-background")).toContainText("透明");
   for (const id of [
     "image-n",
@@ -614,13 +617,13 @@ test("available image controls reject legacy catalog choices and sanitize histor
   await expect(page.locator(".parameter-details")).toContainText(
     "透明背景可能增加图片 token 用量",
   );
-  // Historical facts remain readable even though their controls cannot be submitted again.
-  await expect(page.locator(".task-facts")).toContainText("1536x864");
+  await expect(page.locator(".task-facts")).not.toContainText("1536x864");
   await page.locator(".parameter-details").screenshot({
     path: ".cache/evidence/images-background-explicit-choice.png",
   });
   await advanced.click();
   await expect(page.locator("#image-background")).toHaveCount(0);
+  await page.locator("#image-prompt").fill("Synthetic new request");
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
   expect(
     await page.evaluate(
@@ -630,6 +633,7 @@ test("available image controls reject legacy catalog choices and sanitize histor
     ),
   ).toEqual({ background: "transparent" });
   expect(await calls(page, "create_image_task")).toBe(1);
+  expect(await calls(page, "reuse_task_parameters")).toBe(0);
 });
 
 test("crash-recovered local materials expose only a local saving retry", async ({
@@ -647,7 +651,10 @@ test("crash-recovered local materials expose only a local saving retry", async (
   );
   expect(await calls(page, "retry_local_save")).toBe(1);
   expect(await calls(page, "create_image_task")).toBe(0);
-  await expect(page.getByText("费用待确认", { exact: true })).toBeVisible();
+  await expect(page.locator(".task-facts dt")).toHaveText([
+    "请求模型",
+    "Request ID",
+  ]);
 });
 
 test("deleting one local image never deletes other results of the same task", async ({
@@ -683,16 +690,24 @@ test("deleting one local image never deletes other results of the same task", as
   }));
   await fixture(page, { state });
   await page.goto("/#/images");
-  await expect(page.locator(".task-facts")).toContainText("1536x864");
-  await expect(page.locator(".task-facts")).toContainText("1254x1254");
+  await expect(page.locator(".task-facts dt")).toHaveText([
+    "请求模型",
+    "Request ID",
+  ]);
   await page.getByRole("tab", { name: "本地历史" }).click();
   await expect(page.locator(".history-card")).toHaveCount(2);
-  await expect(page.locator(".history-card").first()).toContainText(
-    "16 × 16 · PNG",
+  await expect(page.locator(".history-card strong").first()).toHaveText(
+    "16 × 16",
   );
-  await expect(page.locator(".history-card").first()).toContainText("1536x864");
   await expect(page.locator(".history-card").first()).toContainText(
-    "1254x1254",
+    "PNG · 0 KiB",
+  );
+  await expect(page.locator(".history-card time").first()).toHaveAttribute(
+    "datetime",
+    "2026-10-13",
+  );
+  await expect(page.locator(".history-card").first()).not.toContainText(
+    /synthetic-image|gpt-image|请求参数|上游返回参数|实际型号/,
   );
   await page
     .getByRole("button", { name: "删除本地历史", exact: true })
@@ -770,6 +785,96 @@ test("startup update checking runs once and its result survives page navigation"
   expect(await calls(page, "check_update")).toBe(1);
   expect(await calls(page, "download_update")).toBe(0);
   expect(await calls(page, "install_update")).toBe(0);
+});
+
+test("manual update checks announce the result in the bottom-right toast", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
+  await expect(
+    page.getByRole("button", { name: "下载并更新", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("update download shows progress, cancels, retries and asks before restarting", async ({
+  page,
+}) => {
+  await fixture(page, { updateAvailable: true });
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText("发现新版本 · 0.2.0");
+  const download = page.getByRole("button", {
+    name: "下载并更新",
+    exact: true,
+  });
+  await download.click();
+  const progress = page.getByRole("progressbar", { name: "更新下载进度" });
+  await expect(progress).toBeVisible();
+  await expect(progress).not.toHaveAttribute("value");
+  await expect(
+    page.getByRole("button", { name: "取消下载", exact: true }),
+  ).toBeEnabled();
+  await expect.poll(() => calls(page, "download_update")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.pushUpdateProgress({
+      phase: "downloading",
+      downloaded_bytes: 32 * 1024 ** 2,
+      total_bytes: 64 * 1024 ** 2,
+    }),
+  );
+  await expect(progress).toHaveAttribute("value", "50");
+  await page.screenshot({
+    path: ".cache/evidence/settings-update-progress.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "取消下载", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText("已取消下载，可随时重新下载");
+  await expect(progress).toHaveCount(0);
+  await expect(download).toBeEnabled();
+  expect(await calls(page, "cancel_update_download")).toBe(1);
+  await download.click();
+  await expect.poll(() => calls(page, "download_update")).toBe(2);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.finishUpdateDownload(),
+  );
+  await expect(
+    page.getByRole("dialog", { name: "安装并重启", exact: true }),
+  ).toBeVisible();
+  expect(await calls(page, "install_update")).toBe(0);
+});
+
+test("update timeout is readable and leaves download available", async ({
+  page,
+}) => {
+  await fixture(page, { updateAvailable: true });
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  const download = page.getByRole("button", {
+    name: "下载并更新",
+    exact: true,
+  });
+  await download.click();
+  await expect.poll(() => calls(page, "download_update")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.finishUpdateDownload("update_request_timeout"),
+  );
+  await expect(page.locator(".toast")).toHaveText(
+    "下载超时或连接中断，请检查网络后重新下载",
+  );
+  await expect(download).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "检查更新", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
 });
 
 test("access and settings show the supported controls and the installed version", async ({

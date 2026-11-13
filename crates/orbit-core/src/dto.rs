@@ -300,6 +300,8 @@ pub struct TaskView {
     pub node_id: String,
     pub kind: String,
     pub requested_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model_label: Option<String>,
     pub prompt: String,
     pub parameters: ImageParameters,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -511,4 +513,11 @@ pub struct UpdateView {
     pub current_version: String,
     pub version: Option<String>,
     pub reason: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    pub request_id: String,
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
 }

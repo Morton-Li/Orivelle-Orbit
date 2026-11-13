@@ -305,3 +305,64 @@ describe("Claude preview after a Panel model refresh", () => {
     expect(writes()).toHaveLength(0);
   });
 });
+
+describe("access readiness explanations", () => {
+  it("explains the missing Claude mappings until all three entries are selected", async () => {
+    wrapper = mount(AccessPage, {
+      global: {
+        stubs: {
+          OrbitSelect: orbitSelectStub,
+          ClientRow: true,
+          ConfigReviewDialog: true,
+        },
+      },
+    });
+    expect(wrapper.text()).toContain(
+      "请为 Sonnet、Opus、Haiku 分别选择实际调用的模型",
+    );
+    expect(
+      wrapper.get<HTMLButtonElement>(".access-client .button.primary").element
+        .disabled,
+    ).toBe(true);
+    for (const role of ["sonnet", "opus", "haiku"])
+      await wrapper.get(`#claude-${role}`).setValue(claudeModel().id);
+    expect(
+      wrapper.get<HTMLButtonElement>(".access-client .button.primary").element
+        .disabled,
+    ).toBe(false);
+    expect(wrapper.find("#connect-reason-claude").exists()).toBe(false);
+  });
+  it("prefills only unambiguous model families and leaves ambiguous choices to the user", async () => {
+    const store = useOrbitStore();
+    store.models = ["sonnet-a", "sonnet-b", "opus-a", "haiku-a"].map((id) => ({
+      ...claudeModel(),
+      id,
+      label: id,
+    }));
+    wrapper = mount(AccessPage, {
+      global: {
+        stubs: {
+          OrbitSelect: orbitSelectStub,
+          ClientRow: true,
+          ConfigReviewDialog: true,
+        },
+      },
+    });
+    expect(wrapper.get<HTMLSelectElement>("#claude-sonnet").element.value).toBe(
+      "",
+    );
+    expect(wrapper.get<HTMLSelectElement>("#claude-opus").element.value).toBe(
+      "opus-a",
+    );
+    expect(wrapper.get<HTMLSelectElement>("#claude-haiku").element.value).toBe(
+      "haiku-a",
+    );
+    expect(
+      bridge.call.mock.calls.filter(
+        ([command]) =>
+          command === "apply_client_config" ||
+          command === "preview_client_config",
+      ),
+    ).toHaveLength(0);
+  });
+});

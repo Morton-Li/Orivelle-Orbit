@@ -1,3 +1,4 @@
+import type { UsageQuery, UsageSummary, UsagePage } from "./usage";
 /** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
 export type ClientKind = "codex" | "claude";
 export type ClaudeModelMapping = {
@@ -259,6 +260,7 @@ export type TaskView = {
   node_id: string;
   kind: "generation" | "edit";
   requested_model: string;
+  requested_model_label?: string | null;
   prompt: string;
   parameters: ImageParameters;
   result_parameters?: ImageResultParameters | null;
@@ -436,7 +438,15 @@ export type UpdateView = {
   version: string | null;
   reason: string | null;
 };
+export type UpdateProgress = {
+  request_id: string;
+  phase: "downloading" | "preparing";
+  downloaded_bytes: number;
+  total_bytes: number | null;
+};
 export interface IpcCommands {
+  read_usage_summary: { args: UsageQuery; result: UsageSummary };
+  list_usage_records: { args: UsageQuery; result: UsagePage };
   bootstrap: { args: Record<string, never>; result: BootstrapView };
   start_login: { args: Record<string, never>; result: LoginStart };
   cancel_login: { args: { request_id: string }; result: BootstrapView };
@@ -511,15 +521,6 @@ export interface IpcCommands {
     args: { image_ids: string[]; confirmed: true };
     result: { deleted: number };
   };
-  reuse_task_parameters: {
-    args: { task_id: string };
-    result: {
-      prompt: string;
-      model_id: string;
-      parameters: ImageParameters;
-      inputs: ImageInput[];
-    };
-  };
   use_history_as_input: {
     args: {
       image_id: string;
@@ -542,8 +543,12 @@ export interface IpcCommands {
   };
   check_update: { args: Record<string, never>; result: UpdateView };
   download_update: {
-    args: { version: string; confirmed: true };
+    args: { version: string; confirmed: true; request_id: string };
     result: UpdateView;
+  };
+  cancel_update_download: {
+    args: { request_id: string };
+    result: null;
   };
   install_update: {
     args: { version: string; confirmed: true };

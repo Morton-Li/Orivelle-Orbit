@@ -175,16 +175,29 @@ impl Service {
         }
         crate::claude_mapping::mapping_binding(&current, &self.store)?;
         let (client, policy) = self.client_policy(ClientKind::Claude)?;
-        let revision = access_revision(
-            &expected.context.configuration_target.revision,
-            &policy.local_revision,
-        );
+        let installed = self.paths.claude_configuration_metadata(&client)?;
+        let old = &expected.context.configuration_target;
+        let application_updated = installed.app_version != old.app_version
+            || installed.source_member_sha256 != old.source_member_sha256;
+        if if application_updated {
+            !installed.compatible_with(old)
+        } else {
+            installed != *old
+        } {
+            return Err(fail("claude_configuration_target_changed"));
+        }
         if client.configuration_access != ConfigurationAccess::Allowed
-            || client.configuration_access_revision.as_deref() != Some(revision.as_str())
+            || client.configuration_access_revision.is_none()
         {
             return Err(fail("claude_configuration_context_changed"));
         }
-        self.validate_claude_authority_state(&expected.context, false, true, &policy)?;
+        self.validate_claude_authority_state(
+            &expected.context,
+            false,
+            true,
+            &policy,
+            application_updated,
+        )?;
         self.validate_claude_mapping_selection(&expected.context)
     }
 
@@ -1569,12 +1582,27 @@ impl Service {
         compare_catalog: bool,
     ) -> Result<()> {
         let observation = self.observe_configuration(ClientKind::Claude)?;
-        self.require_claude_configuration(&observation, None, Some(&context.configuration_target))?;
+        self.require_claude_configuration(&observation, None, None)?;
+        let installed = observation
+            .claude_configuration_target
+            .as_ref()
+            .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
+        let old = &context.configuration_target;
+        let application_updated = installed.app_version != old.app_version
+            || installed.source_member_sha256 != old.source_member_sha256;
+        if if application_updated {
+            !installed.compatible_with(old)
+        } else {
+            installed != old
+        } {
+            return Err(fail("claude_configuration_target_changed"));
+        }
         self.validate_claude_authority_state(
             context,
             restoring,
             compare_catalog,
             &observation.policy,
+            application_updated,
         )
     }
     fn validate_claude_authority_state(
@@ -1583,7 +1611,9 @@ impl Service {
         restoring: bool,
         compare_catalog: bool,
         policy: &crate::policy::Snapshot,
+        application_updated: bool,
     ) -> Result<()> {
+        policy.require_user_config_clear()?;
         if let Some(plan) = context.mapping.as_ref() {
             plan.validate()?;
         }
@@ -1594,8 +1624,9 @@ impl Service {
                     .configuration_target
                     .config_root
                     .join("configLibrary")
-            || policy.revision != context.policy_revision
-            || policy.local_revision != context.local_policy_revision
+            || (!application_updated
+                && (policy.revision != context.policy_revision
+                    || policy.local_revision != context.local_policy_revision))
         {
             return Err(fail("claude_configuration_context_changed"));
         }

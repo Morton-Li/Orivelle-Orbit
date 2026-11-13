@@ -4,7 +4,6 @@ import { TabsContent, TabsList, TabsRoot, TabsTrigger } from "reka-ui";
 import { useOrbitStore } from "../stores/orbit";
 import { subscribeImageInputs } from "../shared/bridge";
 import type {
-  ChargeState,
   HistoryImage,
   ImageInput,
   ImageParameters,
@@ -13,24 +12,22 @@ import type {
 import { CAPABILITIES } from "../shared/contracts";
 import {
   formatBytes,
-  formatMoney,
+  formatUpdatedAt,
   nodeName,
   safePreviewUrl,
   utf8Bytes,
 } from "../shared/format";
-import { t, type MessageKey } from "../shared/i18n";
+import { t } from "../shared/i18n";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
-import PriceDetails from "../components/PriceDetails.vue";
 import {
   imageParameterFields,
   availableImageConstraints,
   imageParameterLabel,
   imageParameterError,
   supportedImageParameters,
-  imageParameterSummary,
   imageFailureMessage,
   type ImageSelectParameter,
 } from "../shared/image-parameters";
@@ -90,6 +87,13 @@ const activeTask = computed(
     ) ??
     null,
 );
+const requestedModelLabel = computed(
+  () =>
+    activeTask.value?.requested_model_label ??
+    store.models.find((item) => item.id === activeTask.value?.requested_model)
+      ?.label ??
+    null,
+);
 const resultImages = computed(() =>
   store.history.filter((image) =>
     activeTask.value?.image_ids.includes(image.id),
@@ -126,15 +130,6 @@ const elapsed = computed(() =>
       )
     : 0,
 );
-const chargeKeys: Record<ChargeState, MessageKey> = {
-  incomplete: "images.incomplete",
-  reconciliation_pending: "images.reconciliation",
-  charged: "images.charged",
-  recorded: "images.recorded",
-  pending: "images.pendingCharge",
-  unbilled: "images.unbilled",
-  unavailable: "images.pendingCharge",
-};
 function taskLabel(task: TaskView) {
   return t(
     task.state === "save_failed"
@@ -303,26 +298,6 @@ async function edit(image: HistoryImage) {
     enlarged.value = null;
   }
 }
-async function reuse(task: TaskView) {
-  const captured = store.scope;
-  const result = await store.perform("image-reuse", "reuse_task_parameters", {
-    task_id: task.id,
-  });
-  if (
-    result &&
-    captured === store.scope &&
-    store.imageModels.some((item) => item.id === result.model_id)
-  ) {
-    modelId.value = result.model_id;
-    await Promise.resolve();
-    if (captured !== store.scope) return;
-    prompt.value = result.prompt;
-    parameters.value = supportedParameters(result.parameters);
-    advanced.value = false;
-    inputs.value = result.inputs;
-    tab.value = "create";
-  }
-}
 async function deleteHistory() {
   const result = await store.perform("history-delete", "delete_history", {
     image_ids: [...deleteImageIds.value],
@@ -341,9 +316,12 @@ function setParameter(key: ImageSelectParameter, value: string) {
     [key]: key === "n" ? Number(value) : value,
   };
 }
-function historyTask(image: HistoryImage) {
-  return store.tasks.find(
-    (task) => task.id === image.task_id && task.account_id === image.account_id,
+function imageDescription(image: HistoryImage) {
+  return (
+    store.tasks.find(
+      (task) =>
+        task.id === image.task_id && task.account_id === image.account_id,
+    )?.prompt ?? t("images.generate")
   );
 }
 </script>
@@ -513,7 +491,7 @@ function historyTask(image: HistoryImage) {
             {{ t(parameterError) }}
           </p>
         </section>
-        <PriceDetails v-if="model" :model="model" /><button
+        <button
           type="submit"
           class="button primary generate-button"
           :disabled="!canSubmit"
@@ -544,6 +522,7 @@ function historyTask(image: HistoryImage) {
             >
               <button
                 class="image-preview-button"
+                :style="{ aspectRatio: `${image.width} / ${image.height}` }"
                 :disabled="!safePreviewUrl(image.preview_url)"
                 :aria-label="t('images.zoom')"
                 @click="enlarged = image"
@@ -552,13 +531,16 @@ function historyTask(image: HistoryImage) {
                   v-if="safePreviewUrl(image.preview_url)"
                   :src="safePreviewUrl(image.preview_url)!"
                   :alt="activeTask.prompt"
+                  :width="image.width"
+                  :height="image.height"
                 /><OrbitIcon v-else name="images" />
               </button>
               <div class="image-card-meta">
                 <span>{{ image.width }} × {{ image.height }}</span
                 ><span>{{
                   image.mime.replace("image/", "").toUpperCase()
-                }}</span>
+                }}</span
+                ><span>{{ formatBytes(image.bytes) }}</span>
               </div>
               <div class="image-card-actions">
                 <button
@@ -592,18 +574,24 @@ function historyTask(image: HistoryImage) {
               :class="{ spinning: active }"
             />
             <p>{{ taskLabel(activeTask) }}</p>
-            <p class="muted">
-              {{
-                t(
-                  activeTask.state === "unconfirmed" ||
-                    activeTask.state === "cancelled"
-                    ? "images.cancelHint"
-                    : "images.emptyHint",
-                )
-              }}
+            <p
+              v-if="
+                activeTask.state === 'unconfirmed' ||
+                activeTask.state === 'cancelled'
+              "
+              class="muted"
+            >
+              {{ t("images.cancelHint") }}
             </p>
           </div>
-          <div class="task-actions">
+          <div
+            v-if="
+              (active && activeTask.state !== 'saving') ||
+              (activeTask.local_save_available &&
+                ['save_failed', 'unconfirmed'].includes(activeTask.state))
+            "
+            class="task-actions"
+          >
             <button
               v-if="active && activeTask.state !== 'saving'"
               class="button secondary"
@@ -620,66 +608,16 @@ function historyTask(image: HistoryImage) {
               :disabled="store.busy.has('image-save')"
               @click="retrySave"
             >
-              {{ t("action.retrySave") }}</button
-            ><button
-              v-if="!active"
-              class="text-button"
-              :disabled="store.busy.has('image-reuse')"
-              @click="reuse(activeTask)"
-            >
-              {{ t("images.reuse") }}
+              {{ t("action.retrySave") }}
             </button>
           </div>
-          <dl class="task-facts">
-            <div>
-              <dt>{{ t("images.requestedParameters") }}</dt>
-              <dd>{{ imageParameterSummary(activeTask.parameters) }}</dd>
-            </div>
-            <div v-if="activeTask.result_parameters">
-              <dt>{{ t("images.observedParameters") }}</dt>
-              <dd>{{ imageParameterSummary(activeTask.result_parameters) }}</dd>
-            </div>
-            <div v-if="activeTask.result_parameters?.observed_model">
-              <dt>{{ t("images.observedModel") }}</dt>
-              <dd>{{ activeTask.result_parameters.observed_model }}</dd>
-            </div>
-            <div>
+          <dl
+            v-if="requestedModelLabel || activeTask.request_id"
+            class="task-facts"
+          >
+            <div v-if="requestedModelLabel">
               <dt>{{ t("images.requestedModel") }}</dt>
-              <dd>{{ activeTask.requested_model }}</dd>
-            </div>
-            <div>
-              <dt>{{ t("images.execution") }}</dt>
-              <dd>
-                {{
-                  t(
-                    activeTask.result_state === "confirmed"
-                      ? "images.executionConfirmed"
-                      : activeTask.result_state === "conflict"
-                        ? "common.conflict"
-                        : "common.pending",
-                  )
-                }}
-                · {{ activeTask.outcome ?? t("common.unknown") }}
-              </dd>
-            </div>
-            <div>
-              <dt>{{ t("images.settlement") }}</dt>
-              <dd>{{ t(chargeKeys[activeTask.charge_state]) }}</dd>
-            </div>
-            <div
-              v-for="(charge, index) in activeTask.charges"
-              :key="`${charge.request_id}-${index}`"
-            >
-              <dt>{{ t("images.chargeItem") }} {{ index + 1 }}</dt>
-              <dd>
-                {{
-                  formatMoney({
-                    amount: charge.amount,
-                    currency: charge.currency,
-                    status: charge.amount === null ? "unknown" : "known",
-                  })
-                }}
-              </dd>
+              <dd>{{ requestedModelLabel }}</dd>
             </div>
             <div v-if="activeTask.request_id">
               <dt>Request ID</dt>
@@ -692,7 +630,6 @@ function historyTask(image: HistoryImage) {
             ><OrbitIcon name="images"
           /></span>
           <h2>{{ t("images.empty") }}</h2>
-          <p class="muted">{{ t("images.emptyHint") }}</p>
         </div>
       </section></TabsContent
     >
@@ -717,33 +654,22 @@ function historyTask(image: HistoryImage) {
             <img
               v-if="safePreviewUrl(image.preview_url)"
               :src="safePreviewUrl(image.preview_url)!"
-              :alt="image.requested_model"
+              :alt="imageDescription(image)"
+              :width="image.width"
+              :height="image.height"
               loading="lazy"
             /><OrbitIcon v-else name="images" />
           </button>
           <div class="history-card-info">
-            <strong class="truncate">{{ image.requested_model }}</strong>
+            <strong>{{ image.width }} × {{ image.height }}</strong>
             <p class="muted">
-              {{ image.width }} × {{ image.height }} ·
               {{ image.mime.replace("image/", "").toUpperCase() }} ·
               {{ formatBytes(image.bytes) }}
             </p>
-            <p class="field-hint">
-              {{
-                image.observed_model ??
-                historyTask(image)?.result_parameters?.observed_model ??
-                t("images.actualUnknown")
-              }}
-            </p>
-            <p v-if="historyTask(image)" class="field-hint">
-              {{ t("images.requestedParameters") }}:
-              {{ imageParameterSummary(historyTask(image)!.parameters) }}
-            </p>
-            <p v-if="historyTask(image)?.result_parameters" class="field-hint">
-              {{ t("images.observedParameters") }}:
-              {{
-                imageParameterSummary(historyTask(image)!.result_parameters!)
-              }}
+            <p class="muted">
+              <time :datetime="image.created_at">{{
+                formatUpdatedAt(image.created_at)
+              }}</time>
             </p>
             <div class="image-card-actions">
               <button
@@ -791,7 +717,9 @@ function historyTask(image: HistoryImage) {
         v-if="safePreviewUrl(enlarged.preview_url)"
         class="zoom-image"
         :src="safePreviewUrl(enlarged.preview_url)!"
-        :alt="enlarged.requested_model"
+        :alt="imageDescription(enlarged)"
+        :width="enlarged.width"
+        :height="enlarged.height"
       />
       <p class="muted">
         {{ enlarged.width }} × {{ enlarged.height }} · {{ enlarged.mime }} ·

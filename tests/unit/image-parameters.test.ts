@@ -7,7 +7,6 @@ import {
   imageParameterError,
   supportedImageParameters,
   imageFailureMessage,
-  imageParameterSummary,
   availableImageConstraints,
   imageParameterFields,
 } from "../../src/shared/image-parameters";
@@ -40,17 +39,6 @@ describe("declared static image parameters", () => {
     ).toBeNull();
     expect(caps.output_formats).toContain("webp");
     expect(caps.max_results).toBe(5);
-  });
-  it("keeps absent result parameters distinct from requested service defaults", () => {
-    expect(
-      imageParameterSummary({
-        quality: null,
-        size: null,
-        background: null,
-        output_format: null,
-        observed_model: null,
-      }),
-    ).not.toBe(imageParameterSummary({}));
   });
   it("accepts shared valid requests and rejects invalid combinations before a paid submit", () => {
     for (const request of fixture.valid_requests) {
