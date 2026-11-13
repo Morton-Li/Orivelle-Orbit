@@ -647,7 +647,6 @@ function imageDescription(image: HistoryImage) {
         >
           <button
             class="image-preview-button"
-            :style="{ aspectRatio: `${image.width} / ${image.height}` }"
             :disabled="!safePreviewUrl(image.preview_url)"
             :aria-label="t('images.zoom')"
             @click="enlarged = image"

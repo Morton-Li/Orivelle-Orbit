@@ -1103,6 +1103,15 @@ textarea::placeholder {
   gap: 19px;
   align-items: start;
 }
+.history-card .image-preview-button {
+  position: relative;
+  aspect-ratio: 1.1;
+}
+.history-card .image-preview-button img {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
 .history-card-info {
   padding: 12px 13px 4px;
 }

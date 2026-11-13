@@ -53,7 +53,7 @@ test("image results show the model label and keep each image's natural proportio
       preview_url: `http://asset.localhost/${width}x${height}`,
     };
     state.tasks[0] = { ...pending, state: "completed", image_ids: [image.id] };
-    state.image_history = [image];
+    state.image_history.push(image);
     state.state_revision++;
     await pushState(page, state);
     const preview = page.locator(".result-card .image-preview-button");
@@ -76,20 +76,27 @@ test("image results show the model label and keep each image's natural proportio
     expect(enlarged!.width / enlarged!.height).toBeCloseTo(width! / height!, 2);
     await page.keyboard.press("Escape");
     await page.getByRole("tab", { name: "本地历史" }).click();
-    await expect(page.locator(".history-card strong")).toHaveText(
+    const historyCard = page.locator(".history-card").last();
+    await expect(historyCard.locator("strong")).toHaveText(
       `${width} × ${height}`,
     );
-    await expect(page.locator(".history-card")).toContainText("PNG · 150 KiB");
-    await expect(page.locator(".history-card")).not.toContainText(
+    await expect(historyCard).toContainText("PNG · 150 KiB");
+    await expect(historyCard).not.toContainText(
       /synthetic-image|实际型号|请求参数|上游返回参数/,
     );
-    const thumbnail = await page
-      .locator(".history-card .image-preview-button")
-      .boundingBox();
-    expect(thumbnail!.width / thumbnail!.height).toBeCloseTo(
-      width! / height!,
-      2,
-    );
+    const thumbnails = page.locator(".history-card .image-preview-button");
+    const first = await thumbnails.first().boundingBox();
+    for (const thumbnail of await thumbnails.all()) {
+      const frame = await thumbnail.boundingBox();
+      expect(frame!.width / frame!.height).toBeCloseTo(1.1, 2);
+      expect(frame!.width).toBeCloseTo(first!.width, 0);
+      expect(frame!.height).toBeCloseTo(first!.height, 0);
+      await expect(thumbnail.locator("img")).toHaveCSS("object-fit", "contain");
+    }
+    if (state.image_history.length === 3)
+      await page.locator(".history-grid").screenshot({
+        path: ".cache/evidence/images-history-uniform.png",
+      });
     await page.getByRole("tab", { name: "创作", exact: true }).click();
   }
 });
