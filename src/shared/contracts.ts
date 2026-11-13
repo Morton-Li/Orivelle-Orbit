@@ -1,3 +1,4 @@
+import type { UsageQuery, UsageSummary, UsagePage } from "./usage";
 /** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
 export type ClientKind = "codex" | "claude";
 export type ClaudeModelMapping = {
@@ -443,6 +444,8 @@ export type UpdateProgress = {
   total_bytes: number | null;
 };
 export interface IpcCommands {
+  read_usage_summary: { args: UsageQuery; result: UsageSummary };
+  list_usage_records: { args: UsageQuery; result: UsagePage };
   bootstrap: { args: Record<string, never>; result: BootstrapView };
   start_login: { args: Record<string, never>; result: LoginStart };
   cancel_login: { args: { request_id: string }; result: BootstrapView };

@@ -169,6 +169,8 @@ pub fn run() {
             logout,
             select_node,
             list_models,
+            read_usage_summary,
+            list_usage_records,
             probe_nodes,
             cancel_node_probes,
             preview_client_config,

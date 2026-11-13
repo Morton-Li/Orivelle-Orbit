@@ -24,4 +24,5 @@ pub mod system;
 pub mod update_download;
 pub mod update_recovery;
 pub mod updates;
+pub mod usage;
 pub mod vault;
