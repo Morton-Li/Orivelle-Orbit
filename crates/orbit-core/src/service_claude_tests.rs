@@ -3053,7 +3053,7 @@ fn claude_b3c_account_switch_and_same_account_node_switch_manage_only_their_own_
         cache.account.label = "Synthetic B".into();
         let wire: Value =
             serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
-        let mut token = wire["token_reply"]["data"].clone();
+        let mut token = tests::token_reply()["data"].clone();
         token["account_id"] = json!(b.view.account_id);
         let (_, session) = serde_json::from_value::<TokenResponse>(token)
             .unwrap()

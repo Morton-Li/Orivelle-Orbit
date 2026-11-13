@@ -794,7 +794,19 @@ mod tests {
                 Duration::from_millis(20),
             )
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        // Under load the expiry task may resume after this test's timer. Wait
+        // for its cleanup without another preview triggering that cleanup.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let reserved = manager.slots.lock().unwrap().contains_key(&plan.binding_id);
+                if !reserved {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("unconfirmed reservation must expire without another preview");
         assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_ok());
         let confirmed = manager
             .reserve_for(

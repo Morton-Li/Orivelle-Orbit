@@ -4797,6 +4797,14 @@ mod tests {
         );
         serde_json::from_str(GOLDEN).unwrap()
     }
+    pub(super) fn token_reply() -> Value {
+        let mut reply = golden()["token_reply"].clone();
+        // Keep the immutable protocol/signature vector; only a live test session
+        // needs a deadline relative to the current run instead of the sample date.
+        reply["data"]["session_expires_at"] =
+            json!((chrono::Utc::now() + chrono::Duration::days(30)).to_rfc3339());
+        reply
+    }
     pub(super) struct PolicyVault {
         inner: Arc<FakeVault>,
         pub(super) calls: AtomicU64,
@@ -6325,7 +6333,7 @@ mod tests {
             )
             .unwrap();
         let response: TokenResponse =
-            serde_json::from_value(wire["token_reply"]["data"].clone()).unwrap();
+            serde_json::from_value(token_reply()["data"].clone()).unwrap();
         let (account, session) = response.into_session(&install).unwrap();
         let record = ConnectionRecord {
             view: ConnectionView {
@@ -6372,6 +6380,38 @@ mod tests {
             .put("account-cache", &record.view.id, &account, &cache)
             .unwrap();
         (dir, service, vault, record, install)
+    }
+    #[test]
+    fn token_response_rejects_expired_and_malformed_session_deadlines() {
+        let (_dir, _service, _vault, _record, install) = setup();
+        let token = token_reply()["data"].clone();
+        assert!(
+            serde_json::from_value::<TokenResponse>(token.clone())
+                .unwrap()
+                .into_session(&install)
+                .is_ok()
+        );
+        let now = chrono::Utc::now();
+        for (deadline, code) in [
+            (
+                (now - chrono::Duration::seconds(1)).to_rfc3339(),
+                "session_expired",
+            ),
+            (now.to_rfc3339(), "session_expired"),
+            ("invalid".into(), "invalid_panel_response"),
+        ] {
+            let mut expired = token.clone();
+            expired["session_expires_at"] = json!(deadline);
+            assert_eq!(
+                serde_json::from_value::<TokenResponse>(expired)
+                    .unwrap()
+                    .into_session(&install)
+                    .err()
+                    .unwrap()
+                    .code,
+                code
+            );
+        }
     }
     fn task(record: &ConnectionRecord) -> TaskView {
         TaskView {
@@ -7213,7 +7253,7 @@ mod tests {
                     .is_empty()
             );
             let (_, session) =
-                serde_json::from_value::<TokenResponse>(golden()["token_reply"]["data"].clone())
+                serde_json::from_value::<TokenResponse>(token_reply()["data"].clone())
                     .unwrap()
                     .into_session(&install)
                     .unwrap();
@@ -8475,7 +8515,7 @@ mod tests {
             let release = Arc::new(tokio::sync::Notify::new());
             let count = Arc::new(AtomicU64::new(0));
             let (a, b, c) = (started.clone(), release.clone(), count.clone());
-            let token = golden()["token_reply"].clone();
+            let token = token_reply();
             service.http.scripted(Arc::new(move |request| {
                 let (a, b, c, token) = (a.clone(), b.clone(), c.clone(), token.clone());
                 Box::pin(async move {
@@ -8661,12 +8701,11 @@ mod tests {
             let task = tokio::spawn(async move { worker.refresh_account(&id, revision).await });
             started.notified().await;
             if reauthorize {
-                let (_, session) = serde_json::from_value::<TokenResponse>(
-                    golden()["token_reply"]["data"].clone(),
-                )
-                .unwrap()
-                .into_session(&install)
-                .unwrap();
+                let (_, session) =
+                    serde_json::from_value::<TokenResponse>(token_reply()["data"].clone())
+                        .unwrap()
+                        .into_session(&install)
+                        .unwrap();
                 service
                     .commit_authorization(&install, record.view.account_id.clone(), session, 0)
                     .unwrap();
@@ -8770,12 +8809,11 @@ mod tests {
                 assert!(view.pending_authorization.is_none());
                 assert_eq!(view.session.status, "expired");
                 assert!(view.session.account.is_none());
-                let (_, session) = serde_json::from_value::<TokenResponse>(
-                    golden()["token_reply"]["data"].clone(),
-                )
-                .unwrap()
-                .into_session(&install)
-                .unwrap();
+                let (_, session) =
+                    serde_json::from_value::<TokenResponse>(token_reply()["data"].clone())
+                        .unwrap()
+                        .into_session(&install)
+                        .unwrap();
                 assert_eq!(
                     service
                         .commit_authorization(
@@ -8803,12 +8841,11 @@ mod tests {
                     record.view.revision
                 );
             } else if mode == "connected" {
-                let (_, session) = serde_json::from_value::<TokenResponse>(
-                    golden()["token_reply"]["data"].clone(),
-                )
-                .unwrap()
-                .into_session(&install)
-                .unwrap();
+                let (_, session) =
+                    serde_json::from_value::<TokenResponse>(token_reply()["data"].clone())
+                        .unwrap()
+                        .into_session(&install)
+                        .unwrap();
                 let connected = service
                     .commit_authorization(&install, record.view.account_id.clone(), session, epoch)
                     .unwrap();
@@ -9104,9 +9141,8 @@ mod tests {
         let worker_barrier = barrier.clone();
         let worker = service.clone();
         let id = record.view.id.clone();
-        let wire = golden();
         let (_, new_session) =
-            serde_json::from_value::<TokenResponse>(wire["token_reply"]["data"].clone())
+            serde_json::from_value::<TokenResponse>(token_reply()["data"].clone())
                 .unwrap()
                 .into_session(&install)
                 .unwrap();
