@@ -696,3 +696,18 @@ mod tests {
         }
     }
 }
+
+#[tauri::command]
+pub async fn read_usage_summary(
+    native: State<'_, Native>,
+    request: orbit_core::usage::UsageQuery,
+) -> Result<orbit_core::usage::UsageSummary> {
+    native.service.read_usage_summary(&request).await
+}
+#[tauri::command]
+pub async fn list_usage_records(
+    native: State<'_, Native>,
+    request: orbit_core::usage::UsageQuery,
+) -> Result<orbit_core::usage::UsagePage> {
+    native.service.list_usage_records(&request).await
+}

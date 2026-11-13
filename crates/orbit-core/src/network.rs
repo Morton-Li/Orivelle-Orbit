@@ -498,6 +498,18 @@ impl Http {
         credential: Option<(&Installation, &ProofSession, &dyn Vault)>,
         proof_with_bearer: bool,
     ) -> Result<PanelEnvelope<T>> {
+        self.panel_document(origin, target, method, body, credential, proof_with_bearer)
+            .await
+    }
+    pub async fn panel_document<T: DeserializeOwned>(
+        &self,
+        origin: &str,
+        target: &str,
+        method: Method,
+        body: Vec<u8>,
+        credential: Option<(&Installation, &ProofSession, &dyn Vault)>,
+        proof_with_bearer: bool,
+    ) -> Result<T> {
         self.require_panel_origin(origin)?;
         if canonical_origin(origin)? != origin
             || !target.starts_with("/api/v1/orbit/")
@@ -558,6 +570,7 @@ impl Http {
             .await?;
         if !(200..300).contains(&response.status) {
             return Err(fail(match response.status {
+                404 => "endpoint_unavailable",
                 401 => "session_expired",
                 403 => "permission_denied",
                 409 => "connection_conflict",
@@ -565,7 +578,7 @@ impl Http {
                 _ => "panel_unavailable",
             }));
         }
-        let envelope: PanelEnvelope<T> =
+        let envelope: T =
             serde_json::from_slice(&response.bytes).map_err(|_| fail("invalid_panel_response"))?;
         Ok(envelope)
     }

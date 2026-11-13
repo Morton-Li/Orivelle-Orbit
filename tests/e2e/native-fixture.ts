@@ -1,3 +1,4 @@
+import { usageSummary, usagePage } from "../usage-fixtures";
 import type { Page } from "@playwright/test";
 import type {
   AuthorizationEvent,
@@ -37,6 +38,8 @@ export async function fixture(
   await page.addInitScript(
     ({
       initial,
+      sampleUsageSummary,
+      sampleUsagePage,
       models,
       initialTask,
       paidFailure,
@@ -187,6 +190,19 @@ export async function fixture(
               error: null,
             });
             return structuredClone(current);
+          }
+          if (command === "read_usage_summary") return sampleUsageSummary;
+          if (command === "list_usage_records") {
+            const selected = sampleUsagePage.data.filter(
+              (row) => !request.outcome || row.outcome === request.outcome,
+            );
+            return {
+              ...sampleUsagePage,
+              data: request.cursor ? selected.slice(4) : selected.slice(0, 4),
+              prev_cursor: request.cursor ? "demo-prev" : null,
+              next_cursor:
+                !request.cursor && selected.length > 4 ? "demo-next" : null,
+            };
           }
           if (command === "list_models") return models;
           if (command === "probe_nodes")
@@ -421,6 +437,8 @@ export async function fixture(
     },
     {
       initial: state,
+      sampleUsageSummary: usageSummary(),
+      sampleUsagePage: usagePage(),
       models: [imageModel(), syntheticCodexModel()],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
