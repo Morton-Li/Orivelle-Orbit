@@ -44,3 +44,71 @@ test("usage shows account-wide statistics, filters and cursors without inference
   ).toBeLessThanOrEqual(800);
   expect(await calls(page, "create_image_task")).toBe(0);
 });
+
+test("usage errors leave space above statistics and align refresh on the right", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/usage");
+  await expect(
+    page.locator(".usage-stat").first().locator("strong"),
+  ).not.toHaveText("—");
+  const previous = (await page.locator(".usage-stat-grid").textContent()) ?? "";
+  await page.evaluate(() => {
+    const native = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (
+            command: string,
+            args?: Record<string, unknown>,
+          ) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    const invoke = native.invoke;
+    const failing = new Set(["read_usage_summary", "list_usage_records"]);
+    native.invoke = async (command, args) => {
+      if (failing.delete(command))
+        throw { code: "synthetic_usage_unavailable" };
+      return invoke(command, args);
+    };
+  });
+  await page.getByRole("button", { name: "刷新用量", exact: true }).click();
+  await expect(page.locator(".usage-error")).toHaveCount(2);
+  await expect(page.locator(".usage-stat-grid")).toHaveText(previous);
+  const summaryError = page.locator(".usage-error").first();
+  for (const width of [1280, 800, 460]) {
+    await page.setViewportSize({ width, height: 940 });
+    for (const alert of await page.locator(".usage-error").all()) {
+      const box = await alert.boundingBox();
+      const message = await alert.locator("span").boundingBox();
+      const button = await alert
+        .getByRole("button", { name: "刷新数据", exact: true })
+        .boundingBox();
+      expect(button!.x + button!.width).toBeGreaterThan(
+        box!.x + box!.width - 20,
+      );
+      expect(button!.x).toBeGreaterThanOrEqual(
+        message!.x + message!.width + 12,
+      );
+    }
+    const notice = await summaryError.boundingBox();
+    const statistics = await page.locator(".usage-stat-grid").boundingBox();
+    expect(statistics!.y - notice!.y - notice!.height).toBeGreaterThanOrEqual(
+      17,
+    );
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    if (width !== 800)
+      await page.screenshot({
+        path: `.cache/usage-demo/error-layout-${width}.png`,
+        fullPage: true,
+      });
+  }
+  await summaryError
+    .getByRole("button", { name: "刷新数据", exact: true })
+    .click();
+  await expect(page.locator(".usage-error")).toHaveCount(0);
+  await expect(page.locator(".usage-stat-grid")).toHaveText(previous);
+});

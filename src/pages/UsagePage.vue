@@ -242,7 +242,7 @@ function duration(value: number | null) {
     </form>
     <p v-if="rangeError" class="error-text" role="alert">{{ rangeError }}</p>
     <p v-if="summaryError" class="usage-error" role="alert">
-      {{ summaryError }}
+      <span>{{ summaryError }}</span>
       <button class="text-button" @click="usage.refresh">
         {{ t("action.refresh") }}
       </button>
@@ -454,7 +454,7 @@ function duration(value: number | null) {
         </div>
       </div>
       <p v-if="recordsError" class="usage-error" role="alert">
-        {{ recordsError }}
+        <span>{{ recordsError }}</span>
         <button class="text-button" @click="usage.loadRecords()">
           {{ t("action.refresh") }}
         </button>

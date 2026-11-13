@@ -2024,6 +2024,10 @@ textarea::placeholder {
   border-radius: 16px;
 }
 .usage-error {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 18px;
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 4%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--danger) 20%, var(--line));
@@ -2032,7 +2036,14 @@ textarea::placeholder {
   font-size: 11px;
   line-height: 1.6;
 }
+.usage-error > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .usage-error .text-button {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
   color: inherit;
   font-size: inherit;
 }

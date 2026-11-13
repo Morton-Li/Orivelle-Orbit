@@ -28,3 +28,11 @@
 独立应用 `target/debug/bundle/macos/Orbit Usage Preview.app`，标识 `io.orivelle.orbit.usage-preview`。使用单独的项目内数据目录与非持久化 WebView，页面明确标记合成数据。演示构建的独立入口／bridge 在 `.cache/usage-demo/`；普通生产构建不包含这些演示模块。桌面窗口已直接显示用量页，供用户确认样式。
 
 演示未写入已安装桌面工具的配置，没有真实模型调用、实际消费或生产部署。真实平台的汇总功能需要包含新 `/api/v1/orbit/usage/summary` 的 Panel 版本；本轮未执行真实平台联调或 MySQL 验收。
+
+## 加载提示布局修正
+
+2026-11-13，分支 `fix/usage-error-layout`：汇总加载提示与统计卡片之间增加 18 像素间距；汇总区和调用记录区的错误提示均采用文字居左、刷新按钮居右的布局。窄窗口中提示可以换行，按钮保留独立宽度。
+
+- 用量单元测试 5 项、浏览器工作流 2 项通过；浏览器覆盖 1280、800、460 像素窗口、成功数据保留、失败后的重试恢复及无页面横向溢出。
+- 类型、lint、格式、生产构建及演示数据排除检查通过。日志位于 `.cache/usage-error-layout-tests.log`，截图位于 `.cache/usage-demo/error-layout-1280.png` 和 `error-layout-460.png`。
+- 独立 `Orbit Usage Preview.app` 已重新构建并打开，原生界面已确认提示与统计卡片的间距，以及刷新按钮的右对齐。demo 通过一次合成刷新失败展示旧数据保留状态，点击提示右侧的“刷新数据”即可恢复；没有访问真实平台或执行真实模型请求。
