@@ -473,10 +473,6 @@ pub fn delete_history(native: State<'_, Native>, request: DeleteImages) -> Resul
     })
 }
 #[tauri::command]
-pub fn reuse_task_parameters(native: State<'_, Native>, request: Task) -> Result<Value> {
-    native.service.reuse_task_parameters(&request.task_id)
-}
-#[tauri::command]
 pub fn update_settings(native: State<'_, Native>, request: Settings) -> Result<SettingsView> {
     native.service.update_settings(request.patch)
 }

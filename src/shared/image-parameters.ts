@@ -1,7 +1,6 @@
 import type {
   ImageParameterConstraints,
   ImageParameters,
-  ImageResultParameters,
   ImageSizeConstraints,
 } from "./contracts";
 import { t, type MessageKey } from "./i18n";
@@ -206,36 +205,6 @@ export function imageParameterLabel(value: string): string {
       ? value.toUpperCase()
       : value;
 }
-export function imageParameterSummary(
-  values: ImageParameters | ImageResultParameters,
-): string {
-  const parts: string[] = [];
-  if ("n" in values && values.n !== undefined)
-    parts.push(`${t("images.count")} ${values.n}`);
-  for (const key of [
-    "size",
-    "quality",
-    "background",
-    "output_format",
-  ] as const) {
-    const value = values[key];
-    if (value) parts.push(imageParameterLabel(value));
-  }
-  if ("complexity" in values && values.complexity)
-    parts.push(
-      `${t("images.complexity")} ${imageParameterLabel(values.complexity)}`,
-    );
-  if ("output_compression" in values && values.output_compression !== undefined)
-    parts.push(`${t("images.compression")} ${values.output_compression}%`);
-  return parts.length
-    ? parts.join(" · ")
-    : t(
-        "observed_model" in values
-          ? "images.parametersUnknown"
-          : "images.default",
-      );
-}
-
 export function imageFailureMessage(code: string): string {
   const keys: Partial<Record<string, MessageKey>> = {
     image_access_denied: "images.errorAccess",

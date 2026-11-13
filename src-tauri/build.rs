@@ -25,7 +25,6 @@ fn main() {
         "save_image_as",
         "copy_image",
         "delete_history",
-        "reuse_task_parameters",
         "update_settings",
         "prepare_diagnostics",
         "export_diagnostics",

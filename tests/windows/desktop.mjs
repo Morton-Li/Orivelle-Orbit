@@ -228,7 +228,7 @@ async function exerciseImages(page, navigation) {
   await navigation.getByRole("link", { name: "接入", exact: true }).click();
   if (baseline) {
     // Selecting even the same node creates a new connection revision. Keep the
-    // upgraded connection so its v1.0.1 task remains the current result to reuse.
+    // upgraded connection so its v1.0.1 task remains the current result.
     await expect(page.locator("#access-node")).toContainText(fixture.nodeLabel);
   } else {
     await choose(page, "access-node", fixture.nodeLabel);
@@ -265,25 +265,26 @@ async function exerciseImages(page, navigation) {
   ])
     await expect(page.locator("#" + id)).toHaveCount(0);
   if (baseline) {
-    await page
-      .getByRole("button", { name: "复用参数", exact: true })
-      .first()
-      .click();
-    await expect(advanced).toHaveAttribute("aria-expanded", "false");
-    await expect(page.locator("#image-prompt")).toHaveValue(
-      "Orbit v1.0.1 compatibility history",
-    );
-    await advanced.click();
-    await expect(page.locator("#image-background")).toContainText("透明");
+    await expect(
+      page.getByRole("button", { name: "复用参数", exact: true }),
+    ).toHaveCount(0);
+    await expect(page.locator("#image-prompt")).toHaveValue("");
+    await expect(page.locator("#image-background")).toContainText("不透明");
     await expect(page.locator("#image-quality")).toHaveCount(0);
     await expect(page.locator("#image-size")).toHaveCount(0);
-    await expect(page.locator(".task-facts")).toContainText("1024x1024");
+    await expect(page.locator(".task-facts")).not.toContainText(
+      /请求参数|上游返回参数|1024x1024/,
+    );
+    const legacy = (await invoke(page, "bootstrap")).tasks.find(
+      (item) => item.prompt === "Orbit v1.0.1 compatibility history",
+    );
+    assert.equal(legacy.parameters.size, "1024x1024");
     await page.screenshot({
-      path: path.join(evidence, "legacy-history-reuse.png"),
+      path: path.join(evidence, "legacy-history.png"),
     });
     await choose(page, "image-background", "不透明");
     receipt.checks.push(
-      "v1.0.1 history facts retained and unsupported parameters removed on reuse",
+      "v1.0.1 history stays readable while removed parameter details and reuse are absent",
     );
   }
   await advanced.click();
