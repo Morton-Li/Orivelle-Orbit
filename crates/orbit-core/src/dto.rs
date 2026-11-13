@@ -512,3 +512,10 @@ pub struct UpdateView {
     pub version: Option<String>,
     pub reason: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    pub request_id: String,
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+}

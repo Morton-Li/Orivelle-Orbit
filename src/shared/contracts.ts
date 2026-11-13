@@ -436,6 +436,12 @@ export type UpdateView = {
   version: string | null;
   reason: string | null;
 };
+export type UpdateProgress = {
+  request_id: string;
+  phase: "downloading" | "preparing";
+  downloaded_bytes: number;
+  total_bytes: number | null;
+};
 export interface IpcCommands {
   bootstrap: { args: Record<string, never>; result: BootstrapView };
   start_login: { args: Record<string, never>; result: LoginStart };
@@ -542,8 +548,12 @@ export interface IpcCommands {
   };
   check_update: { args: Record<string, never>; result: UpdateView };
   download_update: {
-    args: { version: string; confirmed: true };
+    args: { version: string; confirmed: true; request_id: string };
     result: UpdateView;
+  };
+  cancel_update_download: {
+    args: { request_id: string };
+    result: null;
   };
   install_update: {
     args: { version: string; confirmed: true };

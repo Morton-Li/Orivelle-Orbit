@@ -1224,6 +1224,41 @@ textarea::placeholder {
   gap: 21px;
   margin-top: 19px;
 }
+.update-progress {
+  max-width: 440px;
+  margin-top: 12px;
+}
+.update-progress-details {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.update-progress progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: var(--soft);
+  accent-color: var(--accent);
+}
+.update-progress progress::-webkit-progress-bar {
+  background: var(--soft);
+  border-radius: 4px;
+}
+.update-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 4px;
+}
+.update-progress progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 4px;
+}
 .checkbox-row {
   display: flex;
   align-items: flex-start;

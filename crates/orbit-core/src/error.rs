@@ -40,6 +40,9 @@ impl PublicError {
             "local_save_failed" => "结果已收到，本地保存失败；仅重试本地保存。",
             "update_disabled" => "当前构建没有正式更新信任配置。",
             "update_busy" => "活动任务或凭据 helper 尚未结束，更新已暂停。",
+            "update_request_timeout" => "更新请求超时，请检查网络后重试。",
+            "update_request_failed" => "更新请求失败，请检查网络后重试。",
+            "update_download_cancelled" => "已取消更新下载，可随时重新下载。",
             _ => "操作无法完成，请检查连接或诊断记录。",
         };
         Self {

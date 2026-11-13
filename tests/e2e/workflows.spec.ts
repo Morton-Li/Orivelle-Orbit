@@ -772,6 +772,96 @@ test("startup update checking runs once and its result survives page navigation"
   expect(await calls(page, "install_update")).toBe(0);
 });
 
+test("manual update checks announce the result in the bottom-right toast", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
+  await expect(
+    page.getByRole("button", { name: "下载并更新", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("update download shows progress, cancels, retries and asks before restarting", async ({
+  page,
+}) => {
+  await fixture(page, { updateAvailable: true });
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText("发现新版本 · 0.2.0");
+  const download = page.getByRole("button", {
+    name: "下载并更新",
+    exact: true,
+  });
+  await download.click();
+  const progress = page.getByRole("progressbar", { name: "更新下载进度" });
+  await expect(progress).toBeVisible();
+  await expect(progress).not.toHaveAttribute("value");
+  await expect(
+    page.getByRole("button", { name: "取消下载", exact: true }),
+  ).toBeEnabled();
+  await expect.poll(() => calls(page, "download_update")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.pushUpdateProgress({
+      phase: "downloading",
+      downloaded_bytes: 32 * 1024 ** 2,
+      total_bytes: 64 * 1024 ** 2,
+    }),
+  );
+  await expect(progress).toHaveAttribute("value", "50");
+  await page.screenshot({
+    path: ".cache/evidence/settings-update-progress.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "取消下载", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText("已取消下载，可随时重新下载");
+  await expect(progress).toHaveCount(0);
+  await expect(download).toBeEnabled();
+  expect(await calls(page, "cancel_update_download")).toBe(1);
+  await download.click();
+  await expect.poll(() => calls(page, "download_update")).toBe(2);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.finishUpdateDownload(),
+  );
+  await expect(
+    page.getByRole("dialog", { name: "安装并重启", exact: true }),
+  ).toBeVisible();
+  expect(await calls(page, "install_update")).toBe(0);
+});
+
+test("update timeout is readable and leaves download available", async ({
+  page,
+}) => {
+  await fixture(page, { updateAvailable: true });
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  const download = page.getByRole("button", {
+    name: "下载并更新",
+    exact: true,
+  });
+  await download.click();
+  await expect.poll(() => calls(page, "download_update")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.finishUpdateDownload("update_request_timeout"),
+  );
+  await expect(page.locator(".toast")).toHaveText(
+    "下载超时或连接中断，请检查网络后重新下载",
+  );
+  await expect(download).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "检查更新", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
+});
+
 test("access and settings show the supported controls and the installed version", async ({
   page,
 }) => {

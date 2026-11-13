@@ -6,6 +6,7 @@ import type {
   ImageInputsEvent,
   IpcCommands,
   ScopedErrorEvent,
+  UpdateProgress,
 } from "./contracts";
 import { t } from "./i18n";
 import { imageFailureMessage } from "./image-parameters";
@@ -57,6 +58,27 @@ export async function subscribeState(
   return listen<BootstrapView>("orbit://state", (event) =>
     callback(event.payload),
   );
+}
+export async function subscribeUpdateProgress(
+  callback: (progress: UpdateProgress) => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen<UpdateProgress>("orbit://update-progress", (event) => {
+    const progress = event.payload;
+    if (
+      !progress ||
+      typeof progress.request_id !== "string" ||
+      !["downloading", "preparing"].includes(progress.phase) ||
+      !Number.isSafeInteger(progress.downloaded_bytes) ||
+      progress.downloaded_bytes < 0 ||
+      (progress.total_bytes !== null &&
+        (!Number.isSafeInteger(progress.total_bytes) ||
+          progress.total_bytes <= 0 ||
+          progress.total_bytes < progress.downloaded_bytes))
+    )
+      return;
+    callback(progress);
+  });
 }
 export async function subscribeOpenSettings(
   callback: () => void,

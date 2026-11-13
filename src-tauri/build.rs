@@ -29,6 +29,7 @@ fn main() {
         "export_diagnostics",
         "check_update",
         "download_update",
+        "cancel_update_download",
         "install_update",
     ];
     tauri_build::try_build(
