@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
-import PriceDetails from "../../src/components/PriceDetails.vue";
 import {
   clientStatus,
   evidenceMatches,
@@ -10,32 +8,12 @@ import {
   utf8Bytes,
 } from "../../src/shared/format";
 import { locale } from "../../src/shared/i18n";
-import { bootstrap, client, imageModel } from "../fixtures";
+import { bootstrap, client } from "../fixtures";
 
 beforeEach(() => {
   locale.value = "zh-CN";
 });
 describe("authoritative financial presentation", () => {
-  it("labels partially configured reference prices without claiming an official price or a zero missing rate", () => {
-    const model = imageModel();
-    model.official_price = {
-      source: "configured_reference",
-      status: "partial",
-      currency: "USD",
-      rates: [
-        { meter: "image_input", unit_size: 1000000, unit_price: null },
-        { meter: "image_output", unit_size: 1000000, unit_price: "0" },
-      ],
-    };
-    const wrapper = mount(PriceDetails, { props: { model } });
-    const reference = wrapper.findAll(".price-table")[1]!;
-    expect(reference.find("h3").text()).toBe("平台配置参考价");
-    expect(reference.text()).toContain("仅部分计费项配置了参考价");
-    expect(reference.findAll(".price-rate")[0]!.text()).toContain("USD 未知");
-    expect(reference.findAll(".price-rate")[1]!.text()).toContain("USD 0.00");
-    expect(reference.text()).not.toContain("官方参考价");
-    wrapper.unmount();
-  });
   it("preserves every decimal digit above JavaScript precision without rounding", () => {
     expect(formatDecimal("12345678901234567890123456.123456789012345678")).toBe(
       "12,345,678,901,234,567,890,123,456.123456789012345678",

@@ -23,7 +23,6 @@ import OrbitIcon from "../components/OrbitIcon.vue";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
-import PriceDetails from "../components/PriceDetails.vue";
 import {
   imageParameterFields,
   availableImageConstraints,
@@ -513,7 +512,7 @@ function historyTask(image: HistoryImage) {
             {{ t(parameterError) }}
           </p>
         </section>
-        <PriceDetails v-if="model" :model="model" /><button
+        <button
           type="submit"
           class="button primary generate-button"
           :disabled="!canSubmit"
