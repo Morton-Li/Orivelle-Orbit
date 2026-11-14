@@ -1452,6 +1452,12 @@ fn claude_signature_wait(
 }
 
 fn bounded_command(mut command: Command) -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW keeps read-only PowerShell probes off the desktop.
+        command.creation_flags(0x0800_0000);
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

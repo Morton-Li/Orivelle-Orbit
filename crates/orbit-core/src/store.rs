@@ -98,6 +98,7 @@ pub fn private_file(path: &Path) -> Result<()> {
 /// never executable PowerShell text. Failure or unverifiable ACLs fail closed.
 #[cfg(windows)]
 fn windows_private_acl(path: &Path, directory: bool) -> Result<()> {
+    use std::os::windows::process::CommandExt;
     use std::{
         io::Read,
         process::{Command, Stdio},
@@ -143,6 +144,9 @@ foreach ($r in $rules) {
         PathBuf::from(system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let target = if directory { "directory" } else { "file" };
     let mut child = Command::new(executable)
+        // CREATE_NO_WINDOW: ACL setup is a background operation even when
+        // Orbit itself is linked as a Windows GUI application.
+        .creation_flags(0x0800_0000)
         .args([
             "-NoLogo",
             "-NoProfile",

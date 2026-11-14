@@ -67,6 +67,12 @@ candidate/bundle 系列在构建前后冻结 HEAD/tree，要求已提交且 trac
 
 macOS 候选 ZIP 位于 `runtime/candidates/`，检查 `.app` 标识、版本、最低系统、资源及 LICENSE/NOTICE/PROVENANCE，再解压回验。Windows NSIS 与正式 macOS 发布文件集中到 `runtime/github-release/`；构建日志和清单位于 `runtime/logs/`，原始运行产物不累积到 docs。
 
+### 随包许可证
+
+[Tauri 资源清单](../../src-tauri/tauri.conf.json)显式带入 5 个声明与来源文件，合计 25,510 字节：Orbit 的 `LICENSE`/`NOTICE`，以及固定版本 Codex 的 `LICENSE`/`NOTICE`/`PROVENANCE.json`。没有通过这份清单打包完整 Codex、Claude Desktop 或开发依赖目录。Codex 的模型目录实际由 [codex_catalog.rs](../../crates/orbit-core/src/codex_catalog.rs)嵌入程序，因此保留对应 Apache-2.0 许可及声明有实际来源依据；[第 4 条](https://www.apache.org/licenses/LICENSE-2.0)规定了再分发时的许可证和适用归属声明要求。
+
+Codex 原始 `NOTICE` 中的 Ratatui 归属行来自上游完整声明，不代表 Orbit 打包了 Ratatui 终端软件；当前按来源摘要保留上游文件原样，候选检查会核对其字节。`PROVENANCE.json` 是来源追踪资料，独立于许可证正文。许可证文件的存在也不能代替对其他实际分发依赖各自许可要求的检查。
+
 ## GitHub 工作流职责
 
 | 工作流                                                                       | 触发与结果                                                                                                                                               |
@@ -81,7 +87,7 @@ prepare-native 在临时 hosted runner 准备锁定工具/依赖，默认执行�
 
 ## 安装包证据
 
-- Windows 发布阶段用 7-Zip 检查 NSIS 完整性、提取主程序，核对 ProductVersion 与 x64 PE。[windows-package-evidence.mjs](../../scripts/windows-package-evidence.mjs)仅允许固定 Tauri 的 `UNK` → `NSS` 包类型标记变化，其余字节必须与构建主程序相同。
+- Windows 候选构建检查主程序为 x64 PE32+ 且子系统为 Windows GUI，拒绝会带出控制台的 console 程序。发布阶段用 7-Zip 检查 NSIS 完整性、提取主程序，核对 ProductVersion。[windows-package-evidence.mjs](../../scripts/windows-package-evidence.mjs)再次验证构建与包内主程序的 GUI 子系统，仅允许固定 Tauri 的 `UNK` → `NSS` 包类型标记变化，其余字节必须相同。
 - Windows 原生集成沿 [prepare-installers.ps1](../../tests/windows/prepare-installers.ps1)与 [with-panel-fixture.ps1](../../tests/windows/with-panel-fixture.ps1)检查正式基线校验和、安装/升级及真实系统行为。Panel/图片服务为受控 HTTPS fixture，不能据此证明真实上游或第三方客户端配置。
 - macOS [verify-dmg-layout.mjs](../../scripts/verify-dmg-layout.mjs)只在 GitHub-hosted Mac 运行：实际校验并只读挂载 DMG，核对 app、Applications 链接、背景精确字节、Finder 布局及截图。证据写 `runtime/logs/dmg/`；这不包含用户机器实际拖拽安装或在线更新重启。
 

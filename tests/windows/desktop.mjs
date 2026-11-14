@@ -6,6 +6,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { startPanelFixture } from "./panel-fixture.mjs";
+import { verifyWindowsGuiExecutable } from "../../scripts/windows-package-evidence.mjs";
 
 if (
   process.platform !== "win32" ||
@@ -301,7 +302,7 @@ async function exerciseImages(page, navigation) {
     ]);
     await native("close");
     await visible(false);
-    await native("menu", "退出 Orbit", "tray-quit-menu.png");
+    await panelMenu("退出 Orbit", "tray-quit-menu.png");
     await native("dialog", "继续运行", "pending-quit-guard.png");
     if ((await native("state")).main_visible) await native("close");
     await visible(false);
@@ -469,7 +470,7 @@ async function exerciseTrayPanel() {
   let panel;
   for (const theme of ["light", "dark"]) {
     await choose(page, "setting-theme", theme === "dark" ? "深色" : "浅色");
-    await native("click");
+    await native(theme === "light" ? "click" : "right-click");
     await expect
       .poll(async () => (await native("state")).panel_visible)
       .toBe(true);
@@ -497,6 +498,7 @@ async function exerciseTrayPanel() {
     assert.equal(os.panel_focused, true);
     assert.equal(os.panel_inside_work_area, true);
     assert.equal(os.panel_tool_window, true);
+    assert.equal(os.native_menu_visible, false);
     assert.equal(
       await panel
         .locator(".menubar-panel")
@@ -529,12 +531,32 @@ async function exerciseTrayPanel() {
     .poll(async () => (await native("state")).panel_visible)
     .toBe(false);
   await expect(page).toHaveURL(/#\/access$/);
-  await native("menu", "设置…");
+  await panelMenu("设置…");
   await page.locator("#setting-theme").waitFor();
   await invoke(page, "update_settings", { patch: { theme: originalTheme } });
   receipt.checks.push(
-    "native tray single-click opens themed read-only flyout inside the work area; Escape and focus loss close it; navigation restores the existing main window",
+    "native tray left and right clicks open the same themed read-only flyout without a legacy popup; Escape and focus loss close it; navigation restores the existing main window",
   );
+}
+
+async function panelMenu(item, screenshot) {
+  await native("right-click");
+  await expect
+    .poll(async () => (await native("state")).panel_visible)
+    .toBe(true);
+  const panel = browser
+    .contexts()
+    .flatMap((context) => context.pages())
+    .find((candidate) => candidate.url().includes("#/menubar"));
+  assert(panel, "The tray panel WebView must exist.");
+  assert.equal((await native("state")).native_menu_visible, false);
+  // The footer's explicit More action still offers Settings and guarded Quit.
+  // A native popup can block WebView's event handler until an item is chosen.
+  const opening = panel
+    .getByRole("button", { name: "更多操作", exact: true })
+    .click();
+  await native("menu-item", item, screenshot);
+  await opening;
 }
 
 try {
@@ -588,6 +610,9 @@ try {
       "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the compiled program with the Tauri NSIS marker",
     );
   }
+  receipt.windows_image = verifyWindowsGuiExecutable(
+    await readFile(executable),
+  );
   launch(executable);
   await connect();
 
@@ -630,7 +655,7 @@ try {
   });
   await expect.poll(() => secondary.exitCode, { timeout: 15_000 }).toBe(0);
   await visible(true);
-  await native("menu", "设置…", "tray-settings-menu.png");
+  await panelMenu("设置…", "tray-settings-menu.png");
   await expect(page.locator("#setting-close")).toContainText(
     "收起到菜单栏 / 系统托盘",
   );
