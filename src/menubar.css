@@ -49,17 +49,7 @@ html.menubar-window body {
   line-height: 1.45;
 }
 .menubar-panel::before {
-  content: "";
-  position: absolute;
-  top: -7px;
-  left: calc(var(--menubar-arrow, 248px) - 7px);
-  width: 13px;
-  height: 13px;
-  background: var(--mb-panel);
-  border-top: 1px solid var(--mb-edge);
-  border-left: 1px solid var(--mb-edge);
-  border-top-left-radius: 3px;
-  transform: rotate(45deg);
+  display: none;
 }
 .menubar-panel button {
   color: inherit;
@@ -458,7 +448,7 @@ html.menubar-window body {
   color: var(--mb-warning);
   font-size: 11px;
 }
-/* Windows uses a taskbar flyout: no menu-bar pointer or macOS spacing. */
+/* Windows uses compact taskbar flyout spacing and typography. */
 .windows-tray-window {
   --mb-edge: #dbe3dc;
   --mb-ink: #273b30;
@@ -491,9 +481,6 @@ html.menubar-window body {
 .windows-tray-window .menubar-panel {
   border-radius: 10px;
   line-height: 1.4;
-}
-.windows-tray-window .menubar-panel::before {
-  display: none;
 }
 .windows-tray-window .mb-header {
   padding: 14px 16px 13px;
