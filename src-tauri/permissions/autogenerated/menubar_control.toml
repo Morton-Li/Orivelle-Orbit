@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-menubar-control"
+description = "Enables the menubar_control command without any pre-configured scope."
+commands.allow = ["menubar_control"]
+
+[[permission]]
+identifier = "deny-menubar-control"
+description = "Denies the menubar_control command without any pre-configured scope."
+commands.deny = ["menubar_control"]

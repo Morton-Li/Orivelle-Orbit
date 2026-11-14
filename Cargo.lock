@@ -2964,6 +2964,7 @@ dependencies = [
  "arboard",
  "fs2",
  "image",
+ "objc2-app-kit",
  "orbit-core",
  "serde",
  "serde_json",
