@@ -1,26 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { useOrbitStore } from "./stores/orbit";
-import { locale, t } from "./shared/i18n";
+import { t } from "./shared/i18n";
+import { useAppearance } from "./composables/useAppearance";
 import OrbitIcon from "./components/OrbitIcon.vue";
 import OrbitDialog from "./components/OrbitDialog.vue";
 import WindowControls from "./components/WindowControls.vue";
-import { subscribeOpenSettings } from "./shared/bridge";
+import { subscribeOpenSettings, subscribeOpenPage } from "./shared/bridge";
 const store = useOrbitStore();
 const router = useRouter();
-const systemDark = ref(false);
+useAppearance(computed(() => store.state.settings));
 const windowChrome = computed(() => {
   if (!store.native) return "";
   if (navigator.userAgent.includes("Windows")) return "windows";
   if (navigator.userAgent.includes("Macintosh")) return "macos";
   return "";
 });
-const dark = computed(
-  () =>
-    store.state.settings.theme === "dark" ||
-    (store.state.settings.theme === "system" && systemDark.value),
-);
 const navigation = [
   { path: "/", key: "nav.home", icon: "home" },
   { path: "/images", key: "nav.images", icon: "images" },
@@ -28,12 +24,9 @@ const navigation = [
   { path: "/usage", key: "nav.usage", icon: "chart" },
   { path: "/settings", key: "nav.settings", icon: "settings" },
 ] as const;
-let media: MediaQueryList | undefined;
 let unlistenSettings: (() => void) | undefined;
+let unlistenPage: (() => void) | undefined;
 let disposed = false;
-function updateSystem(event: MediaQueryListEvent) {
-  systemDark.value = event.matches;
-}
 function keyboard(event: KeyboardEvent) {
   if (
     (!event.metaKey && !event.ctrlKey) ||
@@ -53,24 +46,15 @@ function keyboard(event: KeyboardEvent) {
 async function login() {
   await store.login();
 }
-watch(
-  dark,
-  (value) => document.documentElement.classList.toggle("dark", value),
-  { immediate: true },
-);
-watch(
-  locale,
-  (value) => {
-    document.documentElement.lang = value;
-  },
-  { immediate: true },
-);
 onMounted(() => {
-  media = window.matchMedia("(prefers-color-scheme: dark)");
-  systemDark.value = media.matches;
-  media.addEventListener("change", updateSystem);
   window.addEventListener("keydown", keyboard);
   if (store.native) {
+    void subscribeOpenPage((path) => void router.push(path))
+      .then((stop) => {
+        if (disposed) stop();
+        else unlistenPage = stop;
+      })
+      .catch(() => store.notify(t("app.windowControlFailed"), "error"));
     void subscribeOpenSettings(() => void router.push("/settings"))
       .then((stop) => {
         if (disposed) stop();
@@ -83,7 +67,7 @@ onMounted(() => {
 onUnmounted(() => {
   disposed = true;
   unlistenSettings?.();
-  media?.removeEventListener("change", updateSystem);
+  unlistenPage?.();
   window.removeEventListener("keydown", keyboard);
   store.dispose();
 });

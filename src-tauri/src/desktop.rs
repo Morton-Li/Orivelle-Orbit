@@ -10,7 +10,7 @@ use tauri::{
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-const TRAY_ID: &str = "orbit-tray";
+pub(crate) const TRAY_ID: &str = "orbit-tray";
 const OPEN: &str = "orbit-open";
 const SETTINGS: &str = "orbit-settings";
 const QUIT: &str = "orbit-quit";
@@ -23,11 +23,11 @@ pub(crate) struct Lifecycle {
     quitting: AtomicBool,
 }
 
-struct TrayMenu {
+pub(crate) struct TrayMenu {
     status: MenuItem<tauri::Wry>,
     open: MenuItem<tauri::Wry>,
-    settings: MenuItem<tauri::Wry>,
-    quit: MenuItem<tauri::Wry>,
+    pub(crate) settings: MenuItem<tauri::Wry>,
+    pub(crate) quit: MenuItem<tauri::Wry>,
 }
 
 struct Labels {
@@ -121,15 +121,37 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_tray_icon_event(|_tray, _event| {
-            #[cfg(target_os = "windows")]
+            #[cfg(target_os = "macos")]
             if matches!(
                 _event,
-                tauri::tray::TrayIconEvent::DoubleClick {
+                tauri::tray::TrayIconEvent::Click {
                     button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
                     ..
                 }
             ) {
-                open_main(_tray.app_handle());
+                #[cfg(feature = "native-acceptance")]
+                crate::native_acceptance::record(_tray.app_handle(), "tray-left-mouse-up");
+                crate::menubar::toggle(_tray.app_handle());
+            }
+            #[cfg(target_os = "windows")]
+            match _event {
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Down,
+                    ..
+                } => crate::menubar::tray_pressed(_tray.app_handle()),
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    rect,
+                    ..
+                } => crate::menubar::toggle_at(_tray.app_handle(), rect),
+                tauri::tray::TrayIconEvent::DoubleClick {
+                    button: tauri::tray::MouseButton::Left,
+                    ..
+                } => crate::menubar::tray_double_clicked(_tray.app_handle()),
+                _ => {}
             }
         })
         .build(app)?;
@@ -142,6 +164,12 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
     app.state::<Lifecycle>()
         .tray_ready
         .store(true, Ordering::SeqCst);
+    if let Err(error) = crate::menubar::setup(app) {
+        // The native menu remains usable if the optional panel cannot be built.
+        eprintln!("Orbit menu bar panel setup failed: {error}");
+    }
+    #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
+    crate::native_acceptance::install_menu(app)?;
     if let Ok(state) = app.state::<Native>().service.bootstrap() {
         update_tray(app.handle(), &state);
     }
@@ -151,6 +179,14 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
 }
 
 pub(crate) fn menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
+    if event.id.as_ref() == crate::native_acceptance::TOGGLE
+        && app.config().identifier == "io.orivelle.orbit.menubar-smoke"
+    {
+        crate::native_acceptance::record(app, "acceptance-menu-toggle");
+        crate::menubar::toggle(app);
+        return;
+    }
     match event.id.as_ref() {
         OPEN => open_main(app),
         SETTINGS => {
@@ -253,6 +289,7 @@ fn show_main(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub(crate) fn open_main(app: &AppHandle) {
+    crate::menubar::hide(app);
     if show_main(app).is_err() {
         notice(app, current_labels(app).window_failed);
     }

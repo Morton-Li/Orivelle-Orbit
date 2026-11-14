@@ -444,7 +444,14 @@ export type UpdateProgress = {
   downloaded_bytes: number;
   total_bytes: number | null;
 };
+export type MenubarDestination =
+  "home" | "settings" | "usage" | "images" | "access" | "codex" | "claude";
+export type MenubarRequest =
+  | { action: "ready" | "hide" | "menu" }
+  | { action: "resize"; height: number }
+  | { action: "open"; destination: MenubarDestination };
 export interface IpcCommands {
+  menubar_control: { args: MenubarRequest; result: null };
   read_usage_summary: { args: UsageQuery; result: UsageSummary };
   list_usage_records: { args: UsageQuery; result: UsagePage };
   bootstrap: { args: Record<string, never>; result: BootstrapView };

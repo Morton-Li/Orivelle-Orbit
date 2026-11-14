@@ -1,0 +1,935 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-14",
+  "baseline_commit": "8dde8b4e9a115161fa58b8257711f6473718d4e9",
+  "test_build": {
+    "identifier": "io.orivelle.orbit.menubar-smoke",
+    "features": ["tauri/custom-protocol", "native-acceptance"],
+    "system_integration": false,
+    "compiler": "rustc 1.98.0",
+    "display": {
+      "name": "LG ULTRAFINE",
+      "physical_size": [3840, 2160],
+      "logical_size": [1920, 1080],
+      "scale": 2,
+      "online_displays": 1
+    }
+  },
+  "checks": [
+    {
+      "id": "native-panel-show",
+      "result": "passed",
+      "trigger": "acceptance-only native menu Cmd+Shift+P",
+      "evidence": {
+        "event": "panel-shown",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794623664323,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 2742.0,
+          "y": 0.0
+        },
+        "windows": [
+          {
+            "focused": false,
+            "fullscreen": false,
+            "height": 1560,
+            "label": "main",
+            "scale": 2.0,
+            "visible": true,
+            "width": 2240,
+            "x": 800,
+            "y": 146
+          },
+          {
+            "focused": true,
+            "fullscreen": false,
+            "height": 1018,
+            "label": "menubar",
+            "scale": 2.0,
+            "visible": true,
+            "width": 800,
+            "x": 2248,
+            "y": 66
+          }
+        ]
+      }
+    },
+    {
+      "id": "outside-click-blur",
+      "result": "passed",
+      "trigger": "CUA pointer click on the isolated main window outside the panel",
+      "evidence": [
+        {
+          "event": "menubar:focused:false",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794623690549,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": true,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": true,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": true,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "event": "panel-hidden",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794623690564,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": true,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": true,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": false,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        }
+      ],
+      "implementation": "Original key-loss handler retained; global mouse monitor covers already-active external fullscreen apps",
+      "latest_evidence": [
+        {
+          "app_active": true,
+          "event": "panel-outside-mouse-down",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625958540,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": -48.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": true,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8194,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": true,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "app_active": false,
+          "event": "panel-hidden",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625958543,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": -48.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8194,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": false,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "own-app-fullscreen-panel",
+      "result": "passed",
+      "trigger": "native Control+Command+F, then acceptance menu",
+      "evidence": {
+        "event": "panel-shown",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794623714760,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 2742.0,
+          "y": -136.0
+        },
+        "windows": [
+          {
+            "focused": false,
+            "fullscreen": true,
+            "height": 2160,
+            "label": "main",
+            "scale": 2.0,
+            "visible": true,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          },
+          {
+            "focused": true,
+            "fullscreen": false,
+            "height": 1018,
+            "label": "menubar",
+            "scale": 2.0,
+            "visible": true,
+            "width": 800,
+            "x": 2248,
+            "y": 66
+          }
+        ]
+      }
+    },
+    {
+      "id": "fullscreen-escape-hide",
+      "result": "passed",
+      "trigger": "CUA Escape",
+      "evidence": {
+        "event": "panel-hidden",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794623829716,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 2742.0,
+          "y": -136.0
+        },
+        "windows": [
+          {
+            "focused": true,
+            "fullscreen": true,
+            "height": 2160,
+            "label": "main",
+            "scale": 2.0,
+            "visible": true,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          },
+          {
+            "focused": false,
+            "fullscreen": false,
+            "height": 1018,
+            "label": "menubar",
+            "scale": 2.0,
+            "visible": false,
+            "width": 800,
+            "x": 2248,
+            "y": 16
+          }
+        ]
+      }
+    },
+    {
+      "id": "actual-status-item-click",
+      "result": "passed",
+      "automation_error": "windowNotFoundAtPosition((1388.0, 12.0))",
+      "real_click_events": 3,
+      "evidence": [
+        {
+          "app_active": false,
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625957642,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8192,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": false,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "app_active": false,
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625960942,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8192,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": false,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "app_active": true,
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625964742,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": true,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8194,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": true,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        }
+      ],
+      "note": "Actual user status-item clicks now visibly open and close the panel in Chrome fullscreen; confirmed by the user and native trace."
+    },
+    {
+      "id": "other-app-fullscreen",
+      "result": "passed",
+      "prepared_host": "Chrome about:blank in native fullscreen; Orbit main window hidden",
+      "attempts": [
+        {
+          "revision": "2dbfe6f",
+          "result": "failed",
+          "user_observation": "Chrome 空白页全屏状态下点击顶部的 Orbit 圆环图标无反应。",
+          "analysis": "Native click and show/focus calls arrived, but visibility over Chrome was not established."
+        },
+        {
+          "revision": "5f3ec0a",
+          "result": "failed",
+          "user_observation": "仍无反应或跳到了其他桌面",
+          "evidence": {
+            "event": "panel-shown",
+            "monitors": [
+              {
+                "height": 2160,
+                "scale": 2.0,
+                "width": 3840,
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "time_ms": 1794624948337,
+            "tray": {
+              "height": 48.0,
+              "width": 68.0,
+              "x": 2742.0,
+              "y": 0.0
+            },
+            "windows": [
+              {
+                "collection_behavior": 0,
+                "focused": false,
+                "fullscreen": false,
+                "height": 1560,
+                "label": "main",
+                "level": 0,
+                "on_active_space": false,
+                "scale": 2.0,
+                "visible": false,
+                "width": 2240,
+                "x": 800,
+                "y": 146
+              },
+              {
+                "collection_behavior": 262473,
+                "focused": false,
+                "fullscreen": false,
+                "height": 1018,
+                "label": "menubar",
+                "level": 5,
+                "on_active_space": false,
+                "scale": 2.0,
+                "visible": true,
+                "width": 800,
+                "x": 2248,
+                "y": 66
+              }
+            ]
+          }
+        },
+        {
+          "implementation": "nonactivating NSPanel without external click monitor",
+          "result": "visibility-passed; outside-click-failed",
+          "user_observation": "能够展开，但不会自动收起",
+          "evidence": {
+            "app_active": true,
+            "event": "panel-settled",
+            "monitors": [
+              {
+                "height": 2160,
+                "scale": 2.0,
+                "width": 3840,
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "time_ms": 1794625749670,
+            "tray": {
+              "height": 48.0,
+              "width": 68.0,
+              "x": 2742.0,
+              "y": 0.0
+            },
+            "windows": [
+              {
+                "collection_behavior": 0,
+                "focused": false,
+                "fullscreen": false,
+                "height": 1560,
+                "label": "main",
+                "level": 0,
+                "native_class": "NSKVONotifying_TaoWindow",
+                "occlusion_state": 8192,
+                "on_active_space": false,
+                "scale": 2.0,
+                "style_mask": 32783,
+                "visible": false,
+                "width": 2240,
+                "x": 800,
+                "y": 146
+              },
+              {
+                "collection_behavior": 262473,
+                "focused": true,
+                "fullscreen": false,
+                "height": 1018,
+                "label": "menubar",
+                "level": 3,
+                "native_class": "NSKVONotifying_OrbitMenubarPanel",
+                "occlusion_state": 8194,
+                "on_active_space": true,
+                "scale": 2.0,
+                "style_mask": 32896,
+                "visible": true,
+                "width": 800,
+                "x": 2248,
+                "y": 66
+              }
+            ]
+          }
+        }
+      ],
+      "trigger": "User clicked the actual status item over native fullscreen Chrome, then clicked Chrome blank content",
+      "implementation": "Nonactivating NSPanel, without Tauri application activation on show; mouse-only external click monitor while open",
+      "user_observation": "原地展开，点击空白处后自动收起",
+      "evidence": [
+        {
+          "app_active": false,
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625957642,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8192,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": false,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "app_active": true,
+          "event": "panel-settled",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625958159,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": true,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8194,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": true,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "app_active": true,
+          "event": "panel-outside-mouse-down",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625958540,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": -48.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": true,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8194,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": true,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "app_active": false,
+          "event": "panel-hidden",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794625958543,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2646.0,
+            "y": -48.0
+          },
+          "windows": [
+            {
+              "collection_behavior": 0,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "level": 0,
+              "native_class": "NSKVONotifying_TaoWindow",
+              "occlusion_state": 8192,
+              "on_active_space": false,
+              "scale": 2.0,
+              "style_mask": 32783,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "collection_behavior": 262473,
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "level": 3,
+              "native_class": "NSKVONotifying_OrbitMenubarPanel",
+              "occlusion_state": 8194,
+              "on_active_space": true,
+              "scale": 2.0,
+              "style_mask": 32896,
+              "visible": false,
+              "width": 800,
+              "x": 2152,
+              "y": 66
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "multiple-displays",
+      "result": "deferred-by-user",
+      "reason": "Only one display is online; user requested completion of available-screen cases first."
+    }
+  ],
+  "unit_validation": {
+    "default_desktop_library": {
+      "passed": 5
+    },
+    "native_acceptance_desktop_library": {
+      "passed": 5
+    }
+  },
+  "current_patch": {
+    "window_behavior": "NSPanel with NonactivatingPanel style; show_and_make_key without Tauri set_focus; external mouse monitor removed on hide and exit",
+    "native_acceptance_fields_added": [
+      "native_class",
+      "style_mask",
+      "occlusion_state",
+      "app_active"
+    ],
+    "desktop_library_tests_passed": 5,
+    "native_acceptance_build": "passed"
+  },
+  "cleanup": {
+    "isolated_app": "exited",
+    "chrome": "returned to normal window mode; only agent-created blank acceptance tab closed",
+    "multiple_displays": "deferred-by-user"
+  }
+}

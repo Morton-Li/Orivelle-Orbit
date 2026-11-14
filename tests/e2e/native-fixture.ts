@@ -149,6 +149,13 @@ export async function fixture(
           const request = (args.request ?? {}) as Record<string, unknown>;
           control.lastRequests[command] = structuredClone(request);
           if (command === "bootstrap") return structuredClone(current);
+          if (command === "menubar_control") {
+            if (request.action === "ready")
+              emit("orbit://menubar-opened", null);
+            if (request.action === "hide" || request.action === "open")
+              emit("orbit://menubar-hidden", null);
+            return null;
+          }
           if (command === "check_update") {
             return {
               status: current.in_app_updates

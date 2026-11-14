@@ -1,6 +1,7 @@
 fn main() {
     embedded_helper();
     const COMMANDS: &[&str] = &[
+        "menubar_control",
         "bootstrap",
         "refresh_account",
         "start_login",
