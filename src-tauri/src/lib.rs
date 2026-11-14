@@ -1,12 +1,9 @@
 mod commands;
 mod desktop;
-#[cfg(target_os = "macos")]
 mod menubar;
-#[cfg(any(target_os = "macos", test))]
 mod menubar_geometry;
 #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
 mod native_acceptance;
-#[cfg(target_os = "macos")]
 use menubar::menubar_control;
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
@@ -170,7 +167,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            #[cfg(target_os = "macos")]
             menubar_control,
             bootstrap,
             refresh_account,
@@ -218,12 +214,10 @@ pub fn run() {
                 _ => {}
             }
             match event {
-                #[cfg(target_os = "macos")]
                 tauri::WindowEvent::Focused(false) if window.label() == menubar::LABEL => {
                     menubar::blur(window.app_handle());
                 }
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    #[cfg(target_os = "macos")]
                     if window.label() == menubar::LABEL {
                         api.prevent_close();
                         menubar::hide(window.app_handle());

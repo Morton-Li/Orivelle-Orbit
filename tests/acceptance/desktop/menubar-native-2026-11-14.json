@@ -4,22 +4,13 @@
   "baseline_commit": "8dde8b4e9a115161fa58b8257711f6473718d4e9",
   "test_build": {
     "identifier": "io.orivelle.orbit.menubar-smoke",
-    "features": [
-      "tauri/custom-protocol",
-      "native-acceptance"
-    ],
+    "features": ["tauri/custom-protocol", "native-acceptance"],
     "system_integration": false,
     "compiler": "rustc 1.98.0",
     "display": {
       "name": "LG ULTRAFINE",
-      "physical_size": [
-        3840,
-        2160
-      ],
-      "logical_size": [
-        1920,
-        1080
-      ],
+      "physical_size": [3840, 2160],
+      "logical_size": [1920, 1080],
       "scale": 2,
       "online_displays": 1
     }

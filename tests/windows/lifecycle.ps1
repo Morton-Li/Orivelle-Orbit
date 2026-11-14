@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][int]$OrbitProcess,
-    [Parameter(Mandatory)][ValidateSet('state', 'close', 'double-click', 'menu', 'dialog')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('state', 'close', 'click', 'double-click', 'main-click', 'menu', 'dialog')][string]$Action,
     [string]$Item,
     [string]$Screenshot
 )
@@ -28,8 +28,11 @@ public static class OrbitLifecycle {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int size);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder name, int size);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
-    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -48,6 +51,7 @@ public static class OrbitLifecycle {
             GetWindowText(window, name, name.Capacity);
             if ((kind == "tray" && cls == "tray_icon_app") ||
                 (kind == "main" && cls != "#32770" && name.ToString() == "Orivelle Orbit") ||
+                (kind == "panel" && cls != "#32770" && name.ToString() == "Orbit") ||
                 (kind == "menu" && cls == "#32768" && IsWindowVisible(window)) ||
                 (kind == "dialog" && cls == "#32770" && IsWindowVisible(window))) {
                 found = window;
@@ -83,6 +87,14 @@ public static class OrbitLifecycle {
     public static void Close(int process) {
         var window = Find(process, "main");
         if (window == IntPtr.Zero || !PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero)) throw new Exception("Could not send the native close event.");
+    }
+    public static void ClickMain(int process) {
+        var window = Find(process, "main");
+        Rect rect;
+        if (window == IntPtr.Zero || !IsWindowVisible(window) || !GetWindowRect(window, out rect)) throw new Exception("The main window is not visible.");
+        SetForegroundWindow(window);
+        // A point in the main window header, outside the tray flyout.
+        Click(new Rect { Left = rect.Left + 100, Right = rect.Left + 102, Top = rect.Top + 22, Bottom = rect.Top + 24 }, false, false);
     }
     private static string MenuLabel(string name) {
         name = (name ?? "").Split('\t')[0];
@@ -167,7 +179,8 @@ function Save-Screen {
 }
 
 if ($Action -eq 'close') { [OrbitLifecycle]::Close($OrbitProcess) }
-if ($Action -eq 'double-click' -or $Action -eq 'menu') {
+if ($Action -eq 'main-click') { [OrbitLifecycle]::ClickMain($OrbitProcess) }
+if ($Action -eq 'click' -or $Action -eq 'double-click' -or $Action -eq 'menu') {
     # Newly registered icons may start in Windows' overflow panel.
     # Invoking an already-open panel closes it and leaves the icon rect stale.
     if (-not [OrbitLifecycle]::OverflowVisible()) {
@@ -221,9 +234,25 @@ if ($Action -eq 'dialog') {
 if ($Action -eq 'state') { Save-Screen }
 $main = [OrbitLifecycle]::Find($OrbitProcess, 'main')
 $tray = [OrbitLifecycle]::Find($OrbitProcess, 'tray')
+$panel = [OrbitLifecycle]::Find($OrbitProcess, 'panel')
+$panelRect = New-Object OrbitLifecycle+Rect
+$panelBounds = $null
+$panelInsideWorkArea = $null
+$panelToolWindow = $null
+if ($panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::GetWindowRect($panel, [ref]$panelRect)) {
+    $work = [Windows.Forms.Screen]::FromHandle($panel).WorkingArea
+    $panelBounds = @{ x = $panelRect.Left; y = $panelRect.Top; width = $panelRect.Right - $panelRect.Left; height = $panelRect.Bottom - $panelRect.Top }
+    $panelInsideWorkArea = $panelRect.Left -ge $work.Left -and $panelRect.Right -le $work.Right -and $panelRect.Top -ge $work.Top -and $panelRect.Bottom -le $work.Bottom
+    $panelToolWindow = ([OrbitLifecycle]::GetWindowLongPtr($panel, -20).ToInt64() -band 0x80) -ne 0
+}
 @{
     main_exists = $main -ne [IntPtr]::Zero
     main_visible = $main -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($main)
     tray_exists = $tray -ne [IntPtr]::Zero
+    panel_visible = $panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($panel)
+    panel_focused = $panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::GetForegroundWindow() -eq $panel
+    panel_bounds = $panelBounds
+    panel_inside_work_area = $panelInsideWorkArea
+    panel_tool_window = $panelToolWindow
     selected_item = if ($selected) { $name } else { $null }
 } | ConvertTo-Json -Compress

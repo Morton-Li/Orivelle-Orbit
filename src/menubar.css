@@ -458,6 +458,121 @@ html.menubar-window body {
   color: var(--mb-warning);
   font-size: 11px;
 }
+/* Windows uses a taskbar flyout: no menu-bar pointer or macOS spacing. */
+.windows-tray-window {
+  --mb-edge: #dbe3dc;
+  --mb-ink: #273b30;
+  --mb-muted: #63756a;
+  --mb-account: #edf3ec;
+  --mb-line: #e1e8df;
+  --mb-icon: #e0eadf;
+  --mb-shadow: 0 8px 16px #274a3426, 0 2px 6px #274a3414;
+}
+.windows-tray-window.dark {
+  --mb-panel: #1e2b24;
+  --mb-edge: #3d4e43;
+  --mb-ink: #ecf1ec;
+  --mb-muted: #a5b4a9;
+  --mb-on-accent: #192e21;
+  --mb-account: #293b2e;
+  --mb-line: #35473b;
+  --mb-icon: #344c3a;
+  --mb-warning: #e6c68a;
+  --mb-warning-bg: #433c2c;
+  --mb-shadow: 0 8px 16px #07130e70, 0 2px 6px #07130e38;
+}
+.windows-tray-window body {
+  font-family:
+    "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+.windows-tray-window .menubar-surface {
+  padding: 8px;
+}
+.windows-tray-window .menubar-panel {
+  border-radius: 10px;
+  line-height: 1.4;
+}
+.windows-tray-window .menubar-panel::before {
+  display: none;
+}
+.windows-tray-window .mb-header {
+  padding: 14px 16px 13px;
+}
+.windows-tray-window .mb-brand {
+  gap: 8px;
+}
+.windows-tray-window .mb-brand-mark {
+  width: 32px;
+  height: 32px;
+}
+.windows-tray-window .mb-brand strong {
+  font-size: 18px;
+  font-weight: 600;
+}
+.windows-tray-window .mb-account {
+  padding: 12px 14px 11px;
+  border-radius: 7px;
+}
+.windows-tray-window .mb-avatar {
+  width: 22px;
+  height: 22px;
+}
+.windows-tray-window .mb-amounts {
+  margin: 12px 0 10px;
+}
+.windows-tray-window .mb-money strong {
+  font-size: 27px;
+}
+.windows-tray-window .mb-spend-money strong {
+  font-size: 25px;
+}
+.windows-tray-window .mb-section {
+  margin: 0 18px;
+  padding: 14px 0 12px;
+}
+.windows-tray-window .mb-section-title {
+  margin-bottom: 7px;
+}
+.windows-tray-window .mb-client-row {
+  padding: 7px 0;
+}
+.windows-tray-window .mb-client-identity {
+  gap: 9px;
+}
+.windows-tray-window .mb-client-identity img {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+.windows-tray-window .mb-node {
+  margin-top: 6px;
+  padding-top: 10px;
+}
+.windows-tray-window .mb-tasks {
+  padding-top: 13px;
+  padding-bottom: 15px;
+}
+.windows-tray-window .mb-task-art {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+}
+.windows-tray-window .mb-stages {
+  margin: 10px 0 0 44px;
+  gap: 6px;
+}
+.windows-tray-window .mb-footer {
+  padding: 12px 14px;
+  background: var(--mb-account);
+  border-radius: 0 0 10px 10px;
+}
+.windows-tray-window .menubar-panel .mb-open {
+  padding: 9px 12px;
+  border-radius: 5px;
+}
+.windows-tray-window .menubar-panel .mb-icon-button {
+  border-radius: 5px;
+}
 @media (max-width: 360px) {
   .mb-amounts {
     grid-template-columns: 1fr;

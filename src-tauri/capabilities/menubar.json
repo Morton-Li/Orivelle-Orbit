@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "menubar",
-  "description": "The macOS panel reads account summaries and opens existing Orbit pages.",
-  "platforms": ["macOS"],
+  "description": "The desktop tray panel reads account summaries and opens existing Orbit pages.",
+  "platforms": ["macOS", "windows"],
   "windows": ["menubar"],
   "permissions": [
     "core:event:allow-listen",

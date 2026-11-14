@@ -310,6 +310,9 @@ async function exerciseImages(page, navigation) {
     await visible(false);
     await native("double-click");
     await visible(true);
+    await expect
+      .poll(async () => (await native("state")).panel_visible)
+      .toBe(false);
     receipt.checks.push(
       "pending request continues while hidden, native Quit cancellation retains process, tray double-click restores window",
     );
@@ -435,17 +438,103 @@ async function connect() {
     noDefaults: true,
     timeout: 15_000,
   });
-  const context = browser.contexts()[0];
-  if (!context) throw new Error("WebView2 did not expose a browser context.");
-  page =
-    context.pages()[0] ??
-    (await context.waitForEvent("page", { timeout: 15_000 }));
+  // The preloaded tray panel has its own WebView/context. Do not let target
+  // ordering attach the main-window regression to the hidden panel instead.
+  await expect
+    .poll(
+      () => {
+        page = browser
+          .contexts()
+          .flatMap((context) => context.pages())
+          .find(
+            (candidate) =>
+              candidate.url().includes("tauri.localhost") &&
+              !candidate.url().includes("#/menubar"),
+          );
+        return Boolean(page);
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => console.error(error));
   await page
     .getByRole("navigation")
     .getByRole("link", { name: "首页", exact: true })
     .waitFor({ timeout: 90_000 });
+}
+
+async function exerciseTrayPanel() {
+  const originalTheme = (await invoke(page, "bootstrap")).settings.theme;
+  let panel;
+  for (const theme of ["light", "dark"]) {
+    await choose(page, "setting-theme", theme === "dark" ? "深色" : "浅色");
+    await native("click");
+    await expect
+      .poll(async () => (await native("state")).panel_visible)
+      .toBe(true);
+    await expect
+      .poll(() => {
+        panel = browser
+          .contexts()
+          .flatMap((context) => context.pages())
+          .find((candidate) => candidate.url().includes("#/menubar"));
+        return Boolean(panel);
+      })
+      .toBe(true);
+    await expect(panel.getByRole("main")).toBeVisible();
+    await expect(panel.locator("html")).toHaveClass(/windows-tray-window/);
+    if (theme === "dark")
+      await expect(panel.locator("html")).toHaveClass(/dark/);
+    else await expect(panel.locator("html")).not.toHaveClass(/dark/);
+    const panelState = await invoke(panel, "bootstrap");
+    assert.equal(panelState.settings.theme, theme);
+    assert.equal(
+      panelState.session.account.id,
+      (await invoke(page, "bootstrap")).session.account.id,
+    );
+    const os = await native("state", undefined, `tray-panel-${theme}.png`);
+    assert.equal(os.panel_focused, true);
+    assert.equal(os.panel_inside_work_area, true);
+    assert.equal(os.panel_tool_window, true);
+    assert.equal(
+      await panel
+        .locator(".menubar-panel")
+        .evaluate((element) => getComputedStyle(element, "::before").display),
+      "none",
+    );
+    if (theme === "light") {
+      await assert.rejects(
+        invoke(panel, "create_image_task", {}),
+        /not allowed|denied|forbidden/i,
+      );
+      await panel.keyboard.press("Escape");
+    } else {
+      await native("main-click");
+    }
+    await expect
+      .poll(async () => (await native("state")).panel_visible)
+      .toBe(false);
+  }
+  // Navigation restores the existing main window and closes the panel.
+  await native("close");
+  await visible(false);
+  await native("click");
+  await expect
+    .poll(async () => (await native("state")).panel_visible)
+    .toBe(true);
+  await panel.getByRole("button", { name: "管理接入", exact: true }).click();
+  await visible(true);
+  await expect
+    .poll(async () => (await native("state")).panel_visible)
+    .toBe(false);
+  await expect(page).toHaveURL(/#\/access$/);
+  await native("menu", "设置…");
+  await page.locator("#setting-theme").waitFor();
+  await invoke(page, "update_settings", { patch: { theme: originalTheme } });
+  receipt.checks.push(
+    "native tray single-click opens themed read-only flyout inside the work area; Escape and focus loss close it; navigation restores the existing main window",
+  );
 }
 
 try {
@@ -556,6 +645,7 @@ try {
   receipt.checks.push(
     "legacy close setting hides window, second launch activates primary, native tray Settings routes existing window",
   );
+  await exerciseTrayPanel();
   await exerciseImages(page, navigation);
   await logout(page, navigation);
 
