@@ -40,6 +40,14 @@
 - 全屏中按 `Esc`，面板隐藏，主窗口继续保持全屏。
 - 普通构建与开启验收特性的构建，各自的 5 项桌面库测试通过。
 
-仍需一次辅助操作：桌面接口对实际状态栏位置返回 `windowNotFoundAtPosition`，因此不能把菜单入口触发当成实际图标点击。已准备 Chrome 空白测试页原生全屏、Orbit 主窗口隐藏的场景，等待用户点击状态栏图标并核对其他应用全屏中的表现。
+真实状态栏点击已得到事件记录：用户在 Chrome 全屏场景点击后，原生进程记录了 4 次 `tray-left-mouse-up`，并进入展开流程。但用户反馈没有看到面板，因此该场景判为失败，不能把 `visible=true` 或取得焦点当成视觉验收通过。
 
 机器可读记录见 [原生续验证据](menubar-native-2026-11-14.json)。该记录分别标明通过、等待辅助点击与用户要求暂缓的项目，不将其他应用全屏或多屏预先标为通过。
+
+### Chrome 全屏失败后的修正与复测
+
+失败版本为 `2dbfe6f`。原配置包含 `CanJoinAllSpaces` 与 `FullScreenAuxiliary`，缺少允许浮动窗口加入其他应用全屏空间的 `CanJoinAllApplications`。[Apple 对该行为的说明](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior-swift.struct/canjoinallapplications)明确覆盖跨应用全屏空间；此 API 从 macOS 13 提供，低于 Orbit 的 macOS 15 最低要求。
+
+本次补上该标记，并给验收日志增加 `on_active_space`、窗口层级和 collection behavior 位值。已重新通过 5 项桌面库测试并构建、启动修复版，原生窗口实际返回的 collection behavior 为 262473，包含新增标记。普通面板展开与 `Esc` 收起已重新操作确认。
+
+Chrome 全屏空白页和后台测试实例已恢复，正在等待同一场景的辅助复测结果；在收到实际可见性确认前，该项仍不标为通过。多屏按用户要求保留待补测。

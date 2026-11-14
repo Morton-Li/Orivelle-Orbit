@@ -84,13 +84,15 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
             .shadow(false)
             .disable_drag_drop_handler()
             .build()?;
-    // A utility surface must also be usable above another app's full-screen Space.
+    // FullScreenAuxiliary covers our own full-screen windows. Joining another
+    // application's full-screen Space also requires CanJoinAllApplications.
     let pointer = window.ns_window()? as *mut objc2_app_kit::NSWindow;
     // setup and all AppKit window operations run on Tauri's main thread.
     let native = unsafe { &*pointer };
     use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
     native.setCollectionBehavior(
         Behavior::CanJoinAllSpaces
+            | Behavior::CanJoinAllApplications
             | Behavior::FullScreenAuxiliary
             | Behavior::Transient
             | Behavior::IgnoresCycle,

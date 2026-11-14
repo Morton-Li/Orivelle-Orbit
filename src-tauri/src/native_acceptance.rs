@@ -45,9 +45,15 @@ pub(crate) fn record(app: &AppHandle, event: &str) {
             let window = app.get_webview_window(label)?;
             let position = window.outer_position().ok();
             let size = window.outer_size().ok();
+            let pointer = window.ns_window().ok()? as *mut objc2_app_kit::NSWindow;
+            // Acceptance callbacks run on AppKit's main thread and only inspect
+            // windows belonging to this disposable app.
+            let native = unsafe { &*pointer };
             Some(serde_json::json!({
                 "label":label,"visible":window.is_visible().ok(),"focused":window.is_focused().ok(),
                 "fullscreen":window.is_fullscreen().ok(),"scale":window.scale_factor().ok(),
+                "on_active_space":native.isOnActiveSpace(),"level":native.level(),
+                "collection_behavior":native.collectionBehavior().bits(),
                 "x":position.map(|p|p.x),"y":position.map(|p|p.y),
                 "width":size.map(|s|s.width),"height":size.map(|s|s.height)
             }))

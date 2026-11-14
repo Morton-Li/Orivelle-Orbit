@@ -264,14 +264,243 @@
     },
     {
       "id": "actual-status-item-click",
-      "result": "awaiting-assisted-click",
+      "result": "event-delivery-confirmed",
       "automation_error": "windowNotFoundAtPosition((1388.0, 12.0))",
-      "real_click_events_so_far": 0
+      "real_click_events": 4,
+      "evidence": [
+        {
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794624451787,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": false,
+              "width": 800,
+              "x": 2248,
+              "y": 16
+            }
+          ]
+        },
+        {
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794624453062,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": true,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": true,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794624453855,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": false,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "event": "tray-left-mouse-up",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794624459778,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": false,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": false,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        }
+      ],
+      "note": "Real mouse events arrived, but this alone does not establish visibility in another application fullscreen Space."
     },
     {
       "id": "other-app-fullscreen",
-      "result": "awaiting-assisted-click",
-      "prepared_host": "Chrome about:blank in native fullscreen; Orbit main window hidden"
+      "result": "failed-before-fix; awaiting-retest",
+      "prepared_host": "Chrome about:blank in native fullscreen; Orbit main window hidden",
+      "failing_revision": "2dbfe6f",
+      "user_observation": "Chrome 空白页全屏状态下点击顶部的 Orbit 圆环图标无反应。",
+      "initial_failure_analysis": "Click handler and show/focus calls executed. Cross-application fullscreen collection behavior was missing; NSWindow visible=true did not prove visual presentation over Chrome.",
+      "fix": "Add NSWindowCollectionBehaviorCanJoinAllApplications alongside CanJoinAllSpaces and FullScreenAuxiliary.",
+      "fix_native_setup_evidence": {
+        "event": "panel-setup",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794624716423,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 0.0,
+          "y": 2160.0
+        },
+        "windows": [
+          {
+            "collection_behavior": 0,
+            "focused": false,
+            "fullscreen": false,
+            "height": 1560,
+            "label": "main",
+            "level": 0,
+            "on_active_space": false,
+            "scale": 2.0,
+            "visible": true,
+            "width": 2240,
+            "x": 800,
+            "y": 146
+          },
+          {
+            "collection_behavior": 262473,
+            "focused": false,
+            "fullscreen": false,
+            "height": 1320,
+            "label": "menubar",
+            "level": 5,
+            "on_active_space": false,
+            "scale": 2.0,
+            "visible": false,
+            "width": 800,
+            "x": 1520,
+            "y": 206
+          }
+        ]
+      },
+      "retest_status": "awaiting-assisted-click-on-updated-build"
     },
     {
       "id": "multiple-displays",
@@ -286,5 +515,14 @@
     "native_acceptance_desktop_library": {
       "passed": 5
     }
+  },
+  "current_patch": {
+    "window_behavior": "CanJoinAllApplications added",
+    "native_acceptance_fields_added": [
+      "on_active_space",
+      "level",
+      "collection_behavior"
+    ],
+    "desktop_library_tests_passed": 5
   }
 }
