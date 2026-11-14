@@ -29,6 +29,15 @@ pub(crate) fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+pub(crate) fn record_settled(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || record(&handle, "panel-settled"));
+    });
+}
+
 pub(crate) fn record(app: &AppHandle, event: &str) {
     // Tracing is restricted to the disposable, credential-free acceptance app.
     if app.config().identifier != "io.orivelle.orbit.menubar-smoke" {
@@ -54,6 +63,9 @@ pub(crate) fn record(app: &AppHandle, event: &str) {
                 "fullscreen":window.is_fullscreen().ok(),"scale":window.scale_factor().ok(),
                 "on_active_space":native.isOnActiveSpace(),"level":native.level(),
                 "collection_behavior":native.collectionBehavior().bits(),
+                "native_class":native.class().name().to_string_lossy(),
+                "style_mask":native.styleMask().bits(),
+                "occlusion_state":native.occlusionState().bits(),
                 "x":position.map(|p|p.x),"y":position.map(|p|p.y),
                 "width":size.map(|s|s.width),"height":size.map(|s|s.height)
             }))
@@ -72,7 +84,9 @@ pub(crate) fn record(app: &AppHandle, event: &str) {
     }).collect();
     let evidence = serde_json::json!({
         "time_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
-        "event":event,"windows":windows,"tray":tray,"monitors":monitors
+        "event":event,"windows":windows,"tray":tray,"monitors":monitors,
+        "app_active":tauri_nspanel::objc2::MainThreadMarker::new().map(|marker|
+            objc2_app_kit::NSApplication::sharedApplication(marker).isActive())
     });
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{evidence}");

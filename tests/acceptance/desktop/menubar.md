@@ -20,7 +20,7 @@
 
 ## 原生实例与验证限制
 
-已在项目 `runtime/menubar-smoke/` 构建独立测试实例，使用专用 identifier、项目内数据目录、临时 WebView 存储与不可用的凭据存储。未连接真实账户。首次实例可正常启动，可打开设置并切换主题，该次测试后已退出。本次续验的新实例保留运行，等待下文所述的辅助点击。
+已在项目 `runtime/menubar-smoke/` 构建独立测试实例，使用专用 identifier、项目内数据目录、临时 WebView 存储与不可用的凭据存储。未连接真实账户。首次实例可正常启动，可打开设置并切换主题。续验完成后已退出测试实例，将 Chrome 恢复为普通窗口并关闭本次创建的空白验收标签页。
 
 首次实现时，桌面自动化读取系统菜单栏超时，原生图标点击、失焦、全屏和多显示器没有记为通过。后续原生续验结果见下文；浏览器夹具与纯几何测试不能替代原生验收。
 
@@ -40,14 +40,27 @@
 - 全屏中按 `Esc`，面板隐藏，主窗口继续保持全屏。
 - 普通构建与开启验收特性的构建，各自的 5 项桌面库测试通过。
 
-真实状态栏点击已得到事件记录：用户在 Chrome 全屏场景点击后，原生进程记录了 4 次 `tray-left-mouse-up`，并进入展开流程。但用户反馈没有看到面板，因此该场景判为失败，不能把 `visible=true` 或取得焦点当成视觉验收通过。
+初版真实状态栏点击已得到事件记录：用户在 Chrome 全屏场景点击后，原生进程记录了 4 次 `tray-left-mouse-up`，并进入展开流程。但用户反馈没有看到面板，因此初版该场景判为失败，不能把 `visible=true` 或取得焦点当成视觉验收通过。后续修复与最终实测结果见下文。
 
-机器可读记录见 [原生续验证据](menubar-native-2026-11-14.json)。该记录分别标明通过、等待辅助点击与用户要求暂缓的项目，不将其他应用全屏或多屏预先标为通过。
+机器可读记录见 [原生续验证据](menubar-native-2026-11-14.json)。该记录保留失败尝试及最终通过证据，多屏单独标为用户要求暂缓。
 
 ### Chrome 全屏失败后的修正与复测
 
-失败版本为 `2dbfe6f`。原配置包含 `CanJoinAllSpaces` 与 `FullScreenAuxiliary`，缺少允许浮动窗口加入其他应用全屏空间的 `CanJoinAllApplications`。[Apple 对该行为的说明](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior-swift.struct/canjoinallapplications)明确覆盖跨应用全屏空间；此 API 从 macOS 13 提供，低于 Orbit 的 macOS 15 最低要求。
+失败版本为 `2dbfe6f`。首先尝试在 `CanJoinAllSpaces` 与 `FullScreenAuxiliary` 之外补充 `CanJoinAllApplications`（提交 `5f3ec0a`）。[Apple 对该行为的说明](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior-swift.struct/canjoinallapplications)覆盖跨应用全屏空间；此 API 从 macOS 13 提供，低于 Orbit 的 macOS 15 最低要求。
 
-本次补上该标记，并给验收日志增加 `on_active_space`、窗口层级和 collection behavior 位值。已重新通过 5 项桌面库测试并构建、启动修复版，原生窗口实际返回的 collection behavior 为 262473，包含新增标记。普通面板展开与 `Esc` 收起已重新操作确认。
+该标记实际生效（collection behavior 为 262473），但用户复测仍反馈“仍无反应或跳到了其他桌面”。新增日志显示面板展开后 `on_active_space=false`，证明仅调整 collection behavior 不足以解决普通 NSWindow 留在其他桌面的问题。
 
-Chrome 全屏空白页和后台测试实例已恢复，正在等待同一场景的辅助复测结果；在收到实际可见性确认前，该项仍不标为通过。多屏按用户要求保留待补测。
+最终改用 `tauri-nspanel 2.1.1` 将窗口转换为原生 NSPanel，增加 `NonactivatingPanel` 样式。展开使用面板的 `show_and_make_key`，去掉会激活整个 Orbit 应用的 Tauri `set_focus`。保留原 Tauri delegate，继续处理失焦事件。普通面板展开与 `Esc` 收起重新操作通过。
+
+NSPanel 的首次全屏复测已能原地展开，但用户反馈点击 Chrome 空白处不会收起；对应日志未收到失焦事件。随后补充仅在面板展开期间注册的外部鼠标按下监听，在收起和退出时移除。它不拦截其他应用的点击，原有失焦关闭逻辑继续保留。[Apple 的事件监听说明](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/MonitoringEvents/MonitoringEvents.html)区分了应用内与应用外事件，说明回调在主线程执行及监听结束后的移除要求。
+
+最终真实单屏验收通过：
+
+- 用户在 Chrome 原生全屏空白页点击真实 Orbit 圆环，确认面板原地展开，没有跳到其他桌面。
+- 对应 `panel-settled` 记录显示主窗口隐藏且 `on_active_space=false`，面板 `on_active_space=true`，occlusion state 包含可见位。
+- 用户点击 Chrome 空白处后确认自动收起；记录包含 `panel-outside-mouse-down`，随后约 3 ms 内 `panel-hidden` 且 `visible=false`。
+- 同一轮实际图标点击再次展开，再点图标收起，也记录到对应原生点击与隐藏事件。
+- 点击面板外的 Orbit 测试主窗口仍触发原生失焦并收起，没有破坏原有行为。
+- 最终生产路径的 5 项桌面库测试与开启原生验收特性的构建通过。前端没有进一步变更，因此未重复运行此前已通过的前端全量检查。
+
+单屏真实点击、失焦关闭及 Chrome 跨应用全屏验收已完成；多屏按用户要求保留待接屏补测。测试实例与临时标签页已关闭，没有安装、发布或更新已安装的 Orbit。

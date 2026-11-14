@@ -3,9 +3,10 @@ use crate::{
     desktop,
     menubar_geometry::{Bounds, place},
 };
-use orbit_core::error::{Result, fail};
+use orbit_core::error::{Result as OrbitResult, fail};
 use serde::Deserialize;
 use std::{
+    cell::RefCell,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -16,6 +17,24 @@ use tauri::{
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
+use tauri_nspanel::{ManagerExt, WebviewWindowExt, tauri_panel};
+
+thread_local! {
+    // AppKit installs, invokes and removes this mouse-only monitor on the main
+    // thread. Retaining it here avoids passing AppKit objects between threads.
+    static OUTSIDE_CLICKS: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+}
+
+tauri_panel! {
+    panel!(OrbitMenubarPanel {
+        config: {
+            can_become_key_window: true,
+            can_become_main_window: false,
+            is_floating_panel: true,
+            hides_on_deactivate: false
+        }
+    })
+}
 
 pub(crate) const LABEL: &str = "menubar";
 #[derive(Default)]
@@ -62,6 +81,7 @@ pub(crate) enum Control {
 }
 
 pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
+    app.handle().plugin(tauri_nspanel::init())?;
     app.manage(PanelState {
         height: Mutex::new(660.0),
         ..Default::default()
@@ -84,13 +104,15 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
             .shadow(false)
             .disable_drag_drop_handler()
             .build()?;
-    // FullScreenAuxiliary covers our own full-screen windows. Joining another
-    // application's full-screen Space also requires CanJoinAllApplications.
-    let pointer = window.ns_window()? as *mut objc2_app_kit::NSWindow;
-    // setup and all AppKit window operations run on Tauri's main thread.
-    let native = unsafe { &*pointer };
+    let panel = window.to_panel::<OrbitMenubarPanel>()?;
+    // A nonactivating NSPanel can become key over another app's full-screen
+    // Space without activating Orbit and moving the user to its main window.
+    panel
+        .add_style_mask(objc2_app_kit::NSWindowStyleMask::NonactivatingPanel)
+        .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
+    // Keep Tauri's original delegate so native focus-loss events still hide it.
     use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
-    native.setCollectionBehavior(
+    panel.set_collection_behavior(
         Behavior::CanJoinAllSpaces
             | Behavior::CanJoinAllApplications
             | Behavior::FullScreenAuxiliary
@@ -155,15 +177,24 @@ fn layout(app: &AppHandle) -> tauri::Result<()> {
 fn show(app: &AppHandle) -> tauri::Result<()> {
     layout(app)?;
     if let Some(window) = app.get_webview_window(LABEL) {
-        window.show()?;
-        window.set_focus()?;
+        let panel = app
+            .get_webview_panel(LABEL)
+            .map_err(|error| tauri::Error::Io(std::io::Error::other(format!("{error:?}"))))?;
+        // Tauri's set_focus also activates the owning application. Only order
+        // the native panel front and give it key status, preserving the Space.
+        panel.show_and_make_key();
+        watch_outside_clicks(app)?;
         window.emit("orbit://menubar-opened", ())?;
     }
     #[cfg(feature = "native-acceptance")]
-    crate::native_acceptance::record(app, "panel-shown");
+    {
+        crate::native_acceptance::record(app, "panel-shown");
+        crate::native_acceptance::record_settled(app);
+    }
     Ok(())
 }
 pub(crate) fn hide(app: &AppHandle) {
+    stop_watching_outside_clicks();
     if let Some(state) = app.try_state::<PanelState>() {
         state.requested.store(false, Ordering::SeqCst);
     }
@@ -173,6 +204,39 @@ pub(crate) fn hide(app: &AppHandle) {
     }
     #[cfg(feature = "native-acceptance")]
     crate::native_acceptance::record(app, "panel-hidden");
+}
+
+fn watch_outside_clicks(app: &AppHandle) -> tauri::Result<()> {
+    stop_watching_outside_clicks();
+    let app = app.clone();
+    let handler = block2::RcBlock::new(move |_event: std::ptr::NonNull<NSEvent>| {
+        // Nonactivating panels may remain key when clicking the already-active
+        // full-screen app. Global mouse events fill that gap; they do not
+        // observe clicks inside Orbit or intercept the other app's event.
+        if app.state::<PanelState>().menu_open.load(Ordering::SeqCst) {
+            return;
+        }
+        #[cfg(feature = "native-acceptance")]
+        crate::native_acceptance::record(&app, "panel-outside-mouse-down");
+        blur(&app);
+    });
+    use objc2_app_kit::NSEventMask as Mask;
+    let monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+        Mask::LeftMouseDown | Mask::RightMouseDown | Mask::OtherMouseDown,
+        &handler,
+    )
+    .ok_or_else(|| tauri::Error::Io(std::io::Error::other("Outside-click monitor unavailable")))?;
+    OUTSIDE_CLICKS.with(|slot| *slot.borrow_mut() = Some(monitor));
+    Ok(())
+}
+
+pub(crate) fn stop_watching_outside_clicks() {
+    OUTSIDE_CLICKS.with(|slot| {
+        if let Some(monitor) = slot.borrow_mut().take() {
+            // This is the exact opaque token returned by AppKit above.
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+    });
 }
 pub(crate) fn blur(app: &AppHandle) {
     let Some(state) = app.try_state::<PanelState>() else {
@@ -215,7 +279,7 @@ pub(crate) fn menubar_control(
     app: AppHandle,
     window: WebviewWindow,
     request: Control,
-) -> Result<()> {
+) -> OrbitResult<()> {
     if window.label() != LABEL {
         return Err(fail("operation_not_allowed"));
     }

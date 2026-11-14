@@ -293,6 +293,8 @@ pub fn run() {
             desktop::exit_requested(app, code, &api);
         }
         tauri::RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            menubar::stop_watching_outside_clicks();
             if let Some(native) = app.try_state::<Native>() {
                 native.service.stop_claude_mappings();
             }
