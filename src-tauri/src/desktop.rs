@@ -135,14 +135,23 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
                 crate::menubar::toggle(_tray.app_handle());
             }
             #[cfg(target_os = "windows")]
-            if matches!(
-                _event,
+            match _event {
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Down,
+                    ..
+                } => crate::menubar::tray_pressed(_tray.app_handle()),
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    rect,
+                    ..
+                } => crate::menubar::toggle_at(_tray.app_handle(), rect),
                 tauri::tray::TrayIconEvent::DoubleClick {
                     button: tauri::tray::MouseButton::Left,
                     ..
-                }
-            ) {
-                open_main(_tray.app_handle());
+                } => crate::menubar::tray_double_clicked(_tray.app_handle()),
+                _ => {}
             }
         })
         .build(app)?;
@@ -155,7 +164,6 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
     app.state::<Lifecycle>()
         .tray_ready
         .store(true, Ordering::SeqCst);
-    #[cfg(target_os = "macos")]
     if let Err(error) = crate::menubar::setup(app) {
         // The native menu remains usable if the optional panel cannot be built.
         eprintln!("Orbit menu bar panel setup failed: {error}");
@@ -281,7 +289,6 @@ fn show_main(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub(crate) fn open_main(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
     crate::menubar::hide(app);
     if show_main(app).is_err() {
         notice(app, current_labels(app).window_failed);
