@@ -86,6 +86,45 @@ export async function subscribeOpenSettings(
   if (!isTauri()) return () => undefined;
   return listen("orbit://open-settings", callback);
 }
+export async function subscribeOpenPage(
+  callback: (path: string) => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen<string>("orbit://open-page", (event) => {
+    if (
+      [
+        "/",
+        "/settings",
+        "/usage",
+        "/images",
+        "/access",
+        "/access#client-codex",
+        "/access#client-claude",
+      ].includes(event.payload)
+    )
+      callback(event.payload);
+  });
+}
+export async function subscribeMenubarOpened(
+  callback: () => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen("orbit://menubar-opened", callback);
+}
+export async function subscribeMenubarLayout(
+  callback: (offset: number) => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen<number>("orbit://menubar-layout", (event) => {
+    if (Number.isFinite(event.payload)) callback(event.payload);
+  });
+}
+export async function subscribeMenubarHidden(
+  callback: () => void,
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  return listen("orbit://menubar-hidden", callback);
+}
 export async function subscribeImageInputs(
   callback: (event: ImageInputsEvent) => void,
 ): Promise<() => void> {

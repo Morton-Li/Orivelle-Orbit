@@ -12,7 +12,7 @@ tauri-build.workspace = true
 sha2.workspace = true
 [dependencies]
 orbit-core = { path = "../crates/orbit-core" }
-tauri.workspace = true
+tauri = { workspace = true, features = ["macos-private-api"] }
 tauri-plugin-updater.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
@@ -26,3 +26,9 @@ fs2.workspace = true
 image.workspace = true
 [features]
 system-integration = []
+native-acceptance = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSWindow"] }
+tauri-nspanel = "=2.1.1"

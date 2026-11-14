@@ -10,6 +10,7 @@
     "beforeDevCommand": "npm run dev"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",

@@ -7,6 +7,8 @@ const paths: Record<string, string> = {
   access: "M8 3v5M16 3v5M5 8h14v3a7 7 0 0 1-14 0ZM12 18v3",
   settings:
     "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4",
+  sliders:
+    "M3 7h4M11 7h10M9 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM3 17h10M17 17h4M15 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z",
   arrow: "M5 12h14M13 6l6 6-6 6",
   check: "m5 12 4 4 10-10",
   close: "m6 6 12 12M18 6 6 18",
