@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-14",
+  "baseline_commit": "8dde8b4e9a115161fa58b8257711f6473718d4e9",
+  "test_build": {
+    "identifier": "io.orivelle.orbit.menubar-smoke",
+    "features": [
+      "tauri/custom-protocol",
+      "native-acceptance"
+    ],
+    "system_integration": false,
+    "compiler": "rustc 1.98.0",
+    "display": {
+      "name": "LG ULTRAFINE",
+      "physical_size": [
+        3840,
+        2160
+      ],
+      "logical_size": [
+        1920,
+        1080
+      ],
+      "scale": 2,
+      "online_displays": 1
+    }
+  },
+  "checks": [
+    {
+      "id": "native-panel-show",
+      "result": "passed",
+      "trigger": "acceptance-only native menu Cmd+Shift+P",
+      "evidence": {
+        "event": "panel-shown",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794623664323,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 2742.0,
+          "y": 0.0
+        },
+        "windows": [
+          {
+            "focused": false,
+            "fullscreen": false,
+            "height": 1560,
+            "label": "main",
+            "scale": 2.0,
+            "visible": true,
+            "width": 2240,
+            "x": 800,
+            "y": 146
+          },
+          {
+            "focused": true,
+            "fullscreen": false,
+            "height": 1018,
+            "label": "menubar",
+            "scale": 2.0,
+            "visible": true,
+            "width": 800,
+            "x": 2248,
+            "y": 66
+          }
+        ]
+      }
+    },
+    {
+      "id": "outside-click-blur",
+      "result": "passed",
+      "trigger": "CUA pointer click on the isolated main window outside the panel",
+      "evidence": [
+        {
+          "event": "menubar:focused:false",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794623690549,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": true,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": true,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": true,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        },
+        {
+          "event": "panel-hidden",
+          "monitors": [
+            {
+              "height": 2160,
+              "scale": 2.0,
+              "width": 3840,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "time_ms": 1794623690564,
+          "tray": {
+            "height": 48.0,
+            "width": 68.0,
+            "x": 2742.0,
+            "y": 0.0
+          },
+          "windows": [
+            {
+              "focused": true,
+              "fullscreen": false,
+              "height": 1560,
+              "label": "main",
+              "scale": 2.0,
+              "visible": true,
+              "width": 2240,
+              "x": 800,
+              "y": 146
+            },
+            {
+              "focused": false,
+              "fullscreen": false,
+              "height": 1018,
+              "label": "menubar",
+              "scale": 2.0,
+              "visible": false,
+              "width": 800,
+              "x": 2248,
+              "y": 66
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "own-app-fullscreen-panel",
+      "result": "passed",
+      "trigger": "native Control+Command+F, then acceptance menu",
+      "evidence": {
+        "event": "panel-shown",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794623714760,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 2742.0,
+          "y": -136.0
+        },
+        "windows": [
+          {
+            "focused": false,
+            "fullscreen": true,
+            "height": 2160,
+            "label": "main",
+            "scale": 2.0,
+            "visible": true,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          },
+          {
+            "focused": true,
+            "fullscreen": false,
+            "height": 1018,
+            "label": "menubar",
+            "scale": 2.0,
+            "visible": true,
+            "width": 800,
+            "x": 2248,
+            "y": 66
+          }
+        ]
+      }
+    },
+    {
+      "id": "fullscreen-escape-hide",
+      "result": "passed",
+      "trigger": "CUA Escape",
+      "evidence": {
+        "event": "panel-hidden",
+        "monitors": [
+          {
+            "height": 2160,
+            "scale": 2.0,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          }
+        ],
+        "time_ms": 1794623829716,
+        "tray": {
+          "height": 48.0,
+          "width": 68.0,
+          "x": 2742.0,
+          "y": -136.0
+        },
+        "windows": [
+          {
+            "focused": true,
+            "fullscreen": true,
+            "height": 2160,
+            "label": "main",
+            "scale": 2.0,
+            "visible": true,
+            "width": 3840,
+            "x": 0,
+            "y": 0
+          },
+          {
+            "focused": false,
+            "fullscreen": false,
+            "height": 1018,
+            "label": "menubar",
+            "scale": 2.0,
+            "visible": false,
+            "width": 800,
+            "x": 2248,
+            "y": 16
+          }
+        ]
+      }
+    },
+    {
+      "id": "actual-status-item-click",
+      "result": "awaiting-assisted-click",
+      "automation_error": "windowNotFoundAtPosition((1388.0, 12.0))",
+      "real_click_events_so_far": 0
+    },
+    {
+      "id": "other-app-fullscreen",
+      "result": "awaiting-assisted-click",
+      "prepared_host": "Chrome about:blank in native fullscreen; Orbit main window hidden"
+    },
+    {
+      "id": "multiple-displays",
+      "result": "deferred-by-user",
+      "reason": "Only one display is online; user requested completion of available-screen cases first."
+    }
+  ],
+  "unit_validation": {
+    "default_desktop_library": {
+      "passed": 5
+    },
+    "native_acceptance_desktop_library": {
+      "passed": 5
+    }
+  }
+}

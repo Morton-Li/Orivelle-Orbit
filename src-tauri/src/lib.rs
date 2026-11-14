@@ -4,6 +4,8 @@ mod desktop;
 mod menubar;
 #[cfg(any(target_os = "macos", test))]
 mod menubar_geometry;
+#[cfg(all(target_os = "macos", feature = "native-acceptance"))]
+mod native_acceptance;
 #[cfg(target_os = "macos")]
 use menubar::menubar_control;
 #[cfg(not(any(
@@ -202,67 +204,86 @@ pub fn run() {
             cancel_update_download,
             install_update
         ])
-        .on_window_event(|window, event| match event {
-            #[cfg(target_os = "macos")]
-            tauri::WindowEvent::Focused(false) if window.label() == menubar::LABEL => {
-                menubar::blur(window.app_handle());
+        .on_window_event(|window, event| {
+            #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
+            match event {
+                tauri::WindowEvent::Focused(focused) => native_acceptance::record(
+                    window.app_handle(),
+                    &format!("{}:focused:{focused}", window.label()),
+                ),
+                tauri::WindowEvent::Resized(_) => native_acceptance::record(
+                    window.app_handle(),
+                    &format!("{}:resized", window.label()),
+                ),
+                _ => {}
             }
-            tauri::WindowEvent::CloseRequested { api, .. } => {
+            match event {
                 #[cfg(target_os = "macos")]
-                if window.label() == menubar::LABEL {
-                    api.prevent_close();
-                    menubar::hide(window.app_handle());
+                tauri::WindowEvent::Focused(false) if window.label() == menubar::LABEL => {
+                    menubar::blur(window.app_handle());
                 }
-                if window.label() == "main" {
-                    api.prevent_close();
-                    desktop::close_main(window.app_handle());
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    #[cfg(target_os = "macos")]
+                    if window.label() == menubar::LABEL {
+                        api.prevent_close();
+                        menubar::hide(window.app_handle());
+                    }
+                    if window.label() == "main" {
+                        api.prevent_close();
+                        desktop::close_main(window.app_handle());
+                    }
                 }
-            }
-            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
-                let service = window.state::<Native>().service.clone();
-                let handle = window.app_handle().clone();
-                let paths = paths.clone();
-                if let Ok(state) = service.bootstrap() {
-                    if let Some(id) = state.active_connection_id {
-                        if let Some(connection) = state.connections.into_iter().find(|c| c.id == id)
-                        {
-                            tauri::async_runtime::spawn_blocking(move || {
-                                let current = service.connection_view(&id);
-                                if current.as_ref().is_ok_and(|c| {
-                                    c.revision == connection.revision
-                                        && c.account_id == connection.account_id
-                                }) {
-                                    match service.import_inputs(&id, &paths) {
-                                        Ok(inputs) => {
-                                            let _ = handle.emit(
-                                                "orbit://image-inputs",
-                                                InputsEvent {
-                                                    account_id: connection.account_id,
-                                                    connection_id: id,
-                                                    connection_revision: connection.revision,
-                                                    inputs,
-                                                },
-                                            );
-                                        }
-                                        Err(error) => {
-                                            let _ = handle.emit(
-                                                "orbit://error",
-                                                ScopedErrorEvent {
-                                                    error,
-                                                    account_id: Some(connection.account_id.clone()),
-                                                    connection_id: Some(id.clone()),
-                                                    connection_revision: Some(connection.revision),
-                                                },
-                                            );
+                tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                    let service = window.state::<Native>().service.clone();
+                    let handle = window.app_handle().clone();
+                    let paths = paths.clone();
+                    if let Ok(state) = service.bootstrap() {
+                        if let Some(id) = state.active_connection_id {
+                            if let Some(connection) =
+                                state.connections.into_iter().find(|c| c.id == id)
+                            {
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    let current = service.connection_view(&id);
+                                    if current.as_ref().is_ok_and(|c| {
+                                        c.revision == connection.revision
+                                            && c.account_id == connection.account_id
+                                    }) {
+                                        match service.import_inputs(&id, &paths) {
+                                            Ok(inputs) => {
+                                                let _ = handle.emit(
+                                                    "orbit://image-inputs",
+                                                    InputsEvent {
+                                                        account_id: connection.account_id,
+                                                        connection_id: id,
+                                                        connection_revision: connection.revision,
+                                                        inputs,
+                                                    },
+                                                );
+                                            }
+                                            Err(error) => {
+                                                let _ = handle.emit(
+                                                    "orbit://error",
+                                                    ScopedErrorEvent {
+                                                        error,
+                                                        account_id: Some(
+                                                            connection.account_id.clone(),
+                                                        ),
+                                                        connection_id: Some(id.clone()),
+                                                        connection_revision: Some(
+                                                            connection.revision,
+                                                        ),
+                                                    },
+                                                );
+                                            }
                                         }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("Orbit startup failed");

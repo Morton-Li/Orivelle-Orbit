@@ -98,6 +98,8 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id(desktop::TRAY_ID) {
         tray.set_show_menu_on_left_click(false)?;
     }
+    #[cfg(feature = "native-acceptance")]
+    crate::native_acceptance::record(app.handle(), "panel-setup");
     Ok(())
 }
 
@@ -155,6 +157,8 @@ fn show(app: &AppHandle) -> tauri::Result<()> {
         window.set_focus()?;
         window.emit("orbit://menubar-opened", ())?;
     }
+    #[cfg(feature = "native-acceptance")]
+    crate::native_acceptance::record(app, "panel-shown");
     Ok(())
 }
 pub(crate) fn hide(app: &AppHandle) {
@@ -165,6 +169,8 @@ pub(crate) fn hide(app: &AppHandle) {
         let _ = window.emit("orbit://menubar-hidden", ());
         let _ = window.hide();
     }
+    #[cfg(feature = "native-acceptance")]
+    crate::native_acceptance::record(app, "panel-hidden");
 }
 pub(crate) fn blur(app: &AppHandle) {
     let Some(state) = app.try_state::<PanelState>() else {
@@ -177,6 +183,8 @@ pub(crate) fn blur(app: &AppHandle) {
     hide(app);
 }
 pub(crate) fn toggle(app: &AppHandle) {
+    #[cfg(feature = "native-acceptance")]
+    crate::native_acceptance::record(app, "panel-toggle-request");
     let Some(state) = app.try_state::<PanelState>() else {
         return;
     };
@@ -215,6 +223,8 @@ pub(crate) fn menubar_control(
     let result = match request {
         Control::Ready {} => {
             state.ready.store(true, Ordering::SeqCst);
+            #[cfg(feature = "native-acceptance")]
+            crate::native_acceptance::record(&app, "panel-frontend-ready");
             if state.requested.load(Ordering::SeqCst) {
                 show(&app)
             } else {

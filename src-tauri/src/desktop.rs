@@ -130,6 +130,8 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
                     ..
                 }
             ) {
+                #[cfg(feature = "native-acceptance")]
+                crate::native_acceptance::record(_tray.app_handle(), "tray-left-mouse-up");
                 crate::menubar::toggle(_tray.app_handle());
             }
             #[cfg(target_os = "windows")]
@@ -158,6 +160,8 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
         // The native menu remains usable if the optional panel cannot be built.
         eprintln!("Orbit menu bar panel setup failed: {error}");
     }
+    #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
+    crate::native_acceptance::install_menu(app)?;
     if let Ok(state) = app.state::<Native>().service.bootstrap() {
         update_tray(app.handle(), &state);
     }
@@ -167,6 +171,14 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
 }
 
 pub(crate) fn menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
+    if event.id.as_ref() == crate::native_acceptance::TOGGLE
+        && app.config().identifier == "io.orivelle.orbit.menubar-smoke"
+    {
+        crate::native_acceptance::record(app, "acceptance-menu-toggle");
+        crate::menubar::toggle(app);
+        return;
+    }
     match event.id.as_ref() {
         OPEN => open_main(app),
         SETTINGS => {
