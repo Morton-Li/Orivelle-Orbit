@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     App, AppHandle, Emitter, Manager,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -120,39 +120,43 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
         .tooltip("Orivelle Orbit")
         .menu(&menu)
         .show_menu_on_left_click(cfg!(target_os = "macos"))
-        .on_tray_icon_event(|_tray, _event| {
-            #[cfg(target_os = "macos")]
-            if matches!(
-                _event,
-                tauri::tray::TrayIconEvent::Click {
-                    button: tauri::tray::MouseButton::Left,
-                    button_state: tauri::tray::MouseButtonState::Up,
-                    ..
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left | MouseButton::Right,
+                button_state: MouseButtonState::Down,
+                ..
+            } => {
+                #[cfg(target_os = "windows")]
+                crate::menubar::tray_pressed(tray.app_handle());
+            }
+            TrayIconEvent::Click {
+                button: _button @ (MouseButton::Left | MouseButton::Right),
+                button_state: MouseButtonState::Up,
+                rect: _rect,
+                ..
+            } => {
+                #[cfg(target_os = "macos")]
+                {
+                    #[cfg(feature = "native-acceptance")]
+                    crate::native_acceptance::record(
+                        tray.app_handle(),
+                        if _button == MouseButton::Right {
+                            "tray-right-mouse-up"
+                        } else {
+                            "tray-left-mouse-up"
+                        },
+                    );
+                    crate::menubar::toggle(tray.app_handle());
                 }
-            ) {
-                #[cfg(feature = "native-acceptance")]
-                crate::native_acceptance::record(_tray.app_handle(), "tray-left-mouse-up");
-                crate::menubar::toggle(_tray.app_handle());
+                #[cfg(target_os = "windows")]
+                crate::menubar::toggle_at(tray.app_handle(), _rect);
             }
             #[cfg(target_os = "windows")]
-            match _event {
-                tauri::tray::TrayIconEvent::Click {
-                    button: tauri::tray::MouseButton::Left,
-                    button_state: tauri::tray::MouseButtonState::Down,
-                    ..
-                } => crate::menubar::tray_pressed(_tray.app_handle()),
-                tauri::tray::TrayIconEvent::Click {
-                    button: tauri::tray::MouseButton::Left,
-                    button_state: tauri::tray::MouseButtonState::Up,
-                    rect,
-                    ..
-                } => crate::menubar::toggle_at(_tray.app_handle(), rect),
-                tauri::tray::TrayIconEvent::DoubleClick {
-                    button: tauri::tray::MouseButton::Left,
-                    ..
-                } => crate::menubar::tray_double_clicked(_tray.app_handle()),
-                _ => {}
-            }
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => crate::menubar::tray_double_clicked(tray.app_handle()),
+            _ => {}
         })
         .build(app)?;
     app.manage(TrayMenu {

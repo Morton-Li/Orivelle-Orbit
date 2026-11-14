@@ -135,6 +135,10 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
     let _ = window;
     if let Some(tray) = app.tray_by_id(desktop::TRAY_ID) {
         tray.set_show_menu_on_left_click(false)?;
+        // A tray menu opens automatically on right click on both platforms,
+        // even when our click handler also opens the panel. Detach it only
+        // after the panel is built so setup failures retain the native fallback.
+        tray.set_menu(None::<tauri::menu::Menu<tauri::Wry>>)?;
     }
     #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
     crate::native_acceptance::record(app.handle(), "panel-setup");

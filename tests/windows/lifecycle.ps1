@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][int]$OrbitProcess,
-    [Parameter(Mandatory)][ValidateSet('state', 'close', 'click', 'double-click', 'main-click', 'menu', 'dialog')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('state', 'close', 'click', 'right-click', 'double-click', 'main-click', 'menu-item', 'dialog')][string]$Action,
     [string]$Item,
     [string]$Screenshot
 )
@@ -180,7 +180,7 @@ function Save-Screen {
 
 if ($Action -eq 'close') { [OrbitLifecycle]::Close($OrbitProcess) }
 if ($Action -eq 'main-click') { [OrbitLifecycle]::ClickMain($OrbitProcess) }
-if ($Action -eq 'click' -or $Action -eq 'double-click' -or $Action -eq 'menu') {
+if ($Action -eq 'click' -or $Action -eq 'double-click' -or $Action -eq 'right-click') {
     # Newly registered icons may start in Windows' overflow panel.
     # Invoking an already-open panel closes it and leaves the icon rect stale.
     if (-not [OrbitLifecycle]::OverflowVisible()) {
@@ -198,10 +198,10 @@ if ($Action -eq 'click' -or $Action -eq 'double-click' -or $Action -eq 'menu') {
             }
         }
     }
-    [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click', $Action -eq 'menu')
+    [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click', $Action -eq 'right-click')
 }
 
-if ($Action -eq 'menu') {
+if ($Action -eq 'menu-item') {
     $deadline = (Get-Date).AddSeconds(10)
     do {
         $menu = [OrbitLifecycle]::Find($OrbitProcess, 'menu')
@@ -249,6 +249,7 @@ if ($panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::GetWindowRect($panel, [ref]
     main_exists = $main -ne [IntPtr]::Zero
     main_visible = $main -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($main)
     tray_exists = $tray -ne [IntPtr]::Zero
+    native_menu_visible = [OrbitLifecycle]::Find($OrbitProcess, 'menu') -ne [IntPtr]::Zero
     panel_visible = $panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($panel)
     panel_focused = $panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::GetForegroundWindow() -eq $panel
     panel_bounds = $panelBounds
