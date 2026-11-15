@@ -34,7 +34,14 @@ const manifestUrl = new URL(updateEndpoint(build.repository));
 const artifactUrl = `https://github.com/${build.repository}/releases/download/v0.3.0/${releaseNames("0.3.0").windows}`;
 let mode = "valid";
 const requests = [];
-const receipt = { status: "failed", ...build, checks: [] };
+const receipt = {
+  status: "failed",
+  ...build,
+  acceptance_source: process.env.GITHUB_SHA,
+  artifact_run:
+    process.env.ORBIT_UPDATER_REUSED_RUN ?? process.env.GITHUB_RUN_ID,
+  checks: [],
+};
 const server = createServer(
   {
     pfx: await readFile(process.env.ORBIT_UPDATER_PFX),
@@ -94,12 +101,28 @@ const profile = await mkdtemp(
 let app;
 let browser;
 let page;
-const invoke = (command, request = {}) =>
-  page.evaluate(
-    ({ command, request }) =>
-      window.__TAURI_INTERNALS__.invoke(command, { request }),
+const invoke = async (command, request = {}) => {
+  // Serialize native rejections inside the WebView. Playwright otherwise wraps
+  // a rejected plain object as an Error and discards the public error code.
+  const reply = await page.evaluate(
+    async ({ command, request }) => {
+      try {
+        return {
+          result: await window.__TAURI_INTERNALS__.invoke(command, { request }),
+        };
+      } catch (error) {
+        return { error: { code: error?.code, detail: JSON.stringify(error) } };
+      }
+    },
     { command, request },
   );
+  if (reply.error) {
+    throw Object.assign(new Error(reply.error.detail), {
+      code: reply.error.code,
+    });
+  }
+  return reply.result;
+};
 async function connect() {
   await expect
     .poll(
@@ -291,7 +314,14 @@ try {
     });
   await expect.poll(() => app.exitCode, { timeout: 30_000 }).toBe(0);
   await expect
-    .poll(async () => hash(await readFile(executable)), { timeout: 90_000 })
+    .poll(
+      () =>
+        readFile(executable).then(
+          hash,
+          () => "temporarily unavailable during replacement",
+        ),
+      { timeout: 90_000 },
+    )
     .toBe(build.packages.target.executable_sha256);
   await connect();
   await page.evaluate(() => {

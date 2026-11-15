@@ -64,6 +64,7 @@ try {
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password,
   };
   manifest.public_key_sha256 = hash(Buffer.from(publicKey));
+  manifest.public_key = publicKey;
   for (const [name, version] of [
     ["base", "0.2.0"],
     ["target", "0.3.0"],
