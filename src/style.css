@@ -46,6 +46,35 @@
 * {
   box-sizing: border-box;
 }
+@media (forced-colors: none) {
+  .windows-platform::-webkit-scrollbar,
+  .windows-platform *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .windows-platform::-webkit-scrollbar-track,
+  .windows-platform *::-webkit-scrollbar-track,
+  .windows-platform::-webkit-scrollbar-corner,
+  .windows-platform *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  .windows-platform::-webkit-scrollbar-thumb,
+  .windows-platform *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--muted) 42%, transparent);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 10px;
+  }
+  .windows-platform::-webkit-scrollbar-thumb:hover,
+  .windows-platform *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--accent) 70%, transparent);
+    border-width: 2px;
+  }
+  .windows-platform::-webkit-scrollbar-thumb:active,
+  .windows-platform *::-webkit-scrollbar-thumb:active {
+    background-color: var(--accent);
+  }
+}
 body {
   margin: 0;
   min-width: 320px;
