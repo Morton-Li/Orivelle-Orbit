@@ -298,15 +298,13 @@ try {
   await page
     .getByRole("button", { name: "Download and update", exact: true })
     .click();
-  const install = page.getByRole("button", {
+  const install = page.getByRole("dialog", {
     name: "Install and restart",
     exact: true,
   });
   await expect(install).toBeVisible({ timeout: 60_000 });
   await page.screenshot({ path: path.join(evidence, "verified-update.png") });
-  await install.click();
-  await page
-    .getByRole("dialog")
+  await install
     .getByRole("button", { name: "Confirm", exact: true })
     .click()
     .catch((error) => {
