@@ -653,11 +653,29 @@ impl Service {
             let binding_id = uuid();
             let mapping =
                 if model_mapping.is_some() || crate::claude_mapping::requires_mapping(model_id) {
+                    let ids = model_mapping.map_or([model_id; 3], ClaudeModelMapping::ids);
+                    let display_name = |id: &str| {
+                        cache
+                            .models
+                            .iter()
+                            .find(|model| {
+                                model.id == id
+                                    && model.provider_id == record.view.provider_id
+                                    && model.category == "text"
+                            })
+                            .map(|model| model.label.as_str())
+                            .ok_or_else(|| fail("model_unavailable"))
+                    };
                     let plan = self.claude_mappings.reserve(
                         &binding_id,
                         &profile_id,
                         model_id,
                         model_mapping,
+                        [
+                            display_name(ids[0])?,
+                            display_name(ids[1])?,
+                            display_name(ids[2])?,
+                        ],
                     )?;
                     mapping_reservation = Some(self.claude_mappings.ticket(&plan));
                     Some(plan)
@@ -722,16 +740,18 @@ impl Service {
                 "main": {"deploymentMode": "3p"},
             }))
             .map_err(|_| fail("serialization_failed"))?;
-            if mapping.is_some() {
-                if let Some(model_mapping) = model_mapping {
-                    view.impact.push(format!(
-                        "Sonnet → {}，Opus → {}，Haiku → {}。",
-                        model_mapping.sonnet, model_mapping.opus, model_mapping.haiku
-                    ));
-                } else {
-                    view.impact
-                        .push(format!("Sonnet、Opus、Haiku 均映射至 {model_id}。"));
+            if let Some(mapping) = &mapping {
+                let mut names = Vec::new();
+                for alias in &mapping.aliases {
+                    let name = alias.label_override.as_str();
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
                 }
+                view.impact.push(format!(
+                    "Claude Desktop 中显示的模型名称：{}。",
+                    names.join("、")
+                ));
                 view.impact.push(
                     "Claude Desktop 通过本机 Orbit 转发请求，使用时请保持 Orbit 运行。".into(),
                 );
