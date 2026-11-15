@@ -8,16 +8,25 @@ use std::{
     os::windows::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt},
-        io::AsRawHandle,
+        io::{AsRawHandle, FromRawHandle},
     },
     path::{Component, Path},
     ptr::{null, null_mut},
 };
-use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, LocalFree},
-    Security::{Authorization::*, *},
-    Storage::FileSystem::*,
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
+use windows_sys::{
+    Wdk::{
+        Foundation::OBJECT_ATTRIBUTES,
+        Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, NtOpenFile},
+    },
+    Win32::{
+        Foundation::{CloseHandle, HANDLE, LocalFree, OBJ_CASE_INSENSITIVE, UNICODE_STRING},
+        Security::{Authorization::*, *},
+        Storage::FileSystem::*,
+        System::{
+            IO::IO_STATUS_BLOCK,
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +118,9 @@ fn open_one(path: &Path, directory: bool, access: u32, share_delete: bool) -> Re
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
         .map_err(|_| unverified())?;
+    checked_type(file, directory)
+}
+fn checked_type(file: File, directory: bool) -> Result<File> {
     let meta = file.metadata().map_err(|_| unverified())?;
     if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || meta.is_dir() != directory
@@ -118,6 +130,51 @@ fn open_one(path: &Path, directory: bool, access: u32, share_delete: bool) -> Re
     }
     Ok(file)
 }
+fn lock_ancestor(path: &Path) -> Result<File> {
+    // WindowsApps permits metadata opens but rejects Win32 backup-semantic
+    // directory opens for a normal user. Request only attributes, without
+    // backup intent or SYNCHRONIZE; keep the same no-reparse/no-delete locks.
+    // Win32 paths accept both separators; the NT object namespace needs '\\'.
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .map(|c| if c == b'/' as u16 { b'\\' as u16 } else { c })
+        .collect::<Vec<_>>();
+    let path = path.strip_prefix(&[92, 92, 63, 92]).unwrap_or(&path);
+    let mut name = r"\??\"
+        .encode_utf16()
+        .chain(path.iter().copied())
+        .collect::<Vec<_>>();
+    let length = u16::try_from(name.len() * 2).map_err(|_| unverified())?;
+    let name = UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        ObjectName: &name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        ..Default::default()
+    };
+    let mut handle = null_mut();
+    let mut status = IO_STATUS_BLOCK::default();
+    if unsafe {
+        NtOpenFile(
+            &mut handle,
+            FILE_READ_ATTRIBUTES,
+            &attributes,
+            &mut status,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        )
+    } != 0
+    {
+        return Err(unverified());
+    }
+    // NtOpenFile succeeded and transferred one owned handle to us.
+    checked_type(unsafe { File::from_raw_handle(handle) }, true)
+}
 /// Hold each existing ancestor against rename/delete. No UNC, ADS or reparse traversal.
 pub(crate) fn lock_directory(path: &Path) -> Result<Vec<File>> {
     if !valid_path(path) {
@@ -125,10 +182,7 @@ pub(crate) fn lock_directory(path: &Path) -> Result<Vec<File>> {
     }
     let mut chain = path.ancestors().collect::<Vec<_>>();
     chain.reverse();
-    chain
-        .into_iter()
-        .map(|p| open_one(p, true, FILE_READ_ATTRIBUTES, false))
-        .collect()
+    chain.into_iter().map(lock_ancestor).collect()
 }
 pub(crate) fn directory(path: &Path) -> Result<File> {
     let _parents = lock_directory(path)?;
@@ -360,6 +414,25 @@ mod tests {
         assert_ne!(identity(&directory(&root).unwrap(), true).unwrap(), before);
     }
     #[test]
+    fn ancestor_metadata_handles_prevent_rename_for_disk_and_verbatim_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent with spaces");
+        let leaf = parent.join("child");
+        fs::create_dir_all(&leaf).unwrap();
+        let replacement = parent.with_file_name("renamed parent");
+        for path in [
+            leaf.clone(),
+            leaf.canonicalize().unwrap(),
+            std::path::PathBuf::from(leaf.to_str().unwrap().replace('\\', "/")),
+        ] {
+            let locks = lock_directory(&path).unwrap();
+            assert!(fs::rename(&parent, &replacement).is_err());
+            drop(locks);
+            fs::rename(&parent, &replacement).unwrap();
+            fs::rename(&replacement, &parent).unwrap();
+        }
+    }
+    #[test]
     fn junctions_and_unprivileged_write_grants_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let outside = temp.path().join("outside");
@@ -373,6 +446,8 @@ mod tests {
             .unwrap();
         assert!(status.success());
         assert!(directory(&link).is_err());
+        fs::write(outside.join("material"), b"verified file").unwrap();
+        assert!(file(&link.join("material")).is_err());
         fs::remove_dir(&link).unwrap();
         let status = std::process::Command::new("icacls.exe")
             .arg(&outside)
