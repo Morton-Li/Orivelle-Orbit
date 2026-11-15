@@ -377,6 +377,8 @@ if (mode === "preflight") {
     "release",
     `orbit-credential-helper${suffix}`,
   );
+  if (process.platform === "win32")
+    verifyWindowsGuiExecutable(await readFile(helper));
   env.ORBIT_BUNDLED_HELPER_PATH = helper;
   const packageFlags = [
     "--target",

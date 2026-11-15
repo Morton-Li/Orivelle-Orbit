@@ -4,6 +4,8 @@ mod menubar;
 mod menubar_geometry;
 #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
 mod native_acceptance;
+#[cfg(windows)]
+mod startup;
 use menubar::menubar_control;
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
@@ -22,6 +24,104 @@ use std::{path::PathBuf, sync::Arc};
 use tauri::{Emitter, Manager};
 #[cfg(feature = "system-integration")]
 const BUNDLED_HELPER: &[u8] = include_bytes!(env!("ORBIT_BUNDLED_HELPER_FILE"));
+
+fn prepare_native(
+    root: PathBuf,
+    home: Option<PathBuf>,
+    authorized: bool,
+) -> orbit_core::error::Result<Native> {
+    let instance = orbit_core::runtime_lock::RuntimeLock::acquire(&root)
+        .inspect_err(|error| eprintln!("Orbit runtime lock setup: {}", error.code))?;
+    let executable = std::env::current_exe().map_err(|_| fail("update_recovery_invalid"))?;
+    let bundle = executable
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"));
+    match orbit_core::update_recovery::boot(&root, bundle, env!("CARGO_PKG_VERSION"))? {
+        orbit_core::update_recovery::BootDisposition::Ready => {}
+        orbit_core::update_recovery::BootDisposition::RestartRequired => {
+            // Recovery closed all DB handles and restored the old bundle.
+            // Do not expose a Service from this already mapped new binary.
+            return Err(fail("update_restart_required"));
+        }
+    }
+    let store = Arc::new(
+        Store::open(&root)
+            .inspect_err(|error| eprintln!("Orbit data store setup: {}", error.code))?,
+    );
+    let paths = if authorized {
+        SystemPaths::native(
+            &root,
+            home.as_deref()
+                .ok_or_else(|| fail("local_storage_unavailable"))?,
+        )?
+    } else {
+        SystemPaths::isolated(&root)?
+    };
+    #[cfg(feature = "system-integration")]
+    let paths = {
+        let mut paths = paths;
+        paths.helper_expected_sha256 = Some(env!("ORBIT_BUNDLED_HELPER_SHA256").into());
+        let status = if orbit_core::helper_artifact::deploy_embedded(
+            &store,
+            BUNDLED_HELPER,
+            env!("ORBIT_BUNDLED_HELPER_SHA256"),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .is_ok()
+        {
+            "ready"
+        } else {
+            "blocked"
+        };
+        store.set_meta("helper_deployment_status", status)?;
+        paths
+    };
+    let vault: Arc<dyn Vault> = if authorized {
+        #[cfg(any(target_os = "macos", windows))]
+        let native = NativeVault::with_claude_mapping_creator(
+            root.clone(),
+            paths
+                .helper_expected_sha256
+                .clone()
+                .ok_or_else(|| fail("helper_artifact_invalid"))?,
+        );
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let native = NativeVault::default();
+        Arc::new(native)
+    } else {
+        Arc::new(DeniedVault)
+    };
+    let service = Service::new(store, vault, paths)?;
+    Ok(Native {
+        service,
+        downloads: Default::default(),
+        _instance: instance,
+    })
+}
+fn observe_native(app: &tauri::AppHandle, service: Arc<Service>) -> orbit_core::error::Result<()> {
+    let handle = app.clone();
+    service.observe(Arc::new(move |state| {
+        desktop::update_tray(&handle, &state);
+        let _ = handle.emit("orbit://state", state);
+    }))?;
+    let handle = app.clone();
+    service.observe_authorization(Arc::new(move |event| {
+        let _ = handle.emit("orbit://authorization", event);
+    }))?;
+    tauri::async_runtime::spawn(async move {
+        let observer = service.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let _runtime = runtime.enter();
+            service.reconcile_claude_mappings()
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            let _ = observer.note_claude_mapping_unavailable();
+        }
+    });
+    Ok(())
+}
 
 pub fn run() {
     let app = tauri::Builder::default()
@@ -71,96 +171,44 @@ pub fn run() {
                     .join("../runtime")
                     .join(directory)
             };
-            let instance = orbit_core::runtime_lock::RuntimeLock::acquire(&root)
-                .inspect_err(|error| eprintln!("Orbit runtime lock setup: {}", error.code))?;
-            let executable =
-                std::env::current_exe().map_err(|_| fail("update_recovery_invalid"))?;
-            let bundle = executable
-                .ancestors()
-                .find(|p| p.extension().is_some_and(|e| e == "app"));
-            match orbit_core::update_recovery::boot(&root, bundle, env!("CARGO_PKG_VERSION"))? {
-                orbit_core::update_recovery::BootDisposition::Ready => {}
-                orbit_core::update_recovery::BootDisposition::RestartRequired => {
-                    // Recovery closed all DB handles and restored the old bundle.
-                    // Do not expose a Service from this already mapped new binary.
-                    return Err(fail("update_restart_required").into());
-                }
-            }
-            let store = Arc::new(
-                Store::open(&root)
-                    .inspect_err(|error| eprintln!("Orbit data store setup: {}", error.code))?,
-            );
-            let paths = if authorized {
-                let home = app.path().home_dir().map_err(|_| {
-                    eprintln!("Orbit could not resolve the user home directory.");
-                    fail("local_storage_unavailable")
-                })?;
-                SystemPaths::native(&root, &home)?
-            } else {
-                SystemPaths::isolated(&root)?
-            };
-            #[cfg(feature = "system-integration")]
-            let paths = {
-                let mut paths = paths;
-                paths.helper_expected_sha256 = Some(env!("ORBIT_BUNDLED_HELPER_SHA256").into());
-                let status = if orbit_core::helper_artifact::deploy_embedded(
-                    &store,
-                    BUNDLED_HELPER,
-                    env!("ORBIT_BUNDLED_HELPER_SHA256"),
-                    env!("CARGO_PKG_VERSION"),
+            let home = if authorized {
+                Some(
+                    app.path()
+                        .home_dir()
+                        .map_err(|_| fail("local_storage_unavailable"))?,
                 )
-                .is_ok()
-                {
-                    "ready"
-                } else {
-                    "blocked"
-                };
-                store.set_meta("helper_deployment_status", status)?;
-                paths
-            };
-            let vault: Arc<dyn Vault> = if authorized {
-                #[cfg(target_os = "macos")]
-                let native = NativeVault::with_claude_mapping_creator(
-                    root.clone(),
-                    paths
-                        .helper_expected_sha256
-                        .clone()
-                        .ok_or_else(|| fail("helper_artifact_invalid"))?,
-                );
-                #[cfg(not(target_os = "macos"))]
-                let native = NativeVault::default();
-                Arc::new(native)
             } else {
-                Arc::new(DeniedVault)
+                None
             };
-            let service = Service::new(store, vault, paths)?;
-            let handle = app.handle().clone();
-            service.observe(Arc::new(move |state| {
-                desktop::update_tray(&handle, &state);
-                let _ = handle.emit("orbit://state", state);
-            }))?;
-            let handle = app.handle().clone();
-            service.observe_authorization(Arc::new(move |event| {
-                let _ = handle.emit("orbit://authorization", event);
-            }))?;
-            let mapping_service = service.clone();
-            tauri::async_runtime::spawn(async move {
-                let observer = mapping_service.clone();
-                let runtime = tokio::runtime::Handle::current();
-                let result = tauri::async_runtime::spawn_blocking(move || {
-                    let _runtime = runtime.enter();
-                    mapping_service.reconcile_claude_mappings()
-                })
-                .await;
-                if !matches!(result, Ok(Ok(()))) {
-                    let _ = observer.note_claude_mapping_unavailable();
-                }
-            });
-            app.manage(Native {
-                service,
-                downloads: Default::default(),
-                _instance: instance,
-            });
+            #[cfg(windows)]
+            {
+                app.manage(startup::Startup::default());
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        prepare_native(root, home, authorized)
+                    })
+                    .await
+                    .map_err(|_| fail("state_unavailable"))
+                    .and_then(|result| result);
+                    let result = match result {
+                        Ok(native) => {
+                            let service = native.service.clone();
+                            handle.manage(native);
+                            observe_native(&handle, service)
+                        }
+                        Err(error) => Err(error),
+                    };
+                    handle.state::<startup::Startup>().finish(result);
+                });
+            }
+            #[cfg(not(windows))]
+            {
+                let native = prepare_native(root, home, authorized)?;
+                let service = native.service.clone();
+                app.manage(native);
+                observe_native(app.handle(), service)?;
+            }
             if let Err(error) = desktop::setup(app) {
                 eprintln!("Orbit tray setup failed: {error}");
             }

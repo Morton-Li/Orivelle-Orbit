@@ -40,7 +40,7 @@ use zeroize::Zeroizing;
 
 #[path = "service_claude.rs"]
 mod claude;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 #[path = "service_claude_tests.rs"]
 mod claude_authority_tests;
 #[path = "service_node_latency.rs"]
@@ -5009,6 +5009,8 @@ mod tests {
                 .to_path_buf()
         });
         std::fs::create_dir_all(home.join("Library/Application Support")).unwrap();
+        #[cfg(windows)]
+        crate::store::private_directory(&home.join("Library/Application Support")).unwrap();
         let root = home.join("Library/Application Support/Claude-3p");
         paths.claude_library = root.join("configLibrary");
         paths.configuration_roots.push(root.clone());

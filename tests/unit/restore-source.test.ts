@@ -307,11 +307,11 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     expect(view.find('[role="dialog"]').exists()).toBe(false);
   });
 
-  it("only previews preference coordination after its separate explicit action", async () => {
+  it("only previews settings coordination after its separate explicit action", async () => {
     const selected = snapshot();
     useOrbitStore().state.switch_snapshots = [selected];
     const result = Object.assign(preview(selected), {
-      restore_coordination: "claude_main_preferences_v1" as const,
+      restore_coordination: "claude_main_settings_v2" as const,
     });
     bridge.call.mockResolvedValueOnce(result);
     view = mount(AccessPage, {
@@ -326,7 +326,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     });
     const action = view
       .findAll("#client-claude button")
-      .find((button) => button.text() === "保留 Claude 偏好后切回");
+      .find((button) => button.text() === "保留 Claude 设置后切回");
     expect(
       action,
       "separate preference coordination preview action",
@@ -338,7 +338,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
         "preview_restore",
         {
           snapshot_id: selected.id,
-          coordination: "claude_main_preferences_v1",
+          coordination: "claude_main_settings_v2",
         },
       ],
     ]);
@@ -372,7 +372,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
       const action = coordinated
         ? view
             .findAll("#client-claude button")
-            .find((button) => button.text() === "保留 Claude 偏好后切回")
+            .find((button) => button.text() === "保留 Claude 设置后切回")
         : view.get("#client-claude .button.secondary");
       expect(action).toBeDefined();
       await action!.trigger("click");
@@ -385,39 +385,45 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     },
   );
 
-  it("requires the explicit preserving-preferences confirmation without sending file content", async () => {
-    const selected = snapshot();
-    const store = useOrbitStore();
-    store.state.switch_snapshots = [selected];
-    const value = Object.assign(preview(selected), {
-      restore_coordination: "claude_main_preferences_v1" as const,
-      impact: ["保留后续偏好，只恢复原接入模式。"],
-      redacted_diff: "Preference contents stay redacted.",
-    });
-    const refreshed = {
-      ...store.state,
-      state_revision: store.state.state_revision + 1,
-    };
-    bridge.call
-      .mockResolvedValueOnce({
-        client: "claude",
-        state: "restored",
-        loaded_state: "restart_required",
-        snapshot_id: "coordinated-restore",
-      })
-      .mockResolvedValueOnce(refreshed);
-    const button = show(value);
-    expect(button.text()).toBe("确认保留偏好并恢复接入");
-    expect(button.element.disabled).toBe(false);
-    expect(bridge.call).not.toHaveBeenCalled();
-    await button.trigger("click");
-    await flushPromises();
-    expect(bridge.call.mock.calls).toEqual([
-      ["restore_client_config", { preview_id: value.id, confirmed: true }],
-      ["bootstrap", {}],
-    ]);
-    expect(store.notice?.text).toContain("接入配置已恢复");
-  });
+  it.each([
+    ["claude_main_preferences_v1", "确认保留偏好并恢复接入"],
+    ["claude_main_settings_v2", "确认保留设置并恢复接入"],
+  ] as const)(
+    "requires explicit %s confirmation without sending file content",
+    async (mode, title) => {
+      const selected = snapshot();
+      const store = useOrbitStore();
+      store.state.switch_snapshots = [selected];
+      const value = Object.assign(preview(selected), {
+        restore_coordination: mode,
+        impact: ["保留后续偏好，只恢复原接入模式。"],
+        redacted_diff: "Preference contents stay redacted.",
+      });
+      const refreshed = {
+        ...store.state,
+        state_revision: store.state.state_revision + 1,
+      };
+      bridge.call
+        .mockResolvedValueOnce({
+          client: "claude",
+          state: "restored",
+          loaded_state: "restart_required",
+          snapshot_id: "coordinated-restore",
+        })
+        .mockResolvedValueOnce(refreshed);
+      const button = show(value);
+      expect(button.text()).toBe(title);
+      expect(button.element.disabled).toBe(false);
+      expect(bridge.call).not.toHaveBeenCalled();
+      await button.trigger("click");
+      await flushPromises();
+      expect(bridge.call.mock.calls).toEqual([
+        ["restore_client_config", { preview_id: value.id, confirmed: true }],
+        ["bootstrap", {}],
+      ]);
+      expect(store.notice?.text).toContain("接入配置已恢复");
+    },
+  );
 
   it("disables confirmation for an unknown native coordination mode", () => {
     const selected = snapshot();

@@ -1045,9 +1045,15 @@ impl Service {
         let mut paths = backup.paths.clone();
         paths.reverse();
         let journal_id = if blocked.is_none() {
-            let (journal, context) = if coordination.is_some() {
-                let (journal, context, mode) =
-                    engine.prepare_claude_preferences_restore_details(backup_id)?;
+            let (journal, context) = if let Some(coordination) = coordination {
+                let (journal, context, mode) = match coordination {
+                    ClaudeRestoreCoordination::MainPreferencesV1 => {
+                        engine.prepare_claude_preferences_restore_details(backup_id)?
+                    }
+                    ClaudeRestoreCoordination::MainSettingsV2 => {
+                        engine.prepare_claude_main_restore_details(backup_id, true)?
+                    }
+                };
                 original_mode = Some(mode);
                 (journal, context)
             } else {
@@ -1089,7 +1095,10 @@ impl Service {
                 panel_origin: backup.installation.origin,
                 installation_id: backup.installation.id,
             }),
-            impact: if coordination.is_some() {
+            impact: if coordination == Some(ClaudeRestoreCoordination::MainSettingsV2) {
+                vec!["显式保留当前主配置的偏好、Cowork 目录和其他设置；仅还原接入前的 deploymentMode，并恢复原索引与 profile。".into(),
+                    "确认后任何文件或源备份变化都会停止；未保存过主配置时也仅移除 Orbit 写入的接入模式，保留客户端新增设置。失效授权不会复活，客户端仍需重启。".into()]
+            } else if coordination.is_some() {
                 vec!["显式保留当前主配置 preferences 的完整原始内容；仅还原备份中的 deploymentMode，并恢复原索引与 profile。".into(),
                     "确认后任何文件或源备份变化都会停止；不依赖当前账户会话、key、节点或 helper，失效授权不会复活。客户端仍需重启。".into()]
             } else {
@@ -1097,7 +1106,7 @@ impl Service {
                     "恢复不依赖当前账户会话、key、节点或 helper；外部修改时整组停止，失效授权不会复活。".into()]
             },
             redacted_diff: if coordination.is_some() {
-                serde_json::to_string_pretty(&json!({"coordination":"claude_main_preferences_v1","claude_desktop_config.json":{"deploymentMode":{"from":"3p","to":original_mode.map(|mode| mode.unwrap_or("absent".into())).unwrap_or("unverified".into())},"preferences":"preserve current raw object or absence"},"configLibrary":"restore authenticated original profile and metadata bytes","secrets":"redacted"})).map_err(|_| fail("serialization_failed"))?
+                serde_json::to_string_pretty(&json!({"coordination":coordination,"claude_desktop_config.json":{"deploymentMode":{"from":"3p","to":original_mode.map(|mode| mode.unwrap_or("absent".into())).unwrap_or("unverified".into())},"preserved":if coordination == Some(ClaudeRestoreCoordination::MainSettingsV2) {"all current unowned main settings as raw values"} else {"current preferences raw object or absence"}},"configLibrary":"restore authenticated original profile and metadata bytes","secrets":"redacted"})).map_err(|_| fail("serialization_failed"))?
             } else {
                 "Restore encrypted original configuration; original secrets stay redacted.".into()
             },

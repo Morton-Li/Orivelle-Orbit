@@ -336,6 +336,58 @@ fn write_service_preferences(service: &Service) -> Vec<u8> {
 }
 
 #[test]
+fn claude_main_settings_v2_service_previews_and_confirms_only_owned_mode_restoration() {
+    let f = preferences_restore_fixture();
+    let preview = automatic_preview(&f.service, &f);
+    let saved = f
+        .service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    tests::mark_switch_snapshot(&f.service, saved.snapshot_id.as_ref().unwrap());
+    let main = f
+        .service
+        .paths
+        .claude_library
+        .parent()
+        .unwrap()
+        .join("claude_desktop_config.json");
+    let current = br#"{"deploymentMode":"3p","preferences":{"keep":true},"coworkUserFilesPath":"new client directory"}"#;
+    fs::write(&main, current).unwrap();
+    let source = saved.snapshot_id.unwrap();
+    assert!(f.service.preview_restore(&source).is_err());
+    assert!(
+        f.service
+            .preview_restore_with_coordination(
+                &source,
+                Some(ClaudeRestoreCoordination::MainPreferencesV1)
+            )
+            .is_err()
+    );
+    let coordinated = f
+        .service
+        .preview_restore_with_coordination(&source, Some(ClaudeRestoreCoordination::MainSettingsV2))
+        .unwrap();
+    assert!(coordinated.can_apply);
+    assert_eq!(
+        coordinated.restore_coordination,
+        Some(ClaudeRestoreCoordination::MainSettingsV2)
+    );
+    let diff: Value = serde_json::from_str(&coordinated.redacted_diff).unwrap();
+    assert_eq!(diff["coordination"], "claude_main_settings_v2");
+    assert!(!coordinated.redacted_diff.contains("new client directory"));
+    assert_eq!(fs::read(&main).unwrap(), current);
+    let restored = f
+        .service
+        .apply_client_config(&coordinated.id, true, true)
+        .unwrap();
+    assert_eq!(restored.state, "restored");
+    let after: Value = serde_json::from_slice(&fs::read(&main).unwrap()).unwrap();
+    assert_eq!(after["deploymentMode"], "1p");
+    assert_eq!(after["coworkUserFilesPath"], "new client directory");
+    assert_eq!(after["preferences"], serde_json::json!({"keep":true}));
+}
+
+#[test]
 fn claude_restore_coordination_service_previews_preserves_preferences_and_persists_historical_note()
 {
     let f = preferences_restore_fixture();
@@ -4362,6 +4414,7 @@ fn claude_b3a_diagnostic_vault_return_rechecks_actor_endpoint_and_fresh_expiry()
 }
 
 #[test]
+#[cfg(unix)]
 fn claude_b3a_diagnostic_alias_traversal_and_late_parent_swap_never_write_client_files() {
     use std::os::unix::fs::{MetadataExt, symlink};
     for fault in [

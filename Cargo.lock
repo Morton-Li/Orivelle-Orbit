@@ -2955,6 +2955,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-native-keyring-store",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -2986,6 +2987,7 @@ dependencies = [
  "fs2",
  "image",
  "objc2-app-kit",
+ "open",
  "orbit-core",
  "serde",
  "serde_json",

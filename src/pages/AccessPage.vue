@@ -361,11 +361,11 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
             @click="
               restore(
                 switchSnapshot(client.client)!.id,
-                'claude_main_preferences_v1',
+                'claude_main_settings_v2',
               )
             "
           >
-            {{ t("access.switchBackPreservingPreferences") }}
+            {{ t("access.switchBackPreservingSettings") }}
           </button>
         </template>
         <template v-else>

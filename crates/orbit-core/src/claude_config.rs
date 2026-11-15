@@ -251,7 +251,7 @@ pub const SCHEMA_KEYS_SHA256: &str =
 
 /// The pinned Desktop's native key-at-rest sweep visits these string leaves.
 /// This inventory is only a read-only migration guard, never a decryption API.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const NATIVE_SEALED_STRING_KEYS: &[&str] = &[
     "inferenceAnthropicApiKey",
     "inferenceBedrockBearerToken",
@@ -263,7 +263,7 @@ const NATIVE_SEALED_STRING_KEYS: &[&str] = &[
 /// Inspect only field identity and a borrowed string's emptiness/sealed prefix.
 /// Other values are skipped, so inactive profiles' secrets never become Values
 /// or retained strings. The caller owns and zeroizes the input buffer.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub(crate) fn native_migration_required(bytes: &[u8], main_config: bool) -> Result<bool> {
     use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
     use std::fmt;
@@ -733,12 +733,24 @@ fn raw_main(bytes: &[u8]) -> Result<RawMainObject<'_>> {
 /// Fixed, explicitly selected restoration of Claude's deployment mode. Every
 /// current raw value, including the complete optional preferences object, is
 /// retained. This is not a general JSON merge or a write authorization.
+#[cfg(test)]
 pub(crate) fn restore_main_preserving_preferences<'a>(
     original_before: &'a [u8],
     applied: &'a [u8],
     current: &'a [u8],
 ) -> Result<Vec<u8>> {
-    let original = raw_main(original_before)?;
+    restore_main_settings(Some(original_before), applied, current, false)
+}
+
+/// Explicit v2 coordination preserves all current unowned main settings. Only
+/// deploymentMode is restored; the encrypted transaction freezes every byte.
+pub(crate) fn restore_main_settings<'a>(
+    original_before: Option<&'a [u8]>,
+    applied: &'a [u8],
+    current: &'a [u8],
+    preserve_main_settings: bool,
+) -> Result<Vec<u8>> {
+    let original = raw_main(original_before.unwrap_or(b"{}"))?;
     let applied = raw_main(applied)?;
     let mut current = raw_main(current)?;
     let original_mode = original.0.get("deploymentMode").copied();
@@ -760,7 +772,13 @@ pub(crate) fn restore_main_preserving_preferences<'a>(
         .keys()
         .filter(|key| key.as_str() != "preferences")
         .collect::<Vec<_>>();
-    if applied_keys != current_keys
+    if preserve_main_settings {
+        if current.0.get("deploymentMode").map(|v| v.get())
+            != applied.0.get("deploymentMode").map(|v| v.get())
+        {
+            return Err(fail("configuration_conflict"));
+        }
+    } else if applied_keys != current_keys
         || applied_keys
             .iter()
             .any(|key| applied.0.get(*key).unwrap().get() != current.0.get(*key).unwrap().get())
@@ -895,6 +913,11 @@ fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Resul
                 .unwrap_or_else(|| json!([{ "name": plan.model_id }])),
         ),
     ]));
+    #[cfg(windows)]
+    profile.insert(
+        "inferenceCredentialHelperWindows".into(),
+        json!(plan.helper),
+    );
     meta.get_mut("entries")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| fail("invalid_configuration"))?
@@ -1144,10 +1167,20 @@ mod tests {
             fixture.root.join("claude_desktop_config.json")
         );
         let profile = after(&files[0]);
-        assert_eq!(profile.as_object().unwrap().len(), 11);
+        assert_eq!(
+            profile.as_object().unwrap().len(),
+            if cfg!(windows) { 12 } else { 11 }
+        );
         assert_eq!(profile["inferenceProvider"], "gateway");
         assert_eq!(profile["inferenceCredentialKind"], "helper-script");
         assert_eq!(profile["inferenceCredentialHelper"], json!(fixture.helper));
+        #[cfg(windows)]
+        assert_eq!(
+            profile["inferenceCredentialHelperWindows"],
+            json!(fixture.helper)
+        );
+        #[cfg(not(windows))]
+        assert!(profile.get("inferenceCredentialHelperWindows").is_none());
         assert_eq!(
             profile["inferenceCredentialHelperArgs"],
             json!(["claude", BINDING])
@@ -1230,6 +1263,7 @@ mod tests {
                     "inferenceGatewayBaseUrl",
                     "inferenceCredentialKind",
                     "inferenceCredentialHelper",
+                    "inferenceCredentialHelperWindows",
                     "inferenceCredentialHelperArgs",
                     "inferenceCredentialHelperTtlSec",
                     "inferenceCredentialHelperTimeoutSec",

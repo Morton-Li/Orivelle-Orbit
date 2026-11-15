@@ -376,7 +376,8 @@ type ConfigPreviewBase = {
     revision: string | null;
   } | null;
 };
-export type ClaudeRestoreCoordination = "claude_main_preferences_v1";
+export type ClaudeRestoreCoordination =
+  "claude_main_preferences_v1" | "claude_main_settings_v2";
 export type ConfigPreview = ConfigPreviewBase &
   (
     | {
