@@ -223,7 +223,7 @@ export async function assembleRelease(
   const version = releaseVersion(tag);
   const files = releaseNames(version);
   const required = [files.macos, files.windows, files.update, files.signature];
-  const permitted = new Set([...required, "latest.json", "SHA256SUMS"]);
+  const permitted = new Set([...required, "latest.json"]);
   const entries = await readdir(directory);
   if (
     entries.some((entry) => !permitted.has(entry)) ||
@@ -271,15 +271,7 @@ export async function assembleRelease(
   if (assets.some((asset) => asset.bytes === 0)) {
     throw new Error("A release asset is empty.");
   }
-  const checksums = "SHA256SUMS";
-  await writeFile(
-    path.join(directory, checksums),
-    assets.map(({ name, sha256 }) => sha256 + "  " + name + "\n").join(""),
-  );
-  return [
-    ...assets,
-    { name: checksums, ...(await digest(path.join(directory, checksums))) },
-  ];
+  return assets;
 }
 
 function gh(args) {

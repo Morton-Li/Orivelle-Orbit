@@ -107,6 +107,6 @@ codesign 环境所需公开变量和 secrets：
 
 签名公开配置还包括由仓库身份派生的 GitHub latest.json 地址和固定 macOS 证书摘要；基础 Tauri 配置为空频道/占位公钥。普通候选不会继承正式签名环境。代码签名由 [package-self-signed-macos.sh](../../scripts/package-self-signed-macos.sh)在 hosted Mac 临时 Keychain 内完成并清理，核对证书有效期、私钥及嵌入证书；自签名不表示 Apple 公证已完成。
 
-正式文件为 `Orivelle-Orbit-v<版本>-macos-arm64.dmg`、`-windows-x64-setup.exe`、macOS `.app.tar.gz` 与 `.sig`。发布脚本验签后生成 `latest.json` 和 `SHA256SUMS`，只接受完整约定集合；检查 tag 未移动、版本高于现有稳定版，再上传并核对 draft 的远端大小/SHA-256，最终公开。已公开同 tag 或冲突 draft 拒绝，不自动替换稳定版。
+正式文件为 `Orivelle-Orbit-v<版本>-macos-arm64.dmg`、`-windows-x64-setup.exe`、macOS `.app.tar.gz` 与 `.sig`。发布脚本验签后生成 `latest.json`，不再生成或发布 `SHA256SUMS` 校验和文件，只接受上述五个文件组成的完整约定集合；检查 tag 未移动、版本高于现有稳定版，再上传并核对 draft 的远端大小/SHA-256，最终公开。已公开同 tag 或冲突 draft 拒绝，不自动替换稳定版。
 
 updater 只发布 `darwin-aarch64`，Windows 仍手动下载安装包。签名同时绑定包内容及可信目标版本，客户端保留 `requireSignedVersion=true` 和禁止降级；应用代码签名、updater 签名、包 SHA-256 是分别核对的事实。源码/合成 signer 测试与实际安装、数据保留、失败恢复和重启验收分别记录，触发工作流、推 tag 或公开 Release 按本次明确发布范围执行。
