@@ -15,6 +15,8 @@ pub mod error;
 pub mod helper_artifact;
 pub mod identity;
 pub mod images;
+#[cfg(any(windows, test))]
+mod installed_asar;
 pub mod network;
 pub(crate) mod policy;
 pub mod runtime_lock;
@@ -26,3 +28,5 @@ pub mod update_recovery;
 pub mod updates;
 pub mod usage;
 pub mod vault;
+#[cfg(windows)]
+mod windows_fs;

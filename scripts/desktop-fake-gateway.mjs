@@ -189,7 +189,7 @@ function outputFor(protocol, model, calls) {
     : [{ type: "text", text: model.text }];
 }
 
-function responseEvents(response) {
+export function responseEvents(response) {
   const events = [
     event("response.created", {
       response: { ...response, status: "in_progress", output: [] },

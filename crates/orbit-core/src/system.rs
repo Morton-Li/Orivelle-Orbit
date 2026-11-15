@@ -4,6 +4,9 @@ use crate::{
     store::private_directory,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+#[path = "windows_clients.rs"]
+mod windows_clients;
 use std::{
     fs,
     io::Read,
@@ -24,6 +27,10 @@ pub struct SystemPaths {
         std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, (String, String)>>>,
     pub isolated: bool,
     pub(crate) codex_user_home: Option<PathBuf>,
+    #[cfg(windows)]
+    windows_installation_cache: std::sync::Arc<
+        std::sync::Mutex<std::collections::BTreeMap<String, windows_clients::CachedInstallation>>,
+    >,
     #[cfg(target_os = "macos")]
     claude_configuration_cache: std::sync::Arc<std::sync::Mutex<Option<ClaudeConfigurationTarget>>>,
     #[cfg(test)]
@@ -73,6 +80,9 @@ struct ConfigurationRootAnchor {
     device: u64,
     inode: u64,
     owner: u32,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows: Option<crate::windows_fs::Identity>,
 }
 
 /// An installed Claude schema and the intended default local user destination.
@@ -82,6 +92,9 @@ struct ConfigurationRootAnchor {
 pub struct ClaudeConfigurationTarget {
     contract_version: u32,
     pub app_path: String,
+    #[cfg(windows)]
+    #[serde(default)]
+    installation_scope: String,
     pub bundle_id: String,
     pub app_version: String,
     pub source_member_sha256: String,
@@ -95,9 +108,20 @@ impl ClaudeConfigurationTarget {
     pub(crate) fn compatible_with(&self, previous: &Self) -> bool {
         self.contract_version == previous.contract_version
             && self.bundle_id == previous.bundle_id
-            && self.app_path == previous.app_path
+            && self.same_installation(previous)
             && self.config_root == previous.config_root
             && self.root_anchors == previous.root_anchors
+    }
+    fn same_installation(&self, previous: &Self) -> bool {
+        #[cfg(windows)]
+        {
+            configuration_digest(&self.installation_scope)
+                && self.installation_scope == previous.installation_scope
+        }
+        #[cfg(not(windows))]
+        {
+            self.app_path == previous.app_path
+        }
     }
     pub fn validate_root(&self) -> Result<()> {
         if self.contract_version != 1
@@ -152,7 +176,22 @@ impl ClaudeConfigurationTarget {
             }
             Ok(())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            for path in [&self.config_root, &self.config_root.join("configLibrary")] {
+                before_creation()?;
+                self.validate_root()?;
+                if !path
+                    .try_exists()
+                    .map_err(|_| fail("configuration_conflict"))?
+                {
+                    crate::windows_fs::create_directory(path).map_err(claude_target_error)?;
+                }
+                self.validate_root()?;
+            }
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = before_creation;
             Err(fail("claude_configuration_target_unverified"))
@@ -165,6 +204,8 @@ impl ClaudeConfigurationTarget {
         Ok(Self {
             contract_version: 1,
             app_path: "synthetic-installed-Claude.app".into(),
+            #[cfg(windows)]
+            installation_scope: crate::identity::sha256(b"synthetic-Claude-installation"),
             bundle_id: CLAUDE_BUNDLE_ID.into(),
             app_version: crate::claude_config::SUPPORTED_APP_VERSION.into(),
             source_member_sha256: crate::claude_config::SOURCE_MEMBER_SHA256.into(),
@@ -176,7 +217,7 @@ impl ClaudeConfigurationTarget {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn claude_target_error(error: crate::error::PublicError) -> crate::error::PublicError {
     fail(if error.code == "codex_configuration_target_changed" {
         "claude_configuration_target_changed"
@@ -246,7 +287,11 @@ fn claude_configuration_root(root: &Path) -> Result<Vec<ConfigurationRootAnchor>
         }
         Ok(anchors)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows_clients::claude_root(root)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = root;
         Err(fail("claude_configuration_target_unverified"))
@@ -289,6 +334,9 @@ fn claude_verify_cached(
 pub(crate) struct CodexConfigurationTarget {
     contract_version: u32,
     pub(crate) app_path: String,
+    #[cfg(windows)]
+    #[serde(default)]
+    installation_scope: String,
     pub(crate) bundle_id: String,
     pub(crate) desktop_version: String,
     pub(crate) cli_version: String,
@@ -301,10 +349,21 @@ impl CodexConfigurationTarget {
     pub(crate) fn compatible_with(&self, previous: &Self) -> bool {
         self.contract_version == previous.contract_version
             && self.bundle_id == previous.bundle_id
-            && self.app_path == previous.app_path
+            && self.same_installation(previous)
             && self.config_root == previous.config_root
             && self.root_anchor == previous.root_anchor
             && self.profile_id == previous.profile_id
+    }
+    fn same_installation(&self, previous: &Self) -> bool {
+        #[cfg(windows)]
+        {
+            configuration_digest(&self.installation_scope)
+                && self.installation_scope == previous.installation_scope
+        }
+        #[cfg(not(windows))]
+        {
+            self.app_path == previous.app_path
+        }
     }
     pub(crate) fn validate_root(&self) -> Result<()> {
         if self.contract_version != 1
@@ -342,7 +401,22 @@ impl CodexConfigurationTarget {
             }
             self.validate_root()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            let (_, anchor) = configuration_root(&self.config_root)?;
+            if anchor != self.root_anchor {
+                return Err(fail("codex_configuration_target_changed"));
+            }
+            if !self
+                .config_root
+                .try_exists()
+                .map_err(|_| fail("configuration_conflict"))?
+            {
+                crate::windows_fs::create_directory(&self.config_root)?;
+            }
+            self.validate_root()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         Err(fail("codex_configuration_target_unverified"))
     }
     #[cfg(test)]
@@ -359,6 +433,8 @@ impl CodexConfigurationTarget {
         let (_, root_anchor) = configuration_root(&config_root)?;
         Ok(Self {
             contract_version: 1,
+            #[cfg(windows)]
+            installation_scope: crate::identity::sha256(b"synthetic-Codex-installation"),
             app_path: target
                 .app_path
                 .clone()
@@ -378,6 +454,30 @@ fn configuration_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+#[cfg(windows)]
+fn configuration_directory(path: &Path) -> Result<fs::File> {
+    crate::windows_fs::directory(path)
+}
+#[cfg(windows)]
+fn configuration_file(path: &Path) -> Result<fs::File> {
+    crate::windows_fs::file(path)
+}
+#[cfg(any(target_os = "macos", windows))]
+fn configuration_file_stamp(file: &fs::File) -> Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(configuration_stamp(
+            &file
+                .metadata()
+                .map_err(|_| fail("configuration_unreadable"))?,
+        ))
+    }
+    #[cfg(windows)]
+    {
+        crate::windows_fs::stamp(file)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -469,7 +569,11 @@ fn configuration_root(root: &Path) -> Result<(fs::File, ConfigurationRootAnchor)
             },
         ))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows_clients::codex_root(root)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = root;
         Err(fail("codex_configuration_target_unverified"))
@@ -572,12 +676,12 @@ fn configuration_hash(path: &Path, bytes: u64) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const MAX_CLAUDE_MIGRATION_ENTRIES: usize = crate::claude_config::MAX_ENTRIES * 4;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const MAX_CLAUDE_MIGRATION_BYTES: usize = crate::claude_config::MAX_FILE_BYTES * 16;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn claude_migration_profile_name(name: &[u8]) -> bool {
     // Match Desktop's /^[a-f0-9-]{36}$/ ID, not the compiler's narrower UUID
     // contract: orphan and noncanonical entries are swept by Desktop too.
@@ -801,10 +905,17 @@ impl SystemPaths {
         if self.isolated {
             return target;
         }
-        target.installed = false;
-        target.version = None;
-        target.bundle_id = None;
-        target.app_path = None;
+        #[cfg(windows)]
+        {
+            windows_clients::refresh(self, &mut target);
+        }
+        #[cfg(not(windows))]
+        {
+            target.installed = false;
+            target.version = None;
+            target.bundle_id = None;
+            target.app_path = None;
+        }
         #[cfg(target_os = "macos")]
         {
             let mut candidates = cached
@@ -916,7 +1027,18 @@ impl SystemPaths {
                 },
             )
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            windows_clients::verify(target, None).map_err(claude_target_error)?;
+            windows_clients::migration_clear(&before.config_root)?;
+            let current = self.claude_configuration_draft(target)?;
+            windows_clients::migration_clear(&current.config_root)?;
+            if before != current {
+                return Err(fail("claude_configuration_target_changed"));
+            }
+            Ok(before)
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = before;
             Err(fail("claude_configuration_target_unverified"))
@@ -997,21 +1119,21 @@ impl SystemPaths {
                 revision,
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            windows_clients::claude_draft(self, target)
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = target;
             Err(fail("claude_configuration_target_unverified"))
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn configuration_features(&self, path: &Path, features: &[&str]) -> Result<String> {
         let file = configuration_file(path)?;
-        let stamp = configuration_stamp(
-            &file
-                .metadata()
-                .map_err(|_| fail("configuration_unreadable"))?,
-        );
+        let stamp = configuration_file_stamp(&file)?;
         if let Some((cached_stamp, digest)) = self
             .capability_cache
             .lock()
@@ -1023,11 +1145,7 @@ impl SystemPaths {
             }
         }
         let digest = crate::client_compatibility::observe(file, features, 1024 * 1024 * 1024)?;
-        let after = configuration_stamp(
-            &configuration_file(path)?
-                .metadata()
-                .map_err(|_| fail("configuration_unreadable"))?,
-        );
+        let after = configuration_file_stamp(&configuration_file(path)?)?;
         if after != stamp {
             return Err(fail("configuration_conflict"));
         }
@@ -1057,10 +1175,17 @@ impl SystemPaths {
             return cached.clone();
         }
         let mut target = cached.clone();
-        target.installed = false;
-        target.version = None;
-        target.bundle_id = None;
-        target.app_path = None;
+        #[cfg(windows)]
+        {
+            windows_clients::refresh(self, &mut target);
+        }
+        #[cfg(not(windows))]
+        {
+            target.installed = false;
+            target.version = None;
+            target.bundle_id = None;
+            target.app_path = None;
+        }
         #[cfg(target_os = "macos")]
         {
             let mut candidates = cached
@@ -1132,6 +1257,8 @@ impl SystemPaths {
             return adapter(target, true);
         }
         let (receipt, before) = self.configuration_draft(target)?;
+        #[cfg(windows)]
+        windows_clients::verify(target, Some(&receipt.cli_version))?;
         #[cfg(target_os = "macos")]
         {
             let app = Path::new(&receipt.app_path);
@@ -1249,7 +1376,11 @@ impl SystemPaths {
                 materials,
             ))
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            windows_clients::codex_draft(self, target)
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = target;
             Err(fail("codex_configuration_target_unverified"))
@@ -1276,6 +1407,8 @@ impl SystemPaths {
             capability_cache: Default::default(),
             isolated: true,
             codex_user_home: None,
+            #[cfg(windows)]
+            windows_installation_cache: Default::default(),
             #[cfg(target_os = "macos")]
             claude_configuration_cache: Default::default(),
             #[cfg(test)]
@@ -1316,6 +1449,8 @@ impl SystemPaths {
             capability_cache: Default::default(),
             isolated: false,
             codex_user_home: Some(home.into()),
+            #[cfg(windows)]
+            windows_installation_cache: Default::default(),
             #[cfg(target_os = "macos")]
             claude_configuration_cache: Default::default(),
             #[cfg(test)]
@@ -1451,7 +1586,10 @@ fn claude_signature_wait(
     }
 }
 
-fn bounded_command(mut command: Command) -> Option<Vec<u8>> {
+fn bounded_command(command: Command) -> Option<Vec<u8>> {
+    bounded_command_with_timeout(command, Duration::from_secs(3))
+}
+fn bounded_command_with_timeout(mut command: Command, timeout: Duration) -> Option<Vec<u8>> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1463,7 +1601,7 @@ fn bounded_command(mut command: Command) -> Option<Vec<u8>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut child = command.spawn().ok()?;
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait().ok()? {
             if !status.success() {
@@ -1570,35 +1708,9 @@ pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
             }
         }
     }
-    #[cfg(target_os = "windows")]
-    {
-        // Fixed read-only metadata probes; no caller-provided command or executable path.
-        for client in &mut clients {
-            let script = match client.client {
-                ClientKind::Codex => {
-                    "$p=Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Select-Object -First 1; if($p){[pscustomobject]@{identity=$p.Name;version=$p.Version;path=$p.InstallLocation}|ConvertTo-Json -Compress}"
-                }
-                ClientKind::Claude => {
-                    "$p=Join-Path $env:LOCALAPPDATA 'AnthropicClaude\\Claude.exe'; if(Test-Path -LiteralPath $p){$s=Get-AuthenticodeSignature -LiteralPath $p; if($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match 'Anthropic'){[pscustomobject]@{identity='com.anthropic.claudefordesktop';version=(Get-Item -LiteralPath $p).VersionInfo.ProductVersion;path=$p}|ConvertTo-Json -Compress}}"
-                }
-            };
-            let mut command = Command::new("powershell.exe");
-            command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-            if let Some(bytes) = bounded_command(command) {
-                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    if let (Some(identity), Some(version), Some(path)) = (
-                        value["identity"].as_str(),
-                        value["version"].as_str(),
-                        value["path"].as_str(),
-                    ) {
-                        client.installed = true;
-                        client.bundle_id = Some(identity.into());
-                        client.version = Some(version.into());
-                        client.app_path = Some(path.into());
-                    }
-                }
-            }
-        }
+    #[cfg(windows)]
+    for client in &mut clients {
+        windows_clients::refresh(paths, client);
     }
     for client in &mut clients {
         crate::policy::observe(paths, client).project(client);
@@ -1608,6 +1720,45 @@ pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "reads installed clients and real default roots on an explicitly disposable VM"]
+    fn windows_installed_clients_qualify() {
+        assert_eq!(
+            std::env::var("ORBIT_WINDOWS_TEST_SCOPE").as_deref(),
+            Ok("disposable-vm")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let home = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let paths = SystemPaths::native(dir.path(), &home).unwrap();
+        let clients = detect_clients(&paths);
+        for client in clients {
+            assert!(client.installed, "{:?} discovery failed", client.client);
+            let policy = crate::policy::observe(&paths, &client);
+            assert!(
+                policy.user_config_state() == crate::policy::State::No,
+                "local policy is not clear"
+            );
+            match client.client {
+                ClientKind::Codex => {
+                    let target = paths.codex_configuration_target(&client).unwrap();
+                    target.validate_root().unwrap();
+                    println!(
+                        "Codex desktop={} cli={} receipt={}",
+                        target.desktop_version, target.cli_version, target.revision
+                    );
+                }
+                ClientKind::Claude => {
+                    let target = paths.claude_configuration_target(&client).unwrap();
+                    target.validate_root().unwrap();
+                    println!(
+                        "Claude desktop={} receipt={}",
+                        target.app_version, target.revision
+                    );
+                }
+            }
+        }
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -1878,6 +2029,8 @@ mod tests {
         ClaudeConfigurationTarget {
             contract_version: 1,
             app_path: "synthetic-installed-Claude.app".into(),
+            #[cfg(windows)]
+            installation_scope: crate::identity::sha256(b"synthetic-Claude-installation"),
             bundle_id: CLAUDE_BUNDLE_ID.into(),
             app_version: crate::claude_config::SUPPORTED_APP_VERSION.into(),
             source_member_sha256: crate::claude_config::SOURCE_MEMBER_SHA256.into(),

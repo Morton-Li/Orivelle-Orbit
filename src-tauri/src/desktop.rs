@@ -1,7 +1,7 @@
 //! Native window and tray lifecycle. Hiding a window never stops the Service.
 
 use crate::commands::Native;
-use orbit_core::dto::BootstrapView;
+use orbit_core::dto::{BootstrapView, SettingsView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     App, AppHandle, Emitter, Manager,
@@ -174,6 +174,7 @@ pub(crate) fn setup(app: &mut App) -> tauri::Result<()> {
     }
     #[cfg(all(target_os = "macos", feature = "native-acceptance"))]
     crate::native_acceptance::install_menu(app)?;
+    #[cfg(not(windows))]
     if let Ok(state) = app.state::<Native>().service.bootstrap() {
         update_tray(app.handle(), &state);
     }
@@ -300,12 +301,16 @@ pub(crate) fn open_main(app: &AppHandle) {
 }
 
 pub(crate) fn close_main(app: &AppHandle) {
-    let Some(native) = app.try_state::<Native>() else {
-        return;
-    };
-    let Ok(settings) = native.service.store.settings() else {
-        notice(app, current_labels(app).window_failed);
-        return;
+    let settings = if let Some(native) = app.try_state::<Native>() {
+        let Ok(settings) = native.service.store.settings() else {
+            notice(app, current_labels(app).window_failed);
+            return;
+        };
+        settings
+    } else {
+        // Windows may receive close while native initialization is in flight.
+        // Keep the window responsive and follow the normal tray default.
+        SettingsView::default()
     };
     if settings.close_behavior == "quit" {
         request_quit(app);

@@ -367,7 +367,7 @@ impl Default for SettingsView {
             close_behavior: "keep_running".into(),
             image_disk_limit_bytes: 2 * 1024 * 1024 * 1024,
             preview_cache_limit_bytes: 128 * 1024 * 1024,
-            check_updates_on_start: false,
+            check_updates_on_start: true,
         }
     }
 }
@@ -423,6 +423,8 @@ impl ClaudeModelMapping {
 pub enum ClaudeRestoreCoordination {
     #[serde(rename = "claude_main_preferences_v1")]
     MainPreferencesV1,
+    #[serde(rename = "claude_main_settings_v2")]
+    MainSettingsV2,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPreview {

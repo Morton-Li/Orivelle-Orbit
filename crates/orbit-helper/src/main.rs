@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 #[cfg(all(
     not(test),
     not(any(

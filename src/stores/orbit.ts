@@ -33,7 +33,7 @@ const defaultSettings: SettingsView = {
   close_behavior: "keep_running",
   image_disk_limit_bytes: 2 * 1024 ** 3,
   preview_cache_limit_bytes: 128 * 1024 ** 2,
-  check_updates_on_start: false,
+  check_updates_on_start: true,
 };
 function undetectedClient(client: ClientKind): ClientView {
   return {

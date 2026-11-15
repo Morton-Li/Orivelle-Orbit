@@ -1,0 +1,1805 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-11-15",
+  "status": "passed",
+  "scope": "Installed Windows candidate with full ordinary-user native desktop and client acceptance; earlier baseline and appearance evidence retained with separate artifact bindings",
+  "current_delivery": {
+    "source_commit": "b4def7f408a9a29ec1c2098770dd4866a2237714",
+    "installer": {
+      "filename": "Orbit-windows-delivery-setup.exe",
+      "bytes": 7565334,
+      "sha256": "d5269b193b675370383d81dbffe7b1b718779034ab7f17f5eee127f6350e627a"
+    },
+    "executable_sha256": "55b08d550b4ce21bfe633aa5783a4a8eabc39b8b1ee104e7ce390715a232f8d3",
+    "helper_sha256": "952ee117a4b54efa2583e85fb628c3116374d09c84f78309f54f9a29135a242d",
+    "record": "follow_up_ordinary_user"
+  },
+  "source": {
+    "production_commit": "33ab358562f7a8976d76f2a1a3676b61fbfced1b",
+    "production_manifest_sha256": "27acbfce2777096d8eb85d0e9f8259eb83f6d875b6f6084fb537f12ba2317902",
+    "manifest_serialization": "UTF-8 JSON.stringify(files), no trailing newline",
+    "files": [
+      {
+        "path": ".cargo/config.toml",
+        "sha256": "8699af6c3cde056d5fc2d6978a42fd1789af0e50ee9dc9a632967f02f0379936",
+        "bytes": 393
+      },
+      {
+        "path": ".node-version",
+        "sha256": "55075b5ec4e8b31936cbbc282b8829116d1fd48f2f2f1856dee592a6650700ce",
+        "bytes": 8
+      },
+      {
+        "path": ".npmrc",
+        "sha256": "e5eb925cc74b6f5e90b24838e8570930d2d09ca2daf555605950897cabbd52af",
+        "bytes": 131
+      },
+      {
+        "path": "Cargo.lock",
+        "sha256": "40d3a1a5d0a53150a0b6ff01c3596dbdc542710bfd7ab6d35c19c83b3b0d268a",
+        "bytes": 156106
+      },
+      {
+        "path": "Cargo.toml",
+        "sha256": "2d615cacdfaaa421d8e36d51103d9d1c47f93c450bc5d2543815974a299a4edb",
+        "bytes": 2455
+      },
+      {
+        "path": "crates/orbit-core/Cargo.toml",
+        "sha256": "af24716a9a6f5c1db372a5033391dcf660f5e71097a80feb36917d0c4e9d5864",
+        "bytes": 1191
+      },
+      {
+        "path": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/LICENSE",
+        "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+        "bytes": 10926
+      },
+      {
+        "path": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/NOTICE",
+        "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915",
+        "bytes": 242
+      },
+      {
+        "path": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json",
+        "sha256": "fc8f61f12508b61ae615b069442f86f4efe6c4f8d9f73ca2b39489580f22ea68",
+        "bytes": 2557
+      },
+      {
+        "path": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/models.json",
+        "sha256": "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+        "bytes": 472072
+      },
+      {
+        "path": "crates/orbit-core/src/claude_config.rs",
+        "sha256": "8382a0e56ce9f494d87b3bf40f4fe0717c357ac69c192dfac57990c45cf8dfb1",
+        "bytes": 60359
+      },
+      {
+        "path": "crates/orbit-core/src/claude_mapping.rs",
+        "sha256": "9a41dd00d4868e1d6361fba7b2521819733f95d3d6347e1af1e74bc2e820ce78",
+        "bytes": 32295
+      },
+      {
+        "path": "crates/orbit-core/src/claude_mapping_http.rs",
+        "sha256": "0e8340c539c80aa6b5c23f7cabb4312e8513c404c52f41c2d62c50049cc752a3",
+        "bytes": 54158
+      },
+      {
+        "path": "crates/orbit-core/src/client_compatibility.rs",
+        "sha256": "0b426542fba907082e2ef5367a03e32e3b386e4bd3e487864522805b97d0af68",
+        "bytes": 3300
+      },
+      {
+        "path": "crates/orbit-core/src/clipboard.rs",
+        "sha256": "c03dc9d1eb024ba5c3dcfef6fa05ed0c9da37b80e551da3b66b842b4c6327a39",
+        "bytes": 1739
+      },
+      {
+        "path": "crates/orbit-core/src/codex_binding.rs",
+        "sha256": "4ac21b2f9dbbcb63c13fd5f3ed38ad94f6bafa42defda2a8f1256d79db182e61",
+        "bytes": 26993
+      },
+      {
+        "path": "crates/orbit-core/src/codex_catalog.rs",
+        "sha256": "9ba826f21eabf829dde1e2febfd3e1b3c5e639d55183ec5790758aeb0bb18c04",
+        "bytes": 27544
+      },
+      {
+        "path": "crates/orbit-core/src/codex_runtime.rs",
+        "sha256": "b90ec1a96a7d49389153d0c492b77d46aa5c4f6f29441dc85655c93f1aa46157",
+        "bytes": 27684
+      },
+      {
+        "path": "crates/orbit-core/src/config.rs",
+        "sha256": "5c43e24ab5ad105d0bcd4c747e9e8e9793e4e635889e8c2f12f4620c079ebdb9",
+        "bytes": 104808
+      },
+      {
+        "path": "crates/orbit-core/src/config_claude_tests.rs",
+        "sha256": "16c0aef36e403850a50e229b334cbdbe12206105ef64c11606b7e5ea9a7f3273",
+        "bytes": 52340
+      },
+      {
+        "path": "crates/orbit-core/src/dto.rs",
+        "sha256": "0d583d9f399bee75438a147e2c6428681fce2688d7a627b64d6c81b3b5da4afa",
+        "bytes": 15912
+      },
+      {
+        "path": "crates/orbit-core/src/error.rs",
+        "sha256": "154cc175415b71ccacfd97f54889a03c1f5b0aa166c75e604734e7a204be28bf",
+        "bytes": 3573
+      },
+      {
+        "path": "crates/orbit-core/src/helper_artifact.rs",
+        "sha256": "0f2602e0a7ccf2a4b04ff61b6a0c257cd4b0950ef2a07bab5a78d3c73894c388",
+        "bytes": 4635
+      },
+      {
+        "path": "crates/orbit-core/src/identity.rs",
+        "sha256": "7d620a21e1d29d91a4e366218517238241f330169112c63bee1edbf4a247e4a9",
+        "bytes": 12199
+      },
+      {
+        "path": "crates/orbit-core/src/images.rs",
+        "sha256": "3c0928ca60b5d4336c1dae9c13beb3ef4017095485ae67e6c6ca320b8150d908",
+        "bytes": 53909
+      },
+      {
+        "path": "crates/orbit-core/src/installed_asar.rs",
+        "sha256": "756181591c017a2a612cc6e2349a8303e09bcae15951a0e170e9d39ed57623fa",
+        "bytes": 3864
+      },
+      {
+        "path": "crates/orbit-core/src/lib.rs",
+        "sha256": "a640cbbef2dc304172dceed0fca706db186fa983f1a8103a99d0d5c1c8b96f50",
+        "bytes": 730
+      },
+      {
+        "path": "crates/orbit-core/src/network.rs",
+        "sha256": "9e6e01aabf2166c9955510fdf0832fe0d31026784534096f3f1f6d454ec7f089",
+        "bytes": 42779
+      },
+      {
+        "path": "crates/orbit-core/src/policy.rs",
+        "sha256": "095ff6ecf2ff663310339711117e58ca634eb7c2895814eea3776d0c6ebedbcb",
+        "bytes": 62439
+      },
+      {
+        "path": "crates/orbit-core/src/runtime_lock.rs",
+        "sha256": "bda5a93bce0da9c155b6a8c4215033f28324a1571d86c757975c9a74ec43afaf",
+        "bytes": 2653
+      },
+      {
+        "path": "crates/orbit-core/src/service.rs",
+        "sha256": "5675e4b275487963eef89a2d606bb2a52eb4ad84c1e9d36198698ac924231196",
+        "bytes": 377403
+      },
+      {
+        "path": "crates/orbit-core/src/service/tests/image_live_demo.rs",
+        "sha256": "efe0bebc4115d7910b6abfa88cc1ad5215d66234bc3b532f0e7e609015d79a3d",
+        "bytes": 5581
+      },
+      {
+        "path": "crates/orbit-core/src/service/tests/macos_config_roundtrip.rs",
+        "sha256": "592c3d46c992afcace5bc06207663d96982c5a39b5fc4639270215a69c0e4b23",
+        "bytes": 45589
+      },
+      {
+        "path": "crates/orbit-core/src/service/tests/panel_acceptance.rs",
+        "sha256": "9cc4860c4708a954e79deeab950c2f151d30a30bd1a6caacb9207ad79d965905",
+        "bytes": 26864
+      },
+      {
+        "path": "crates/orbit-core/src/service_claude.rs",
+        "sha256": "04aa1b148f49c2f7d41464a57fd7a50116c30d18f2be58950a751c8cccd9be2c",
+        "bytes": 73536
+      },
+      {
+        "path": "crates/orbit-core/src/service_claude_tests.rs",
+        "sha256": "c26dc72780f4a1486612342f4da5704e72abfc8acb53001c02e91d9166ca5982",
+        "bytes": 161195
+      },
+      {
+        "path": "crates/orbit-core/src/service_node_latency.rs",
+        "sha256": "8d2b563224882ee16949f9f306c2f2891cd77474c852a7285b70aae2b92103eb",
+        "bytes": 21187
+      },
+      {
+        "path": "crates/orbit-core/src/service_usage.rs",
+        "sha256": "982908e8f8f14f44a81763bccf5ce47915e8c7e6279d88b25c4c54de323ec684",
+        "bytes": 5378
+      },
+      {
+        "path": "crates/orbit-core/src/store.rs",
+        "sha256": "96f3e688ea1b6df599211077b9c9d8c383ec74eb5b3ebe84a97ae6f51d0e912e",
+        "bytes": 31004
+      },
+      {
+        "path": "crates/orbit-core/src/system.rs",
+        "sha256": "fd9958338a335365ddd1bb1a931cd392a860525ac1bfd63304336a09bb91bbd0",
+        "bytes": 89690
+      },
+      {
+        "path": "crates/orbit-core/src/update_download.rs",
+        "sha256": "63e6f852055318d08a58e47118ecee0452b1a7a908a71f814d7f4d9be8ee923b",
+        "bytes": 4592
+      },
+      {
+        "path": "crates/orbit-core/src/update_recovery.rs",
+        "sha256": "01ac43b5b41347083ae8b948128660fe4a76b21b8ab41253901dcc8acedbfe10",
+        "bytes": 89486
+      },
+      {
+        "path": "crates/orbit-core/src/updates.rs",
+        "sha256": "65e52640cdd3b0f5acc8795bbae02a56e39f43c449246e9bce91029a7f094112",
+        "bytes": 32390
+      },
+      {
+        "path": "crates/orbit-core/src/usage.rs",
+        "sha256": "8dec2167b3cb3151709ffaadf2613bdd64a5a0443f4051d35346f8bbd225a7ce",
+        "bytes": 5774
+      },
+      {
+        "path": "crates/orbit-core/src/vault.rs",
+        "sha256": "905bb0a4b9b2e9e011332c721e7e392201f3e9a4920b682a98976182a60b97d8",
+        "bytes": 8784
+      },
+      {
+        "path": "crates/orbit-core/src/vault/macos_mapping_access.rs",
+        "sha256": "9afd09f830637f005014c6dbb9a84be6a98dac336e3ff8282b02857ff48a96b0",
+        "bytes": 40841
+      },
+      {
+        "path": "crates/orbit-core/src/vault/windows_mapping_access.rs",
+        "sha256": "459b87cc288a7c113f1416f62b60fa4a1dbdc91c95741c4013eb1d8483f092fa",
+        "bytes": 2535
+      },
+      {
+        "path": "crates/orbit-core/src/windows_clients.rs",
+        "sha256": "a5de3dbd0a3e87a20b5a0a7068525f0de7eb96a1a0161b4fae944a3b8513a9ec",
+        "bytes": 28499
+      },
+      {
+        "path": "crates/orbit-core/src/windows_fs.rs",
+        "sha256": "a3646003779db63f0d90bd81e661e974c2ac575c02972280b4fc04998b0114d2",
+        "bytes": 13379
+      },
+      {
+        "path": "crates/orbit-core/tests/fixtures/public-wire.json",
+        "sha256": "507077fe227e5ea6fedfc8b03381a74c3c5b6b066aa908a29042b963e7f60289",
+        "bytes": 16977
+      },
+      {
+        "path": "crates/orbit-core/tests/fixtures/updater-wire.json",
+        "sha256": "419ca5760627ace6c4d762b787ebed7b2b9332b172cd17f06f4d12b4bf7f056b",
+        "bytes": 1207
+      },
+      {
+        "path": "crates/orbit-core/tests/macos_native_preflight.rs",
+        "sha256": "2bd7470fae85a0c9df9858d8e85d34092acdca3c7058b69d3a707424fedec646",
+        "bytes": 9563
+      },
+      {
+        "path": "crates/orbit-core/tests/updater_cli.rs",
+        "sha256": "80c4105f3acad236718eedc517f9b1096abea27e27bffbff98f1d09ee4e6793c",
+        "bytes": 3561
+      },
+      {
+        "path": "crates/orbit-helper/Cargo.toml",
+        "sha256": "5d96e967f74355f8231a81523d9c35f5767799199bd510c58ddeb3d21deca2ab",
+        "bytes": 278
+      },
+      {
+        "path": "crates/orbit-helper/src/main.rs",
+        "sha256": "1703830ba0d446074bf9a7281aaf71167c40c8e6bc2af3c036ccb8b6f3176575",
+        "bytes": 4960
+      },
+      {
+        "path": "index.html",
+        "sha256": "712631aa9055c7dbf606c604d8d1af52e0f56336651dbee7ebc6e4aa3cfaa4e3",
+        "bytes": 356
+      },
+      {
+        "path": "package-lock.json",
+        "sha256": "e45d1deee8872ca2278f76a6350508afe3dd4e02c64423c7a1d43fc7219699d9",
+        "bytes": 164558
+      },
+      {
+        "path": "package.json",
+        "sha256": "951076ee4a0cbe5009ee89c316b5ddc7fa65b217145fb0b9ad6de79a89fce93c",
+        "bytes": 1711
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "sha256": "3003a09987459e5921dcddde94f8ea929b2d5e66efbbc30160e9d78de7ff010a",
+        "bytes": 51
+      },
+      {
+        "path": "src-tauri/Cargo.toml",
+        "sha256": "f124438db312f4572764eb98f9ca07d9c2d70e1da4a01d060e2fda77a3be574b",
+        "bytes": 1165
+      },
+      {
+        "path": "src-tauri/build.rs",
+        "sha256": "4e713ba43fd25e9d00308b69fbf50649327ae94c9f252b61e0978ef606e612f7",
+        "bytes": 3531
+      },
+      {
+        "path": "src-tauri/capabilities/main.json",
+        "sha256": "3f425168c950da7418d7b6e45b2a66f42358d6dfb9f5ba2931e6516b70e6262d",
+        "bytes": 299
+      },
+      {
+        "path": "src-tauri/capabilities/menubar.json",
+        "sha256": "81ad1110f911203910dafa78397c9aae2c7c6ddfc01f81afb0ac9fc6bc97ba0c",
+        "bytes": 443
+      },
+      {
+        "path": "src-tauri/capabilities/windows-chrome.json",
+        "sha256": "7883fe6348e37bc4ef306ff74c23c19360876c71fc2aff110287ebfbe3c7ef46",
+        "bytes": 340
+      },
+      {
+        "path": "src-tauri/dmg/background.png",
+        "sha256": "6726ca4a023d8bb660934020ab4a8fc8d6a6093cd57a6bd2fd7f887cd6dea5e2",
+        "bytes": 749183
+      },
+      {
+        "path": "src-tauri/icons/1024x1024.png",
+        "sha256": "29f67d4081d022bec0ee92dc221b36ea7e62afb003525513c32fce67afddbf39",
+        "bytes": 24626
+      },
+      {
+        "path": "src-tauri/icons/128x128.png",
+        "sha256": "b00011b39256ebe3d82369cad2efdc8f4ea682bfbc325ea45fd8f007cc172b43",
+        "bytes": 2696
+      },
+      {
+        "path": "src-tauri/icons/128x128@2x.png",
+        "sha256": "942f744937a2d9e6640e8d4557a9313122d2213436cb2126152f507446cda615",
+        "bytes": 5378
+      },
+      {
+        "path": "src-tauri/icons/16x16.png",
+        "sha256": "ec2e13fa971fe2891a919b955158b025fc7c5964426ff17043d7a9a638601bcf",
+        "bytes": 432
+      },
+      {
+        "path": "src-tauri/icons/256x256.png",
+        "sha256": "942f744937a2d9e6640e8d4557a9313122d2213436cb2126152f507446cda615",
+        "bytes": 5378
+      },
+      {
+        "path": "src-tauri/icons/32x32.png",
+        "sha256": "65ca9a6f081d48ebeb94cfcf4fe6f188839872ce584f476827fee9e8ce40023a",
+        "bytes": 819
+      },
+      {
+        "path": "src-tauri/icons/512x512.png",
+        "sha256": "8a0af83b029eaae8c68dd721ac854282b943b676ffb452f56891d8033f3e52d2",
+        "bytes": 11042
+      },
+      {
+        "path": "src-tauri/icons/64x64.png",
+        "sha256": "dadaaa425b91b8683a6717acd36282fb0e3a1971567e9cff7c4b36cf640763ba",
+        "bytes": 1415
+      },
+      {
+        "path": "src-tauri/icons/icon.icns",
+        "sha256": "dfece66841562f857777ca793923ec10fd4c78abc9b8d99aa63ebbaf2048d3b8",
+        "bytes": 65372
+      },
+      {
+        "path": "src-tauri/icons/icon.ico",
+        "sha256": "4c71dc85218b5c2f8d34beba85522701be47a889f63b6db3e9e79c7c436af935",
+        "bytes": 11590
+      },
+      {
+        "path": "src-tauri/icons/icon.png",
+        "sha256": "8a0af83b029eaae8c68dd721ac854282b943b676ffb452f56891d8033f3e52d2",
+        "bytes": 11042
+      },
+      {
+        "path": "src-tauri/icons/tray-template.svg",
+        "sha256": "db94e275bafbf95a7bd8807f3363033dabe92dcb6ff259f30a2d5a7894dca62e",
+        "bytes": 301
+      },
+      {
+        "path": "src-tauri/icons/tray-template@2x.png",
+        "sha256": "9dd54781b6a46b0c644c8b162edc1e28171f5183d5eaf087bbd8c913e057c782",
+        "bytes": 692
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/apply_client_config.toml",
+        "sha256": "e889df31943d74df094a608df40e3c8844091b160972e180567af66ae57a3e69",
+        "bytes": 414
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/bootstrap.toml",
+        "sha256": "e249330f5e035d21dbf7ed00caa59fd1795c8f9500d4e5c5da7d8f989eb21c3e",
+        "bytes": 354
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/cancel_image_task.toml",
+        "sha256": "85c96e6ac05f6944a2172db25a3172f1c31361ef8a846b9de9e0cdbeae9a30ca",
+        "bytes": 402
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/cancel_login.toml",
+        "sha256": "90b13dc0dff1e9bbddb129034a462ddda969affbde492c7bdb516a0cbbac14af",
+        "bytes": 372
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/cancel_node_probes.toml",
+        "sha256": "e1de447ffe4c9a908f26b5f95f7d8d6ea7cb5902f8363494ba9481238e5de6ee",
+        "bytes": 408
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/cancel_update_download.toml",
+        "sha256": "e73c82d4e61cbeffce76133117b45a5ab35b253ad61c00c14682fb0fb66cacf4",
+        "bytes": 432
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/check_update.toml",
+        "sha256": "8a2618268d0a8b53fa6028b5430c86382418fe54d605e11201e137496d8c7e24",
+        "bytes": 372
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/copy_image.toml",
+        "sha256": "38a8f3f7f7c6f6787acbf25c9cc11093bd2bb80576d0ac5358d2c4f559caeb26",
+        "bytes": 360
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/create_image_task.toml",
+        "sha256": "83b84c5929070b0a4ddbd115758396fdf0fb2709578c5d85637bad8b647f8bf7",
+        "bytes": 402
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/delete_history.toml",
+        "sha256": "51d100d1be78540ea5a44e1ad035c9de98695994c4d868c2e56f0231f9e0c1bc",
+        "bytes": 384
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/download_update.toml",
+        "sha256": "ecab050b11e124f58936dad3826026120ff5e5fc933613cb135e5778a43bc9af",
+        "bytes": 390
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/export_claude_import.toml",
+        "sha256": "207222504f3a4e4053788af42ce48dcbbb550131cf19fc8c46580029aeda9c3b",
+        "bytes": 420
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/export_diagnostics.toml",
+        "sha256": "254736c7665821e335c0f37cd5b654c8b043e8c0fafc494b9f4da867d36b9deb",
+        "bytes": 408
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/install_update.toml",
+        "sha256": "592d0fe9e1ac87294b9456acbef0a81155f13682e52be8f147b4024d9abb7f20",
+        "bytes": 384
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/list_models.toml",
+        "sha256": "31a3a73cff7841fe63dde7d8294374d839349e995c8285e752086c43848434bc",
+        "bytes": 366
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/list_usage_records.toml",
+        "sha256": "2eae3089cca57fb457ca00851baf733f4e67d682a7f8b4da95d7ad32f08d8a85",
+        "bytes": 408
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/logout.toml",
+        "sha256": "0c15bcde492a5025ae724c5000e60664bd81b817ea837409d0a67a44aed171a0",
+        "bytes": 336
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/menubar_control.toml",
+        "sha256": "e7487669423d7fd4d4e2f027791a0f4e7badea7938f210fedd34f1f16a8c7a80",
+        "bytes": 390
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/prepare_diagnostics.toml",
+        "sha256": "4a19f728a4e06424f8d83a6f58d87a94b698418b7bc50ffc22698e4bcda87ed5",
+        "bytes": 414
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/preview_client_config.toml",
+        "sha256": "90708550a99ec66af3425cd7f8a680db7aa36e5b5f340917c9542af9b61bffc9",
+        "bytes": 426
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/preview_restore.toml",
+        "sha256": "63b8c001ee96ab1a2f48f6f44c14ae1177c4f00b2abaf8068e08e719880c743b",
+        "bytes": 390
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/probe_nodes.toml",
+        "sha256": "46570d8695a1df82567877d8f708e3229b975cda5056ba31459b9f19233111e2",
+        "bytes": 366
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/read_usage_summary.toml",
+        "sha256": "dc8f82d860e9c3b7282ae1a394d9287042908e5d06f7024130fe90887fb4151e",
+        "bytes": 408
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/refresh_account.toml",
+        "sha256": "e36eff735edbe5dacfe5b7f1dad2d0bda0e9e2e0f3b580fe9dc93221d52b2cb5",
+        "bytes": 390
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/restore_client_config.toml",
+        "sha256": "b3f7b0323ea28c9c2c01032c42eae9ce9a6e094fff2461d91326db2d0afd9ffb",
+        "bytes": 426
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/retry_local_save.toml",
+        "sha256": "f172a02e4d5225af46f88d2d14b923100c40d2cfc1b7b23a0dbaba0eb70146fc",
+        "bytes": 396
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/save_image_as.toml",
+        "sha256": "bc18764296e9974a461143a66ca27ad993bb132ff734cdc5503d415f49f3ea82",
+        "bytes": 378
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/select_image_inputs.toml",
+        "sha256": "9415891e8645eca51ca5628402cfdcd05668afe815d76c3db9b47473be555bf8",
+        "bytes": 414
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/select_node.toml",
+        "sha256": "fb11bb4a6b62145b9e2a75e42cff2e61a731619d798f1beda2103752c5b39dad",
+        "bytes": 366
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/start_login.toml",
+        "sha256": "2e326a090a1ab9338b77cff3819aacd69f0c586b2b0796eadfc3602c28c9cd3e",
+        "bytes": 366
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/update_settings.toml",
+        "sha256": "5a0372e0f9d258a262d26c9592dbd503fc228c46e1f47d98b2037fd3fef0718e",
+        "bytes": 390
+      },
+      {
+        "path": "src-tauri/permissions/autogenerated/use_history_as_input.toml",
+        "sha256": "1821871f3a7393c26227450fb107e8afd02a78f797c69d8043eea7f1198bb572",
+        "bytes": 420
+      },
+      {
+        "path": "src-tauri/permissions/orbit-services.toml",
+        "sha256": "3c6df4f3a1bdc0b8b8a092705eb7a70df0182e51efaef097eda32d4c3bcd6404",
+        "bytes": 764
+      },
+      {
+        "path": "src-tauri/src/commands.rs",
+        "sha256": "20e0ee0c23c5fb6375f670e3a88421356d64f18274757ff58bf17f570d7bcf53",
+        "bytes": 23104
+      },
+      {
+        "path": "src-tauri/src/desktop.rs",
+        "sha256": "dc13de7b93181a46cb938275c61cc98f1727cd8de97a971a53f850852ecceaa5",
+        "bytes": 14667
+      },
+      {
+        "path": "src-tauri/src/lib.rs",
+        "sha256": "fe97e885ead4fbfb02f363c4263f66a03e6183f9390faea0210d9017830a2359",
+        "bytes": 14099
+      },
+      {
+        "path": "src-tauri/src/main.rs",
+        "sha256": "ef53bf51815e3de1e1da310610f75d8630b920b25a5f415a6c124216f050ae00",
+        "bytes": 227
+      },
+      {
+        "path": "src-tauri/src/menubar.rs",
+        "sha256": "f07beacb64e9f6746695c3f59626cfecb2d53ddeb63b8b9d9d4e05b7ab4b99fc",
+        "bytes": 16341
+      },
+      {
+        "path": "src-tauri/src/menubar_geometry.rs",
+        "sha256": "08edfc1653aec905581ac94384882321da491e0d978e4534d9548961f115b63d",
+        "bytes": 6777
+      },
+      {
+        "path": "src-tauri/src/native_acceptance.rs",
+        "sha256": "b0787d88867e022b05159f19a09e636cd20c2e1d0366e70ca0cdf4f29b64f653",
+        "bytes": 4032
+      },
+      {
+        "path": "src-tauri/src/startup.rs",
+        "sha256": "ebffa7684dcfb6acd0ceca2a52f533fb8747297ca5d0a09aeb65eb9f00674e45",
+        "bytes": 1666
+      },
+      {
+        "path": "src-tauri/tauri.conf.json",
+        "sha256": "c1c86de874a7f4a87b6d2f4f2cf2cf44abf92ba5cf98049efa0fed949ed45ee4",
+        "bytes": 2341
+      },
+      {
+        "path": "src-tauri/tauri.windows.conf.json",
+        "sha256": "996d3d803e9983831269bac33c99774173da200f2df152c22a7c80bb8b348b5d",
+        "bytes": 271
+      },
+      {
+        "path": "src/App.vue",
+        "sha256": "1a2253f9c8064553ae441337bf13b70b2ec56277e24b52b4dc31e40b1c44f2bb",
+        "bytes": 6271
+      },
+      {
+        "path": "src/MenubarApp.vue",
+        "sha256": "1dcfd3d8f79268443c465251e0926a668867efd177437136e3ff1393a9eb5f8f",
+        "bytes": 12431
+      },
+      {
+        "path": "src/assets/claude-desktop.png",
+        "sha256": "1f249bbb778ae928247321ef0f4b40cb4edeb8fd896e344f4c978df48f724be6",
+        "bytes": 22681
+      },
+      {
+        "path": "src/assets/codex-app.png",
+        "sha256": "de7d43f3386105ab20952958c2c25beb0d903e2aeb6e1aef57c49a648c0d1c07",
+        "bytes": 493468
+      },
+      {
+        "path": "src/assets/orbit-app-icon.svg",
+        "sha256": "35780d6dee79135c26e58e55f2292dab8e82429cf08efc8f50674a68c6a14b23",
+        "bytes": 434
+      },
+      {
+        "path": "src/assets/orbit-mark.svg",
+        "sha256": "39e60a0fa22ec1d1a318f2f2e1d5f2c67c86a8a7d895d1002e0f77ae18ec6d03",
+        "bytes": 503
+      },
+      {
+        "path": "src/components/ClientRow.vue",
+        "sha256": "cecc75ad24fe886bea0ac1567358bd38792a2477e916d701e4b718fdce598e32",
+        "bytes": 3032
+      },
+      {
+        "path": "src/components/ConfigReviewDialog.vue",
+        "sha256": "77c7a85308a48531880bc428b20498420576a76d9f40d8622c4ad1a9801d0864",
+        "bytes": 13901
+      },
+      {
+        "path": "src/components/OrbitDialog.vue",
+        "sha256": "78e1025e881123e9fa5005e9ceb4654d179200f1650ece3f533a7c0ef9d63baf",
+        "bytes": 1710
+      },
+      {
+        "path": "src/components/OrbitIcon.vue",
+        "sha256": "bd7a4d34c63860efe7e8e3ad2258117ae55d96e685431b05823bf939fcd38ad6",
+        "bytes": 2490
+      },
+      {
+        "path": "src/components/OrbitSelect.vue",
+        "sha256": "21e989ae97a5da8f313d960ac91fc2f6cfca1700848550f9764862f75f6de40e",
+        "bytes": 2436
+      },
+      {
+        "path": "src/components/StatusBadge.vue",
+        "sha256": "d70863bade017fd03533dc178541076586b5d871d0d28a8fae9a5494c988505d",
+        "bytes": 338
+      },
+      {
+        "path": "src/components/WindowControls.vue",
+        "sha256": "f8aef7c36e83d0e2caaf6a26270f6d5501deb8cd3f39e1b900798364b763c388",
+        "bytes": 1885
+      },
+      {
+        "path": "src/composables/useAppearance.ts",
+        "sha256": "5fc2e9a021129d9abfdfafed81fdd3e1bc4ea5d2f0b4ec2143fee52c38e30583",
+        "bytes": 974
+      },
+      {
+        "path": "src/composables/useMenubar.ts",
+        "sha256": "ec9a52c61b879a965d0b879725c2beaf8c434826ce88e4ea4eeadad7e3c22d00",
+        "bytes": 6768
+      },
+      {
+        "path": "src/composables/useNodeLatency.ts",
+        "sha256": "e1e6b1509fe8a7baf74af10c7bdb8685500cadfa10d91992945789fbb04d341f",
+        "bytes": 6739
+      },
+      {
+        "path": "src/composables/useUsage.ts",
+        "sha256": "f641d5dc4272bc3f6ce4c2abd5829ee360fbcc16b87bc80328fb4102244f0e0b",
+        "bytes": 4279
+      },
+      {
+        "path": "src/main.ts",
+        "sha256": "3970db9c02d92472a87f62e4dd21d095618f265653fc23dbcd007ab01d206064",
+        "bytes": 569
+      },
+      {
+        "path": "src/menubar.css",
+        "sha256": "a535520643d85500407b81dbd14e413f38392a2df30d0d7386b0c066fc0fc3d3",
+        "bytes": 10831
+      },
+      {
+        "path": "src/pages/AccessPage.vue",
+        "sha256": "1343983cd650c33670b236bee28d49b0b9850ea461a78582b386b346f09dcb42",
+        "bytes": 15125
+      },
+      {
+        "path": "src/pages/HomePage.vue",
+        "sha256": "2d6c7b1b7897b4a61f20dc8c66facda48f4bce069050e3b751c4ac52a00e2e74",
+        "bytes": 2583
+      },
+      {
+        "path": "src/pages/ImagesPage.vue",
+        "sha256": "ad7ef4615be0a8f745611385eea63be3adf6fae0c8cb3f53d795f9e7e7b7a27f",
+        "bytes": 25579
+      },
+      {
+        "path": "src/pages/SettingsPage.vue",
+        "sha256": "3f916bbe00fd4df798e0a6cb90d5c1f99e9f4584ef8ac0a15d95b0a973cd0574",
+        "bytes": 13942
+      },
+      {
+        "path": "src/pages/UsagePage.vue",
+        "sha256": "97b1f2833a3f73f36f0dd32e2e134f66dcb68c46ab284a58bffd047a05b53d27",
+        "bytes": 20952
+      },
+      {
+        "path": "src/router.ts",
+        "sha256": "fa692e2018b6d9ff8629473b58d99f5c54f1bd2441bba5352b1dcf92170d1a24",
+        "bytes": 946
+      },
+      {
+        "path": "src/shared/bridge.ts",
+        "sha256": "2df66af68c25dc295a3bc80c3efd4ba5e7f70e8a922a5d867a51030ddff5abb1",
+        "bytes": 5885
+      },
+      {
+        "path": "src/shared/contracts.ts",
+        "sha256": "b86403d81bdbb27f727049040f98b93be8a422763416ea9cf598b22b142b4c9d",
+        "bytes": 15443
+      },
+      {
+        "path": "src/shared/format.ts",
+        "sha256": "3a34fe3436a302375e709142dbfecfcc966fa06165bbb3fcba1dfa05d438979b",
+        "bytes": 8140
+      },
+      {
+        "path": "src/shared/i18n.ts",
+        "sha256": "8e62d1bf732c57a53dfa6945453f94e5427c29dfe92fbf731bb1ef1bc6eb7b83",
+        "bytes": 54574
+      },
+      {
+        "path": "src/shared/image-parameters.ts",
+        "sha256": "04244467aa3de4ae7857e3b8152296aed353d7702fb410c8e75e206c1d5de63d",
+        "bytes": 6896
+      },
+      {
+        "path": "src/shared/updates.ts",
+        "sha256": "654373950573525223fe656acecc57d19379f060410fa1b86fb984486a994419",
+        "bytes": 1050
+      },
+      {
+        "path": "src/shared/usage.ts",
+        "sha256": "924c0aaa376b011220295dccf24b83c28537830835edf64bfcfa6128eb94cef7",
+        "bytes": 2860
+      },
+      {
+        "path": "src/stores/orbit.ts",
+        "sha256": "9b985d5c188d036160b3b683199f0ee3ee662a83bac09e47746b8b2993fc8a2c",
+        "bytes": 20535
+      },
+      {
+        "path": "src/style.css",
+        "sha256": "869076d13c03a9ce9904d03d295b1f65de7786c5b5b86a05c32c4002f5eb7103",
+        "bytes": 38446
+      },
+      {
+        "path": "tsconfig.json",
+        "sha256": "176d94c3b96443ed94fba597ca104d503853b7f98813b2ce20d6ddbe94d9cec2",
+        "bytes": 624
+      },
+      {
+        "path": "vite.config.ts",
+        "sha256": "28893b06404656c2b460a1cc37005831c2bfda04b5a1256ae2b30d4081899fec",
+        "bytes": 673
+      }
+    ],
+    "scope": "Historical initial baseline; current release candidate and its proof are identified by current_delivery and follow_up_ordinary_user."
+  },
+  "environment": {
+    "os": "Windows 11 Pro",
+    "version": "10.0.26100",
+    "architecture": "x86_64",
+    "screen": {
+      "width": 2560,
+      "height": 1600,
+      "monitors": 1
+    },
+    "rust": "1.97.1",
+    "node": "24.18.0",
+    "npm": "11.16.0",
+    "build_profile": "standard release / ThinLTO",
+    "webview2": "Existing runtime; release-style downloadBootstrapper configuration"
+  },
+  "artifacts": {
+    "candidate_version": "0.1.0",
+    "release_published": false,
+    "windows_signed": false,
+    "installer": {
+      "filename": "Orbit-windows-delivery-setup.exe",
+      "bytes": 7564382,
+      "sha256": "d2f009f1b61b891188c07b8f5963c3b4ff24012eef609a8974a23e82c230df1c",
+      "retained_local_filename": "Orbit-windows-delivery-core-verified-setup.exe"
+    },
+    "installed_program": {
+      "verification": "Exact bytes with the pinned Tauri UNK to NSS package marker",
+      "windows_image": {
+        "machine": "amd64",
+        "format": "PE32+",
+        "subsystem": "windows_gui"
+      },
+      "marker_offset": 24611018,
+      "bytes": 29894144,
+      "compiled_sha256": "2c10f059e6ccf5cf5a89d2658a118540c383402051badb41531b6f636802799d",
+      "expected_packaged_sha256": "5d2b646e921c2fef52ed73c9a449cf46b3834802247dfe5365805846b846a55e",
+      "packaged_sha256": "5d2b646e921c2fef52ed73c9a449cf46b3834802247dfe5365805846b846a55e"
+    },
+    "helper": {
+      "sha256": "c9980db46f36bd608b5afe8426a39a5348e6ca5ce9d28bb902e7beb15809b131",
+      "machine": "amd64",
+      "format": "PE32+",
+      "subsystem": "windows_gui"
+    }
+  },
+  "desktop": {
+    "status": "passed",
+    "startup": {
+      "observer_ready_before_launch": false,
+      "duration_ms": 12021,
+      "samples": 80,
+      "main_seen": true,
+      "maximum_consecutive_unresponsive": 0,
+      "visible_console": false
+    },
+    "checks": [
+      "startup window stays responsive with no visible console or PowerShell child",
+      "legacy close setting hides window, second launch activates primary, native tray Settings routes existing window",
+      "native tray left and right clicks open the same themed read-only flyout without a legacy popup; Escape and focus loss close it; navigation restores the existing main window",
+      "pending request continues while hidden, native Quit cancellation retains process, tray double-click restores window",
+      "opaque default and transparent edit submitted explicitly; restricted controls and collapsed summary verified",
+      "explicit quit-on-close terminates the primary process cleanly"
+    ],
+    "additional_verified": [
+      "Browser authorization, installation proof and Windows credential storage",
+      "Image generation/editing, reconciliation, Windows clipboard, native file dialogs, exact exported PNG bytes and history deletion",
+      "Settings, diagnostic preview/export and Windows update capability gates"
+    ],
+    "native_log": "runtime/logs/windows-native-desktop-final.log"
+  },
+  "ordinary_user": {
+    "status": "passed",
+    "elevated": false,
+    "scope": "Installed release executable; ordinary interactive user; no fixture or debugger",
+    "startup": {
+      "observer_ready_before_launch": true,
+      "duration_ms": 11914,
+      "samples": 79,
+      "main_seen": true,
+      "maximum_consecutive_unresponsive": 0,
+      "visible_console": false
+    },
+    "main_responsive": true,
+    "tray_exists": true,
+    "log": "runtime/windows-vm/evidence/startup-user/startup-user.log"
+  },
+  "clients": {
+    "final_executable_sha256": "5d2b646e921c2fef52ed73c9a449cf46b3834802247dfe5365805846b846a55e",
+    "final_helper_sha256": "c9980db46f36bd608b5afe8426a39a5348e6ca5ce9d28bb902e7beb15809b131",
+    "final_roundtrip": [
+      {
+        "client": "codex",
+        "installed_version": "26.1111.2228.0",
+        "app_path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0\\app",
+        "checks": [
+          "native preflight",
+          "guarded preview and save",
+          "GUI helper with piped stdout",
+          "installed CLI loaded catalog and authenticated helper-backed Responses request",
+          "exact restore",
+          "restored helper binding disabled"
+        ]
+      },
+      {
+        "client": "claude",
+        "installed_version": "5.11492.5",
+        "app_path": "%USERPROFILE%\\AppData\\Local\\AnthropicClaude\\app-5.11492.5",
+        "checks": [
+          "native preflight",
+          "guarded preview and save",
+          "GUI helper with piped stdout",
+          "installed Claude GUI invoked helper; Credential Manager mapping and controlled HTTPS forward",
+          "exact library restore and current client settings preserved",
+          "restored helper binding disabled"
+        ]
+      }
+    ],
+    "claude_installation_sequence": [
+      {
+        "step": 1,
+        "format": "MSIX",
+        "package_version": "5.11492.5.0",
+        "status": "passed",
+        "checks": [
+          "native preflight",
+          "guarded preview and save",
+          "GUI helper with piped stdout",
+          "installed Claude GUI invoked helper; Credential Manager mapping and controlled HTTPS forward",
+          "exact library restore and current client settings preserved",
+          "restored helper binding disabled"
+        ],
+        "orbit_candidate_sha256": "44ed0d9f7ab3a4820d5635218617cf169ae7cbb6564840facdad3e5fee1d6160",
+        "candidate_difference": "Only the later one-line Rustfmt change in windows_private_acl; final EXE and Codex rechecked on final artifact"
+      },
+      {
+        "step": 2,
+        "action": "Remove-AppxPackage and remove/check known Claude-owned app data",
+        "status": "passed",
+        "removed_scopes": [
+          "LocalAppData/Claude",
+          "LocalAppData/Claude-3p",
+          "LocalAppData/Claude-Data"
+        ],
+        "checked_absent": [
+          "MSIX registration",
+          "LocalAppData/AnthropicClaude",
+          "RoamingAppData/Claude",
+          "RoamingAppData/Claude-3p",
+          "LocalAppData/Packages/Claude_pzs8sxrjxfjjc",
+          "UserProfile/Claude"
+        ]
+      },
+      {
+        "step": 3,
+        "format": "full offline Squirrel EXE",
+        "version": "5.11492.5",
+        "installed_as_ordinary_user": true,
+        "setup_exit": 0,
+        "signature": "Valid; Anthropic, PBC",
+        "msix_registered": false,
+        "installer_sha256": "484fe481263a517fea20e4ce2f8ad2785fb373226720e5ad1ad5640c0c4fdef0",
+        "installer_url": "https://downloads.claude.ai/releases/win32/x64/5.11492.5/Claude-1403e2cf44abfb23809c8ae11238d5e9704a41c2.exe",
+        "status": "passed"
+      }
+    ],
+    "codex_cli_version": "0.169.0-alpha.11.1",
+    "codex_offline_desktop_format": "MSIX; no official non-Store full desktop EXE was available in the installer investigation"
+  },
+  "regressions": {
+    "windows": {
+      "core": {
+        "passed": 222,
+        "failed": 0,
+        "ignored": 2
+      },
+      "desktop": {
+        "passed": 9,
+        "failed": 0
+      },
+      "helper": {
+        "passed": 2,
+        "failed": 0
+      },
+      "log": "runtime/logs/windows-native-final-tests.log"
+    },
+    "macos": {
+      "core": {
+        "passed": 283,
+        "failed": 0,
+        "ignored": 3
+      },
+      "desktop": {
+        "passed": 8,
+        "failed": 0
+      },
+      "helper": {
+        "passed": 2,
+        "failed": 0,
+        "scope": "Earlier helper regression; final helper also checked natively on Windows"
+      },
+      "log": "runtime/logs/windows-adapter-settings-macos-final.log"
+    },
+    "frontend": {
+      "tests": 168,
+      "failed": 0,
+      "format": true,
+      "lint": true,
+      "typecheck": true,
+      "production_build": true,
+      "fixture_exclusion": true,
+      "log": "runtime/logs/windows-delivery-web-check.log"
+    },
+    "build_scripts": {
+      "passed": 10,
+      "failed": 0
+    },
+    "windows_rustfmt": "1.97.1 passed",
+    "windows_test_powershell_parser": "All scripts passed"
+  },
+  "bundled_materials": {
+    "notice_resources": [
+      {
+        "source": "LICENSE",
+        "bytes": 11358,
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "source": "NOTICE",
+        "bytes": 427,
+        "sha256": "7023c31e381de817b09d724bc159c45b944a2858571d292a45daf06a8833c3c6"
+      },
+      {
+        "source": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/LICENSE",
+        "bytes": 10926,
+        "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+      },
+      {
+        "source": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/NOTICE",
+        "bytes": 242,
+        "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+      },
+      {
+        "source": "crates/orbit-core/resources/codex/0.163.0-alpha.10.2/PROVENANCE.json",
+        "bytes": 2557,
+        "sha256": "fc8f61f12508b61ae615b069442f86f4efe6c4f8d9f73ca2b39489580f22ea68"
+      }
+    ],
+    "notice_resource_bytes": 25510,
+    "codex_catalog": {
+      "bytes": 472072,
+      "sha256": "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+      "purpose": "Model metadata and immutable configuration templates; no model weights or full client binaries"
+    }
+  },
+  "interrupted_restore": {
+    "initial_status": "failed",
+    "error_code": "codex_configuration_target_unverified",
+    "initial_phase": "publishing",
+    "subsequent_readonly_check": "Same Codex version; main and CLI Authenticode valid; full installed-client qualification passed",
+    "cause": "Exact transient trigger not established",
+    "recovery_status": "passed",
+    "method": "startup",
+    "after_phase": "restored",
+    "revoked_helper_verified": true,
+    "files": [
+      {
+        "path": "%USERPROFILE%\\.codex\\orivelle-orbit.models.json",
+        "sha256": null
+      },
+      {
+        "path": "%USERPROFILE%\\.codex\\config.toml",
+        "sha256": "d28bc3609b24cafa0cb6e48deb308f11f235cfb567cff9812fa8f9ddd1769a85"
+      }
+    ]
+  },
+  "fixture_teardown": {
+    "status": "passed",
+    "hosts_fixture_entry_absent": true,
+    "orbit_debug_policy_absent": true,
+    "fixture_root_certificate_absent": true,
+    "debug_port_not_listening": true
+  },
+  "preserved_failures": [
+    "Initial Claude first run changed main settings; explicit settings-preserving v2 restore added and tested",
+    "Original native script used stale hidden-icon positions and did not await Windows 11 overflow animation; actual Shell UIA notification target now settles before physical clicks",
+    "Original test expected WS_EX_TOOLWINDOW although Tao uses ITaskbarList::DeleteTab; actual taskbar entries now checked",
+    "Older fixture omitted usage summary and selectors omitted node latency text; corrected before final native pass",
+    "Reusable-VM assertions now match per-action logout deltas and each image to its own charged task; history was not discarded to satisfy assertions"
+  ],
+  "limits": [
+    "Controlled HTTPS peers do not prove production Panel/Edge integration or paid upstream behavior",
+    "Single native display; physical multiple monitors and mixed DPI not tested",
+    "Existing WebView2; a fresh system bootstrap download/install was not tested",
+    "macOS shared right-click fix has code and isolated native checks, but new physical status-bar right-click was not verified in this round",
+    "Unsigned internal candidate; official version preparation, publication and signing were not performed",
+    "Saved startup-update default is enabled; existing saved choice is retained; Windows still uses the existing manual installer update capability"
+  ],
+  "evidence_root": "runtime/windows-vm/evidence",
+  "follow_up_windows_appearance": {
+    "status": "passed",
+    "verified_on": "2026-11-15",
+    "source_commit": "5ef72a07ffcf482ff2318d837a9a79bf6ac018db",
+    "production_manifest_sha256": "46bad0be64edda33c006d4cc95e5e17d9139aa6e6c1b405bbd05c5c015ab74b5",
+    "changed_production_files": [
+      {
+        "path": "src/main.ts",
+        "sha256": "ccc37e05727c4ee561d3965ffd611474ff8d0536e15b849b5471712671fa50de",
+        "bytes": 680
+      },
+      {
+        "path": "src/style.css",
+        "sha256": "607eeb1c2e05a8c2d7e1021e0a9ce799dffe6156180fbdb3197f9dd8de373437",
+        "bytes": 39449
+      }
+    ],
+    "change_scope": "Only Windows platform class and scrollbar CSS; backend source and embedded helper are unchanged from the full configuration acceptance",
+    "installer": {
+      "filename": "Orbit-windows-appearance-verified-setup.exe",
+      "bytes": 7566324,
+      "sha256": "88173cfc45c1d2fc444b8b0aade3bf04176b6c1c7070ec5b91277df2909ea8ca"
+    },
+    "installed_program": {
+      "verification": "Exact bytes with the pinned Tauri UNK to NSS package marker",
+      "windows_image": {
+        "machine": "amd64",
+        "format": "PE32+",
+        "subsystem": "windows_gui"
+      },
+      "marker_offset": 24611210,
+      "bytes": 29894144,
+      "compiled_sha256": "4261cc42050bc282dffce0ad224a33e3df2a4aedafa561fa252f963b99ae7187",
+      "expected_packaged_sha256": "a7fdbf36bfe388c333466497e5a642554582ff58ff587967de121634369940f1",
+      "packaged_sha256": "a7fdbf36bfe388c333466497e5a642554582ff58ff587967de121634369940f1"
+    },
+    "helper_sha256": "c9980db46f36bd608b5afe8426a39a5348e6ca5ce9d28bb902e7beb15809b131",
+    "desktop": {
+      "status": "passed",
+      "checks": [
+        "startup window stays responsive with no visible console or PowerShell child",
+        "legacy close setting hides window, second launch activates primary, native tray Settings routes existing window",
+        "Windows scrollbars use a narrow rounded thumb and transparent track, with distinct light and dark theme colors",
+        "native tray left and right clicks open the same themed read-only flyout without a legacy popup; Escape and focus loss close it; navigation restores the existing main window",
+        "pending request continues while hidden, native Quit cancellation retains process, tray double-click restores window",
+        "opaque default and transparent edit submitted explicitly; restricted controls and collapsed summary verified",
+        "explicit quit-on-close terminates the primary process cleanly"
+      ],
+      "scrollbar_styles": {
+        "light": {
+          "width": "10px",
+          "track": "rgba(0, 0, 0, 0)",
+          "thumb": "color(srgb 0.196078 0.419608 0.345098 / 0.7)",
+          "accent": "#326b58",
+          "scrollable": true
+        },
+        "dark": {
+          "width": "10px",
+          "track": "rgba(0, 0, 0, 0)",
+          "thumb": "color(srgb 0.576471 0.792157 0.666667 / 0.7)",
+          "accent": "#93caaa",
+          "scrollable": true
+        }
+      },
+      "startup": {
+        "observer_ready_before_launch": false,
+        "samples": 79,
+        "duration_ms": 11922,
+        "maximum_consecutive_unresponsive": 0,
+        "visible_console": false
+      }
+    },
+    "ordinary_user": {
+      "status": "passed",
+      "elevated": false,
+      "startup": {
+        "observer_ready_before_launch": true,
+        "samples": 73,
+        "duration_ms": 11966,
+        "maximum_consecutive_unresponsive": 0,
+        "visible_console": false
+      },
+      "native_backend_readiness": "A separate follow-up found normal-user Codex discovery false; this appearance pass verified responsiveness and native window behavior only. See follow_up_ordinary_user for its correction and complete final acceptance."
+    },
+    "terminal_feedback": {
+      "reported_during": "acceptance, as clarified by user",
+      "original_window_owner": "Not captured; idle snapshot contained no visible console",
+      "test_entry_fix": "GUI test host starts PowerShell with UseShellExecute=false and CreateNoWindow=true; task arguments no longer rely on post-start -WindowStyle Hidden alone",
+      "test_host": {
+        "source": "tests/windows/hidden-test-host.cs",
+        "sha256": "e21ef7cdc34ae690497eac054979012b4a48067c32d8d76e6a8d712ffb420494",
+        "image": {
+          "machine": "amd64",
+          "format": "PE32+",
+          "subsystem": "windows_gui"
+        }
+      },
+      "interactive_desktop_observation": {
+        "scope": "Entire interactive desktop during acceptance; console SHOW events, including short-lived windows",
+        "duration_ms": 79287,
+        "console_events": 0,
+        "status": "passed"
+      }
+    },
+    "fixture_teardown": {
+      "status": "passed",
+      "hosts_fixture_entry_absent": true,
+      "orbit_debug_policy_absent": true,
+      "fixture_root_certificate_absent": true,
+      "debug_port_not_listening": true
+    },
+    "reused_configuration_evidence": {
+      "source_commit": "33ab358562f7a8976d76f2a1a3676b61fbfced1b",
+      "executable_sha256": "5d2b646e921c2fef52ed73c9a449cf46b3834802247dfe5365805846b846a55e",
+      "scope": "Full installed-client roundtrips and interrupted native recovery were run on the baseline artifact. They were not repeated for the two frontend appearance changes."
+    },
+    "frontend": {
+      "tests": 168,
+      "format": true,
+      "lint": true,
+      "typecheck": true,
+      "build": true,
+      "fixture_exclusion": true,
+      "log": "runtime/logs/windows-scrollbar-web-check.log"
+    },
+    "evidence_root": "runtime/windows-vm/evidence/windows-appearance-final"
+  },
+  "follow_up_ordinary_user": {
+    "status": "passed",
+    "verified_on": "2026-11-15",
+    "source_commit": "b4def7f408a9a29ec1c2098770dd4866a2237714",
+    "production_manifest_sha256": "36ec8c90ad374ada8bc80dfcdd3edfce6e2dcf6333f0325a19868f083b64e394",
+    "changed_since_baseline": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "b8b65648c490a22a4de3120dcfa12295c3122121fbce86cf9717fae56c89cfe5",
+        "bytes": 2518
+      },
+      {
+        "path": "crates/orbit-core/src/windows_fs.rs",
+        "sha256": "71bca6de3a556525eb240187d712e1e41b57f93bc462860f26d688ea44d2b828",
+        "bytes": 18515
+      },
+      {
+        "path": "src/main.ts",
+        "sha256": "ccc37e05727c4ee561d3965ffd611474ff8d0536e15b849b5471712671fa50de",
+        "bytes": 680
+      },
+      {
+        "path": "src/router.ts",
+        "sha256": "e77b50300dd1f4a7d01e585a43d549347ed48f2eb34fd1364ccd30123e793183",
+        "bytes": 1749
+      },
+      {
+        "path": "src/style.css",
+        "sha256": "6a30124dcddf9fb8139d00da19103613a3e8b2bea16f9f050ea30c4a356e3f20",
+        "bytes": 39725
+      }
+    ],
+    "changed_since_appearance": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "b8b65648c490a22a4de3120dcfa12295c3122121fbce86cf9717fae56c89cfe5",
+        "bytes": 2518
+      },
+      {
+        "path": "crates/orbit-core/src/windows_fs.rs",
+        "sha256": "71bca6de3a556525eb240187d712e1e41b57f93bc462860f26d688ea44d2b828",
+        "bytes": 18515
+      },
+      {
+        "path": "src/router.ts",
+        "sha256": "e77b50300dd1f4a7d01e585a43d549347ed48f2eb34fd1364ccd30123e793183",
+        "bytes": 1749
+      },
+      {
+        "path": "src/style.css",
+        "sha256": "6a30124dcddf9fb8139d00da19103613a3e8b2bea16f9f050ea30c4a356e3f20",
+        "bytes": 39725
+      }
+    ],
+    "acceptance_harness": {
+      "manifest_sha256": "bea518fa5fcb3ded284e17d07396248abcbe313936d582ecf1e456b5f3e9c29d",
+      "files": [
+        {
+          "path": "tests/windows/client-configuration.mjs",
+          "bytes": 18179,
+          "sha256": "89a10981182fc0564a2281eca7658861a8e931c9c1d4b1f031eb32cc57884475"
+        },
+        {
+          "path": "tests/windows/compare-executables.mjs",
+          "bytes": 2588,
+          "sha256": "484de8d38dee1db4c2afc3f82f7dce1c94fe1cd9f690c5f6d347eb32d36d114e"
+        },
+        {
+          "path": "tests/windows/console-trace.ps1",
+          "bytes": 3605,
+          "sha256": "c5f06a87f3d27068bf88bf4e631c9396c7dd64d49ef17910d00d7db0db0aa2b3"
+        },
+        {
+          "path": "tests/windows/desktop.mjs",
+          "bytes": 33946,
+          "sha256": "7cfae19e15264ab4198045025a539303d4dd4f1b022990df90649edf5c727d18"
+        },
+        {
+          "path": "tests/windows/file-dialog.ps1",
+          "bytes": 2800,
+          "sha256": "82dc8ae43265bc3cf2fc51c7d245ebaed2af53ca8cb1196a826cf83ef1b43c91"
+        },
+        {
+          "path": "tests/windows/fixture-user.ps1",
+          "bytes": 1261,
+          "sha256": "41e136a670da315ffc1edb132ff4c455fb94647a8a298315c2c3f21c834f67f7"
+        },
+        {
+          "path": "tests/windows/hidden-test-host.cs",
+          "bytes": 2646,
+          "sha256": "ffc0f28ad63908b6efdc1034f00710b4db86842bc2ebfcf573073576e6e4fe20"
+        },
+        {
+          "path": "tests/windows/input-driver.ps1",
+          "bytes": 6635,
+          "sha256": "9ceceed018389e6f6168ea94e583a8219cb29ec7d9976373009860ca2c96191a"
+        },
+        {
+          "path": "tests/windows/install-candidate.ps1",
+          "bytes": 2014,
+          "sha256": "c7dc7a7096213b644f9d661ca9cc41e2a8eca9f990f01029f846269a85b972e2"
+        },
+        {
+          "path": "tests/windows/lifecycle.ps1",
+          "bytes": 20293,
+          "sha256": "de9320d7c1088eda6b499174dbbfc782d18c3eec6a41ebc2dca5011091803249"
+        },
+        {
+          "path": "tests/windows/observe-claude.ps1",
+          "bytes": 10922,
+          "sha256": "4f0057a5c35d936bd95eeb59063a0de985a518819633af1d685136dd88081180"
+        },
+        {
+          "path": "tests/windows/panel-fixture.mjs",
+          "bytes": 19505,
+          "sha256": "c0460b8571ac9373bfe4ab3514da297d839494e4540ec6e0cecb41d36ed53666"
+        },
+        {
+          "path": "tests/windows/prepare-installers.ps1",
+          "bytes": 5277,
+          "sha256": "2a24b3b8b74b00b834a2ca9768a7f7350eaa345bf45732d2a58453f7a0884830"
+        },
+        {
+          "path": "tests/windows/probe-client-environment.ps1",
+          "bytes": 6132,
+          "sha256": "9a4c8370b107364a38e2b986c4aee928d9964760e63b6924020caeaff3bce2b9"
+        },
+        {
+          "path": "tests/windows/probe-user-backend.mjs",
+          "bytes": 1661,
+          "sha256": "ee6fa6b6688f0d35844b374321bbdee061cf3daa7e775e5ba688a988be403290"
+        },
+        {
+          "path": "tests/windows/startup-user.ps1",
+          "bytes": 3789,
+          "sha256": "198d1690a667197b4ea96fcc7b2c557cebb1a9e4ab365e4f22645f6566ceba02"
+        },
+        {
+          "path": "tests/windows/with-panel-fixture.ps1",
+          "bytes": 9185,
+          "sha256": "6e2bd4edbea0b4b49d48a3b3a79ac11313bc3e9381ff27aa678b2cb35b3dc2fa"
+        },
+        {
+          "path": "scripts/windows-package-evidence.mjs",
+          "bytes": 3140,
+          "sha256": "02c2edc4c8177785101d1e7d989d708530fae098b7ffa6fffc0a49f526795c8c"
+        }
+      ]
+    },
+    "export_permission_fix": {
+      "before": {
+        "access": [
+          {
+            "error": 0,
+            "opened": true,
+            "access": 393344
+          },
+          {
+            "error": 5,
+            "opened": false,
+            "access": 917632
+          }
+        ],
+        "directory": "C:\\OrbitLab\\delivery\\runtime\\tmp\\orbit-webview-FTIPUR",
+        "owner": "DESKTOP-3SAJI4R\\Morton Li",
+        "sddl": "O:S-1-5-21-1249746637-863471767-2223946557-1001G:S-1-5-21-1249746637-863471767-2223946557-513D:AI(A;ID;FA;;;BA)(A;ID;FA;;;SY)(A;ID;0x1200a9;;;BU)(A;ID;0x1301bf;;;AU)"
+      },
+      "correction": "The current owner only needs WRITE_DAC to protect its own staged file. WRITE_OWNER is now requested only when the owner differs, with a reopened-handle identity check before changing ownership. Private DACL validation remains required.",
+      "previous_client_subcases": [
+        {
+          "client": "codex",
+          "status": "passed",
+          "executable_sha256": "0e0f0b72656bccbe005d57c9c9023aa415c29dc54109c4e2796120b2971f443e",
+          "helper_sha256": "33038c5f673c639d268b8811a0c5de3876d3a9125f1f10c3246d854b40ff860e",
+          "source": "codex-completed/codex-subcase.json"
+        },
+        {
+          "client": "claude",
+          "status": "passed",
+          "executable_sha256": "0e0f0b72656bccbe005d57c9c9023aa415c29dc54109c4e2796120b2971f443e",
+          "helper_sha256": "33038c5f673c639d268b8811a0c5de3876d3a9125f1f10c3246d854b40ff860e",
+          "source": "claude-completed/claude-subcase.json"
+        }
+      ],
+      "previous_desktop_export_failure": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('已保存', { exact: true }) to be visible\u001b[22m\n"
+    },
+    "finding_and_fix": {
+      "before": {
+        "executable_sha256": "a7fdbf36bfe388c333466497e5a642554582ff58ff587967de121634369940f1",
+        "status": "failed",
+        "observed": "Native bootstrap completed but reported Codex not installed for the ordinary user; installed files, signatures, CLI version and current-user registration were valid",
+        "failure": "CreateFile backup-semantic ancestor open returned access denied on WindowsApps",
+        "failed_ancestor_probes": [
+          {
+            "path": "C:\\Program Files\\WindowsApps",
+            "access": 128,
+            "opened": false,
+            "open_error": 5,
+            "basic": false,
+            "basic_error": 0,
+            "legacy": false,
+            "legacy_error": 0
+          },
+          {
+            "path": "C:\\Program Files\\WindowsApps",
+            "access": 0,
+            "opened": false,
+            "open_error": 5,
+            "basic": false,
+            "basic_error": 0,
+            "legacy": false,
+            "legacy_error": 0
+          }
+        ]
+      },
+      "correction": "NtOpenFile requests only FILE_READ_ATTRIBUTES for every existing directory ancestor, without backup intent or synchronization access; retains no-reparse validation and deny-delete sharing. Private-root ACL, identity and signed installed-file verification remain required. Win32 forward-slash paths are normalized before entering the NT namespace.",
+      "security_regressions": [
+        "Held parent directory cannot be renamed; rename succeeds after handles close",
+        "Disk, canonical verbatim and forward-slash paths",
+        "Junction directory and file traversal rejected",
+        "Existing private owner/DACL and replacement identity checks"
+      ],
+      "initial_fix_attempt": {
+        "result": "63 Claude fixtures failed because mixed Win32 separators were not translated for the NT namespace; corrected before final build",
+        "log": "runtime/logs/windows-ordinary-user-fix-native-tests.log"
+      }
+    },
+    "artifacts": {
+      "installer": {
+        "filename": "Orbit-windows-delivery-setup.exe",
+        "bytes": 7565334,
+        "sha256": "d5269b193b675370383d81dbffe7b1b718779034ab7f17f5eee127f6350e627a"
+      },
+      "installed_program": {
+        "verification": "Exact bytes with the pinned Tauri UNK to NSS package marker",
+        "windows_image": {
+          "machine": "amd64",
+          "format": "PE32+",
+          "subsystem": "windows_gui"
+        },
+        "marker_offset": 24607466,
+        "bytes": 29868544,
+        "compiled_sha256": "3b70aad6fd263695329de06d5fb52744e224fd19598e1912e76d9e829b00a728",
+        "expected_packaged_sha256": "55b08d550b4ce21bfe633aa5783a4a8eabc39b8b1ee104e7ce390715a232f8d3",
+        "packaged_sha256": "55b08d550b4ce21bfe633aa5783a4a8eabc39b8b1ee104e7ce390715a232f8d3"
+      },
+      "helper_sha256": "952ee117a4b54efa2583e85fb628c3116374d09c84f78309f54f9a29135a242d"
+    },
+    "native_regressions": {
+      "source_commit": "b4def7f408a9a29ec1c2098770dd4866a2237714",
+      "scope": "Formal release regressions; subsequent test-only CREATE_NO_WINDOW flags leave the production module prefix byte-identical (SHA-256 78a8178f406e6cf3640c3369077e3f4c700175bf1ca77d51f67a2c7716ea4014); four filesystem tests also run under ordinary token in the formal profile",
+      "low_token_filesystem": {
+        "status": "passed",
+        "test_executable_sha256": "89c4fc7ebf5bdc8a48ba1e3a214731d6610ca7bfe43a40339719ede5f0aba8b5",
+        "session_id": 1,
+        "elevated": false,
+        "exit_code": 0,
+        "tests": 4,
+        "console_observer": {
+          "scope": "Entire interactive desktop during acceptance; console SHOW events, including short-lived windows",
+          "duration_ms": 2683,
+          "stop_requested": true,
+          "console_events": [],
+          "status": "passed"
+        }
+      },
+      "core": {
+        "passed": 224,
+        "failed": 0,
+        "ignored": 2
+      },
+      "desktop": {
+        "passed": 9,
+        "failed": 0
+      },
+      "helper": {
+        "passed": 2,
+        "failed": 0
+      },
+      "log": "runtime/logs/windows-export-privacy-native-tests.log"
+    },
+    "ordinary_user_native_qualification": {
+      "status": "passed",
+      "test_executable_sha256": "5fddac4347f12d27e26128f84aa1582f539db547349f0c0a2fdfc7498487c92d",
+      "session_id": 1,
+      "elevated": false,
+      "exit_code": 0,
+      "scope": "Actual installed Codex MSIX and Claude EXE; fresh native qualification and default-root validation; read-only",
+      "log": "ordinary-user-native-qualification.log"
+    },
+    "full_ordinary_user_acceptance": {
+      "principal": {
+        "elevated": false,
+        "session_id": 1,
+        "user_sid": "S-1-5-21-1249746637-863471767-2223946557-1001"
+      },
+      "physical_input_driver": {
+        "helper_observations": 6,
+        "scope": "Elevated physical input and passive process observation only; Orbit and client processes remain ordinary user",
+        "elevated": true,
+        "requests": 12,
+        "duration_ms": 546591,
+        "actions": [
+          {
+            "action": "right-click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "menu-item",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "right-click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "main-click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "right-click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "menu-item",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "right-click",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "menu-item",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "dialog",
+            "process": 11420,
+            "ok": true
+          },
+          {
+            "action": "double-click",
+            "process": 11420,
+            "ok": true
+          }
+        ]
+      },
+      "scope": "Orbit, both installed clients, helper, native IPC and functional assertions run as the ordinary interactive user. Separate elevated test processes provision the HTTPS peer, send physical mouse input against the installed Orbit process and passively observe process ancestry. Both client roundtrips and desktop assertions completed against the current installed executable and helper.",
+      "desktop_checks": [
+        "startup window stays responsive with no visible console or PowerShell child",
+        "actual installed clients: configuration, Windows Credential Manager helper, native mapping, exact restore and revocation",
+        "legacy close setting hides window, second launch activates primary, native tray Settings routes existing window",
+        "Windows scrollbars use a narrow rounded thumb and transparent track, with distinct light and dark theme colors",
+        "native tray left and right clicks open the same themed read-only flyout without a legacy popup; Escape and focus loss close it; navigation restores the existing main window",
+        "pending request continues while hidden, native Quit cancellation retains process, tray double-click restores window",
+        "opaque default and transparent edit submitted explicitly; restricted controls and collapsed summary verified",
+        "explicit quit-on-close terminates the primary process cleanly"
+      ],
+      "client_progress": [
+        {
+          "client": "codex",
+          "snapshot_id": "bf88232d-b304-4e5b-b9fa-a848c1d12da3",
+          "before_sha256": [
+            null,
+            "d28bc3609b24cafa0cb6e48deb308f11f235cfb567cff9812fa8f9ddd1769a85"
+          ],
+          "client_request_completed": true,
+          "helper_pipe_verified": true,
+          "restored": true,
+          "revoked_helper_verified": true
+        },
+        {
+          "client": "claude",
+          "snapshot_id": "b716034c-f44c-49d2-9003-a08130108bda",
+          "before_sha256": [
+            null,
+            null,
+            "581b0ea9bf832b5cf9966d2d7124dee1e5855b9d1c8fa037b92a8788159d7139"
+          ],
+          "client_request_completed": true,
+          "helper_pipe_verified": true,
+          "restored": true,
+          "revoked_helper_verified": true
+        }
+      ],
+      "clients": [
+        {
+          "client": "codex",
+          "installed_version": "26.1111.2228.0",
+          "app_path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0\\app",
+          "checks": [
+            "native preflight",
+            "guarded preview and save",
+            "GUI helper with piped stdout",
+            "installed CLI loaded catalog and authenticated helper-backed Responses request",
+            "exact restore",
+            "restored helper binding disabled"
+          ]
+        },
+        {
+          "client": "claude",
+          "installed_version": "5.11492.5",
+          "app_path": "C:\\Users\\Morton Li\\AppData\\Local\\AnthropicClaude\\app-5.11492.5",
+          "checks": [
+            "native preflight",
+            "guarded preview and save",
+            "GUI helper with piped stdout",
+            "installed Claude GUI invoked helper; Credential Manager mapping and controlled HTTPS forward",
+            "exact library restore and current client settings preserved",
+            "restored helper binding disabled"
+          ]
+        }
+      ],
+      "client_roundtrip_runs": [
+        {
+          "clients": ["codex", "claude"],
+          "subcase_status": "passed",
+          "enclosing_run_status": "passed",
+          "source": "acceptance.json"
+        }
+      ],
+      "scrollbar_styles": {
+        "light": {
+          "width": "10px",
+          "track": "rgba(0, 0, 0, 0)",
+          "thumb": "color(srgb 0.196078 0.419608 0.345098 / 0.7)",
+          "accent": "#326b58",
+          "scrollable": true,
+          "top": 50,
+          "bottom": 780,
+          "titlebar_bottom": 50,
+          "viewport_height": 780,
+          "document_scrolls": false
+        },
+        "dark": {
+          "width": "10px",
+          "track": "rgba(0, 0, 0, 0)",
+          "thumb": "color(srgb 0.576471 0.792157 0.666667 / 0.7)",
+          "accent": "#93caaa",
+          "scrollable": true,
+          "top": 50,
+          "bottom": 780,
+          "titlebar_bottom": 50,
+          "viewport_height": 780,
+          "document_scrolls": false
+        }
+      },
+      "startup": {
+        "observer_ready_before_launch": false,
+        "samples": 80,
+        "duration_ms": 11894,
+        "maximum_consecutive_unresponsive": 0,
+        "visible_console": false
+      },
+      "native_file_exports": {
+        "image": {
+          "native_picker": true,
+          "exact_fixture_bytes": true
+        },
+        "diagnostics": {
+          "native_picker": true,
+          "readback_platform": "windows / x86_64"
+        },
+        "basis": "The bound native acceptance harness completed both file readback assertions before reporting passed."
+      }
+    },
+    "content_scroll": {
+      "source_commit": "9f4b7a6e2ecacba1419a7e1c4ad79e9591061a37",
+      "scope": "Shared Windows and macOS layout; main content scrolls below fixed titlebar and navigation; router restores content scroll and client anchors",
+      "frontend_tests": 168,
+      "e2e": {
+        "passed": 6,
+        "failed": 0,
+        "scope": "Existing Chrome with native IPC fixture; Windows and macOS UAs, 1160px/640px; not a physical macOS status-bar click",
+        "log": "runtime/logs/content-scroll-e2e-authorized.log"
+      },
+      "web_check": "runtime/logs/content-scroll-web-check.log"
+    },
+    "inspector_free_startup": {
+      "scope": "Installed release executable; ordinary interactive user; no fixture or debugger",
+      "elevated": false,
+      "status": "passed",
+      "startup": {
+        "observer_ready_before_launch": true,
+        "samples": 78,
+        "duration_ms": 12020,
+        "maximum_consecutive_unresponsive": 0,
+        "visible_console": false
+      }
+    },
+    "backend_readiness": {
+      "scope": "Ordinary interactive user; transient loopback inspector for native backend readiness; no HTTPS fixture",
+      "status": "passed",
+      "elevated": false,
+      "verified": true,
+      "observed_ready_after_ms": 13582,
+      "details": {
+        "platform": "windows",
+        "locale": "en",
+        "installed_codex_version": "26.1111.2228.0",
+        "initialized": true
+      }
+    },
+    "interactive_console_observer": {
+      "scope": "Entire interactive desktop during acceptance; console SHOW events, including short-lived windows",
+      "duration_ms": 581005,
+      "stop_requested": true,
+      "console_events": [],
+      "status": "passed"
+    },
+    "fixture_teardown": {
+      "orbit_debug_policy_absent": true,
+      "status": "passed",
+      "hosts_fixture_entry_absent": true,
+      "debug_ports_not_listening": true,
+      "fixture_root_certificate_absent": true
+    },
+    "input_harness_attempts": {
+      "first": "VM SetCursorPos rejected under the filtered test token; no configuration was written. Elevated physical-input driver was separated from ordinary software execution.",
+      "second": "Input driver initially omitted the disposable-vm child environment marker; lifecycle safety gate refused it.",
+      "fourth": "Claude WMI process-start subscription was cancelled under the ordinary token before GUI launch. Separated passive observation into the elevated driver and reran only Claude plus outstanding desktop checks; Codex completed evidence was preserved.",
+      "third": "Input driver initially decoded PowerShell UTF-8 through the system encoding; corrected explicit output/error UTF-8 readers. Failed attempts retained, not promoted to success.",
+      "evidence": [
+        "runtime/windows-vm/evidence/ordinary-user-first-attempt",
+        "ordinary-user-driver-scope-attempt",
+        "ordinary-user-driver-protocol-attempt"
+      ]
+    },
+    "evidence_root": "runtime/windows-vm/evidence/windows-ordinary-user-final",
+    "reused_evidence": {
+      "claude_msix": "Full MSIX GUI roundtrip was completed on the baseline artifact before uninstall and EXE install; not repeated after this generic directory-lock fix. Current artifact verifies the same WindowsApps directory mechanism with Codex MSIX and a full Claude EXE roundtrip.",
+      "macos": "Windows-only native source change; preceding macOS tests and isolated smoke remain the evidence. Physical macOS right-click and multiple displays are not claimed.",
+      "claude_secure_workspace": "Acceptance covers the real GUI message and credential/helper flow. Claude displayed an additional Windows feature setup notice for its secure workspace; tool execution or workspace provisioning was not exercised."
+    },
+    "temporary_task_cleanup": {
+      "installed_clients_and_evidence_retained": true,
+      "status": "passed",
+      "removed_tasks": [
+        "OrbitLab-Claude-Full-Exe-Install",
+        "OrbitLab-Console-Trace",
+        "OrbitLab-Delivery-Exe",
+        "OrbitLab-Delivery-Msix",
+        "OrbitLab-Delivery-Native",
+        "OrbitLab-Low-Client-Probe",
+        "OrbitLab-Msix-Acceptance",
+        "OrbitLab-Msix-Clients",
+        "OrbitLab-Startup-Backend",
+        "OrbitLab-Startup-User",
+        "OrbitLab-Tray-Probe"
+      ]
+    }
+  }
+}

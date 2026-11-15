@@ -4,6 +4,8 @@ use zeroize::Zeroizing;
 
 #[cfg(target_os = "macos")]
 mod macos_mapping_access;
+#[cfg(windows)]
+mod windows_mapping_access;
 
 /// Only native services and the narrowly scoped helper can access this trait.
 pub trait Vault: Send + Sync {
@@ -25,6 +27,8 @@ pub struct NativeVault {
     lock: Mutex<()>,
     #[cfg(target_os = "macos")]
     mapping_creator: Option<macos_mapping_access::MappingSecretCreator>,
+    #[cfg(windows)]
+    mapping_creator: Option<windows_mapping_access::MappingSecretCreator>,
 }
 impl Default for NativeVault {
     fn default() -> Self {
@@ -32,10 +36,22 @@ impl Default for NativeVault {
             lock: Mutex::new(()),
             #[cfg(target_os = "macos")]
             mapping_creator: None,
+            #[cfg(windows)]
+            mapping_creator: None,
         }
     }
 }
 impl NativeVault {
+    #[cfg(windows)]
+    pub fn with_claude_mapping_creator(root: std::path::PathBuf, helper_sha256: String) -> Self {
+        Self {
+            lock: Mutex::new(()),
+            mapping_creator: Some(windows_mapping_access::MappingSecretCreator::new(
+                root,
+                helper_sha256,
+            )),
+        }
+    }
     /// Inject immutable GUI deployment facts only. No OS or Keychain access is
     /// performed here; the helper's default vault has no creation capability.
     #[cfg(target_os = "macos")]
@@ -140,14 +156,14 @@ impl Vault for NativeVault {
     }
     fn create_claude_mapping_secret(&self, binding_id: &str, value: &[u8]) -> Result<()> {
         let _guard = self.lock.lock().map_err(|_| fail("vault_unavailable"))?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.mapping_creator
                 .as_ref()
                 .ok_or_else(|| fail("vault_unavailable"))?
                 .create(binding_id, value)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (binding_id, value);
             Err(fail("vault_unavailable"))

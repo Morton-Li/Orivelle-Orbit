@@ -194,6 +194,10 @@ const zh = {
   "access.connectOrbit": "接入 Orbit",
   "access.switchBack": "切回原配置",
   "access.switchBackPreservingPreferences": "保留 Claude 偏好后切回",
+  "access.switchBackPreservingSettings": "保留 Claude 设置后切回",
+  "access.restorePreservingSettings": "确认保留设置并恢复接入",
+  "access.restoredPreservingSettings":
+    "接入配置已恢复，Claude 的当前设置已保留。请完整退出目标应用并重新打开。",
   "access.switchHint": "Orbit 已保存接入配置。切回后请完整重启桌面工具。",
   "access.allCodexModels":
     "接入当前账户和节点可用的全部兼容模型。在 Codex 内切换使用。",
@@ -690,6 +694,10 @@ const en: Record<keyof typeof zh, string> = {
   "access.switchBack": "Switch back to original",
   "access.switchBackPreservingPreferences":
     "Switch back and keep Claude preferences",
+  "access.switchBackPreservingSettings": "Switch back and keep Claude settings",
+  "access.restorePreservingSettings": "Keep settings and restore connection",
+  "access.restoredPreservingSettings":
+    "Connection settings restored and current Claude settings preserved. Quit and reopen the client.",
   "access.switchHint":
     "Orbit access is configured. Quit and reopen the desktop app after switching back.",
   "access.allCodexModels":

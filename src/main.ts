@@ -6,6 +6,10 @@ import { router } from "./router";
 import "./style.css";
 
 const menubar = window.location.hash === "#/menubar";
+document.documentElement.classList.toggle(
+  "windows-platform",
+  navigator.userAgent.includes("Windows"),
+);
 document.documentElement.classList.toggle("menubar-window", menubar);
 document.documentElement.classList.toggle(
   "windows-tray-window",

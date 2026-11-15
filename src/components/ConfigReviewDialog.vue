@@ -80,7 +80,9 @@ const current = computed(() => {
     if (
       preview.restore_coordination != null &&
       (preview.client !== "claude" ||
-        preview.restore_coordination !== "claude_main_preferences_v1")
+        !["claude_main_preferences_v1", "claude_main_settings_v2"].includes(
+          preview.restore_coordination,
+        ))
     )
       return false;
     const source = preview.restore_source;
@@ -133,7 +135,7 @@ const preservingClaudePreferences = computed(
   () =>
     props.preview?.operation === "restore" &&
     props.preview.client === "claude" &&
-    props.preview.restore_coordination === "claude_main_preferences_v1",
+    props.preview.restore_coordination != null,
 );
 const codexReady = computed(() => {
   const preview = props.preview;
@@ -180,7 +182,7 @@ async function confirm() {
   const preservingPreferences =
     preview.operation === "restore" &&
     preview.client === "claude" &&
-    preview.restore_coordination === "claude_main_preferences_v1";
+    preview.restore_coordination != null;
   const result =
     preview.operation === "restore"
       ? await store.perform("config-apply", "restore_client_config", {
@@ -203,7 +205,9 @@ async function confirm() {
         : t(
             result.state === "restored"
               ? preservingPreferences
-                ? "access.restoredPreservingPreferences"
+                ? preview.restore_coordination === "claude_main_settings_v2"
+                  ? "access.restoredPreservingSettings"
+                  : "access.restoredPreservingPreferences"
                 : "access.restored"
               : "access.saved",
           ),
@@ -403,7 +407,9 @@ async function confirm() {
               preview.operation === "apply"
                 ? "access.saveLocalConfiguration"
                 : preservingClaudePreferences
-                  ? "access.restorePreservingPreferences"
+                  ? preview.restore_coordination === "claude_main_settings_v2"
+                    ? "access.restorePreservingSettings"
+                    : "access.restorePreservingPreferences"
                   : "access.restoreLocalConfiguration",
             )
           }}

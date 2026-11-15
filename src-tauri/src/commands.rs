@@ -8,6 +8,8 @@ use orbit_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+#[cfg(windows)]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -97,6 +99,7 @@ fn restore_coordination_selection<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<Option<ClaudeRestoreCoordination>, D::Error> {
     match String::deserialize(deserializer)?.as_str() {
         "claude_main_preferences_v1" => Ok(Some(ClaudeRestoreCoordination::MainPreferencesV1)),
+        "claude_main_settings_v2" => Ok(Some(ClaudeRestoreCoordination::MainSettingsV2)),
         _ => Err(serde::de::Error::custom("unsupported restore coordination")),
     }
 }
@@ -188,10 +191,34 @@ pub struct ScopedErrorEvent {
     pub connection_revision: Option<u64>,
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
-pub fn bootstrap(native: State<'_, Native>, request: Empty) -> Result<BootstrapView> {
+pub async fn bootstrap(native: State<'_, Native>, request: Empty) -> Result<BootstrapView> {
     let _ = request;
-    native.service.bootstrap()
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || service.bootstrap())
+        .await
+        .map_err(|_| fail("state_unavailable"))?
+}
+#[cfg(windows)]
+#[tauri::command]
+pub async fn bootstrap(
+    app: AppHandle,
+    startup: State<'_, crate::startup::Startup>,
+    request: Empty,
+) -> Result<BootstrapView> {
+    let _ = request;
+    startup.wait().await?;
+    let service = app
+        .try_state::<Native>()
+        .ok_or_else(|| fail("state_unavailable"))?
+        .service
+        .clone();
+    let state = tauri::async_runtime::spawn_blocking(move || service.bootstrap())
+        .await
+        .map_err(|_| fail("state_unavailable"))??;
+    crate::desktop::update_tray(&app, &state);
+    Ok(state)
 }
 #[tauri::command]
 pub async fn refresh_account(

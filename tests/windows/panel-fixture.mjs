@@ -3,6 +3,8 @@ import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:https";
+import path from "node:path";
+import { responseEvents } from "../../scripts/desktop-fake-gateway.mjs";
 
 export const panelOrigin = "https://orivelle.powerbyte.io";
 const api = "/api/v1/orbit";
@@ -78,6 +80,34 @@ export async function startPanelFixture() {
   node.connection_url = panelOrigin + "/v1";
   node.claude_base_url = panelOrigin;
   node.latency_probe_url = panelOrigin + "/healthz";
+  if (process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm") {
+    for (const catalog of [
+      wire.bootstrap_reply.data.models,
+      wire.models_reply.data,
+    ]) {
+      for (const item of catalog.filter(
+        (entry) => entry.model_category === "text",
+      )) {
+        item.codex_catalog_binding = {
+          state: "declared",
+          verified: false,
+          profile_id: "codex-cli-0.163.0-alpha.10.2",
+          cli_version: "0.163.0-alpha.10.2",
+          source_sha256:
+            "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
+          template_slug: "gpt-5.5",
+        };
+        item.reasoning = {
+          state: "restricted",
+          capability_status: "supported",
+          supported_efforts: ["medium", "high"],
+          allowed_efforts: ["medium", "high"],
+          default_effort: "medium",
+          revision: 1,
+        };
+      }
+    }
+  }
   const model = wire.models_reply.data.find(
     (item) => item.model_category === "image",
   );
@@ -108,6 +138,30 @@ export async function startPanelFixture() {
   const imageBodies = [];
   let nextImage;
   let installation;
+  if (process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm") {
+    // Reruns can reopen a previously authenticated synthetic session before
+    // starting a new authorization. Verify it with the persisted public key;
+    // never read signing secrets or relax proof validation for those requests.
+    const { DatabaseSync } = await import("node:sqlite");
+    let database;
+    try {
+      database = new DatabaseSync(
+        path.join(process.env.APPDATA, "io.orivelle.orbit", "orbit.sqlite3"),
+        { readOnly: true },
+      );
+      const row = database
+        .prepare(
+          "SELECT json_extract(payload,'$.id') installation_id,json_extract(payload,'$.public_key') public_key FROM records WHERE kind='installation' AND json_extract(payload,'$.origin')=?",
+        )
+        .get(panelOrigin);
+      if (row) installation = row;
+    } catch (error) {
+      if (!String(error.message).includes("unable to open database"))
+        throw error;
+    } finally {
+      database?.close();
+    }
+  }
   let approved = false;
   let revoked = false;
 
@@ -183,6 +237,28 @@ export async function startPanelFixture() {
           return;
         }
         if (route === "POST " + api + "/token") {
+          const grant = JSON.parse(body);
+          if (grant.grant_type === "refresh_token") {
+            assert(!revoked);
+            verifyProof(
+              request,
+              body,
+              installation,
+              token.session_id,
+              token.proof_nonce,
+            );
+            assert.equal(grant.refresh_token, token.refresh_token);
+            reply(response, {
+              data: {
+                ...token,
+                installation_id: installation.installation_id,
+                session_expires_at: new Date(
+                  Date.now() + 3_600_000,
+                ).toISOString(),
+              },
+            });
+            return;
+          }
           assert(approved, "The browser did not approve the request.");
           verifyProof(
             request,
@@ -191,7 +267,6 @@ export async function startPanelFixture() {
             start.authorization_request_id,
             start.proof_nonce,
           );
-          const grant = JSON.parse(body);
           assert.equal(grant.grant_type, "authorization_code");
           assert.equal(grant.code, code);
           assert.equal(grant.redirect_uri, installation.redirect_uri);
@@ -208,6 +283,129 @@ export async function startPanelFixture() {
                 Date.now() + 3_600_000,
               ).toISOString(),
             },
+          });
+          return;
+        }
+        if (route === "POST /v1/responses") {
+          assert.equal(
+            request.headers.authorization,
+            "Bearer " + credential.plain_text_token,
+          );
+          const input = JSON.parse(body);
+          assert.equal(input.model, "synthetic-responses");
+          const output = [
+            {
+              type: "message",
+              id: "msg_windows_fixture",
+              status: "completed",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "Windows native configuration verified.",
+                  annotations: [],
+                },
+              ],
+            },
+          ];
+          const result = {
+            id: "resp_windows_fixture",
+            object: "response",
+            created_at: Math.floor(Date.now() / 1000),
+            status: "completed",
+            model: input.model,
+            output,
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            error: null,
+            incomplete_details: null,
+          };
+          response.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          });
+          for (const event of responseEvents(result))
+            response.write(
+              `event: ${event.name}\ndata: ${JSON.stringify(event.data)}\n\n`,
+            );
+          response.end();
+          return;
+        }
+        if (route === "POST /v1/messages") {
+          assert.equal(
+            request.headers.authorization,
+            "Bearer " + credential.plain_text_token,
+          );
+          const input = JSON.parse(body);
+          assert.equal(input.model, "synthetic-responses");
+          if (input.stream === true) {
+            response.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+            });
+            for (const [event, data] of [
+              [
+                "message_start",
+                {
+                  type: "message_start",
+                  message: {
+                    id: "msg_orbit_windows_fixture",
+                    type: "message",
+                    role: "assistant",
+                    model: input.model,
+                    content: [],
+                    stop_reason: null,
+                    stop_sequence: null,
+                    usage: { input_tokens: 1, output_tokens: 0 },
+                  },
+                },
+              ],
+              [
+                "content_block_start",
+                {
+                  type: "content_block_start",
+                  index: 0,
+                  content_block: { type: "text", text: "" },
+                },
+              ],
+              [
+                "content_block_delta",
+                {
+                  type: "content_block_delta",
+                  index: 0,
+                  delta: {
+                    type: "text_delta",
+                    text: "Windows native configuration verified.",
+                  },
+                },
+              ],
+              ["content_block_stop", { type: "content_block_stop", index: 0 }],
+              [
+                "message_delta",
+                {
+                  type: "message_delta",
+                  delta: { stop_reason: "end_turn", stop_sequence: null },
+                  usage: { output_tokens: 1 },
+                },
+              ],
+              ["message_stop", { type: "message_stop" }],
+            ])
+              response.write(
+                `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+              );
+            response.end();
+            return;
+          }
+          reply(response, {
+            id: "msg_orbit_windows_fixture",
+            type: "message",
+            role: "assistant",
+            model: input.model,
+            content: [
+              { type: "text", text: "Windows native configuration verified." },
+            ],
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
           });
           return;
         }
@@ -244,7 +442,13 @@ export async function startPanelFixture() {
           return;
         }
 
-        assert(!revoked);
+        if (revoked) {
+          // A background read can arrive after logout completed. This is an
+          // expected expired session, not a fixture or proof-validation error.
+          response.writeHead(401, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ message: "Unauthenticated." }));
+          return;
+        }
         verifyProof(
           request,
           body,
@@ -268,6 +472,51 @@ export async function startPanelFixture() {
             assert.equal(url.searchParams.get("node_id"), node.id);
             reply(response, wire.models_reply);
             break;
+          case "GET " + api + "/usage/summary": {
+            const dateFrom = url.searchParams.get("date_from");
+            const dateTo = url.searchParams.get("date_to");
+            assert.match(dateFrom, /^\d{4}-\d{2}-\d{2}$/);
+            assert.match(dateTo, /^\d{4}-\d{2}-\d{2}$/);
+            const quantity = { value: 0, status: "known" };
+            reply(response, {
+              data: {
+                range: {
+                  date_from: dateFrom,
+                  date_to: dateTo,
+                  timezone: url.searchParams.get("timezone"),
+                  defaulted: false,
+                  max_days: 90,
+                },
+                summary: {
+                  requests: 0,
+                  succeeded: 0,
+                  failed: 0,
+                  cancelled: 0,
+                  rejected: 0,
+                  interrupted: 0,
+                  usage: {
+                    tokens: {
+                      state: "complete",
+                      total: quantity,
+                      input: quantity,
+                      cached_input: quantity,
+                      cache_write: quantity,
+                      output: quantity,
+                      reasoning: quantity,
+                    },
+                    image_count: quantity,
+                    reconciliation_pending_count: 0,
+                  },
+                  charges: [],
+                },
+                days: [],
+                has_legacy_semantics: false,
+                updated_at: null,
+                generated_at: new Date().toISOString(),
+              },
+            });
+            break;
+          }
           case "POST " + api + "/sessions/current/revoke":
             revoked = true;
             reply(response, wire.logout_reply);
