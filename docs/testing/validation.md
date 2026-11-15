@@ -40,9 +40,17 @@ Windows 的[原生回执](../../tests/acceptance/desktop/v1.0.2-windows.json)绑
 
 本次已使用 Windows x64 VM 构建、安装并验证实际 NSIS 候选。原生启动与托盘、Codex MSIX 的 helper 认证请求、Claude MSIX 的实际 GUI 请求、完整卸载后的完整 EXE 重装复验与配置恢复，见[当前验收范围](../../tests/acceptance/desktop/windows-tray.md)及[机器回执](../../tests/acceptance/desktop/windows-native-2026-11-15.json)。源码文件清单、包与可执行文件摘要分别绑定，不能用本节替代正式发布签名或推送证明。
 
-客户端请求使用真实安装程序、Windows Credential Manager 和默认配置路径，远端为专用受控 HTTPS peer。Claude 首次运行会改写主设置，因此另验收明确选择保留当前设置的恢复模式；严格恢复仍拒绝冲突。单屏已有 WebView2 环境不证明真实多屏 DPI 或全新系统运行库引导安装通过。Windows 默认更新设置的变更没有改变既有手动安装包更新能力。
+客户端请求使用真实安装程序、Windows Credential Manager 和默认配置路径，远端为专用受控 HTTPS peer。Claude 首次运行会改写主设置，因此另验收明确选择保留当前设置的恢复模式；严格恢复仍拒绝冲突。单屏已有 WebView2 环境不证明真实多屏 DPI 或全新系统运行库引导安装通过。Windows 默认更新设置的变更没有改变该次未签名候选的手动安装包更新能力；后续正式渠道的应用内更新见下节。
 
 普通用户补验另外定位并修复 WindowsApps 目录访问及导出文件多余的所有者权限请求；提升权限的运行结果不能替代普通用户业务验证。主窗口在 Windows/macOS 共用固定标题栏和内容区独立滚动，另验收内容边界、返回位置与客户端定位。历史样式包和后续权限修复的产物分别记录，当前安装包以机器回执的 `current_delivery` 为准。
+
+## 2026-11-15 Windows 应用内更新
+
+[Actions 实装验收](https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43730209076)在 GitHub-hosted Windows x64 上完成真实 NSIS `0.2.0`→`0.3.0` 更新与自动重启。启动检查更新、错误包/版本签名拒绝、下载取消、维护互斥、安装前缓存篡改检测均通过；设置页下载后自动弹出确认框，确认后在含空格的原安装目录更新，新程序与 helper 的摘要均与构建回执一致，语言/主题/启动检查选择及现有用户数据文件保留。[机器回执](../../tests/acceptance/desktop/windows-updater-2026-11-15.json)保留源码、包摘要、复用证明及先前失败。
+
+安装包来自[构建运行](https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43727014430)的 `425bc43`，按测试版本派生构建提交；最终验收脚本为 `1bc6112`，仅修改确认对话框断言。同仓库祖先关系、应用输入未变、安装包摘要及两个版本签名验证通过后复用同一批包，未声称重新编译。构建运行中的前端 168 项、Windows core 227 项（另 2 项 ignored）、helper 2 项和原生桌面编译检查通过；本机另通过 7 项更新核心测试与 macOS 桌面编译检查，使用已有 Rust 1.98.0，项目锁定工具链仍为 1.97.1。
+
+此次使用临时 updater 密钥、受控 HTTPS peer 和已有 WebView2，不使用正式发布私钥，不创建 Release。安装包写入与重启使用真实系统流程；这份更新验收只覆盖设置和既有数据文件保留，真实客户端请求及凭据沿用上节独立回执。Windows 采用 NSIS 的安装及错误处理，未验证 macOS 式数据库/应用包自动回滚。普通候选保持空频道；旧版 Windows 需要先手动安装一次支持更新的新正式版本。
 
 ## 历史图片链路
 

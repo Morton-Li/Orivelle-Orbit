@@ -86,6 +86,8 @@ Codex 原始 `NOTICE` 中的 Ratatui 归属行来自上游完整声明，不代�
 
 prepare-native 在临时 hosted runner 准备锁定工具/依赖，默认执行前端、宿主构建脚本及原生检查。集成工作流的包作业可设置 `validate=false`，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
 
+Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测试包；只有断言、fixture/reuse 脚本或文档变化时才允许复用，并再次核对包摘要及版本签名。生产源码、构建器、锁文件或 updater 工作流变化均重新构建。复用运行检查当前脚本与 PowerShell 语法，回执分别记录构建 source/run 和验收 source/run；[验收结果](../testing/validation.md#2026-11-15-windows-应用内更新)绑定具体产物。
+
 ## 安装包证据
 
 - Windows 候选构建检查主程序为 x64 PE32+ 且子系统为 Windows GUI，拒绝会带出控制台的 console 程序。发布阶段用 7-Zip 检查 NSIS 完整性、提取主程序，核对 ProductVersion。[windows-package-evidence.mjs](../../scripts/windows-package-evidence.mjs)再次验证构建与包内主程序的 GUI 子系统，仅允许固定 Tauri 的 `UNK` → `NSS` 包类型标记变化，其余字节必须相同。

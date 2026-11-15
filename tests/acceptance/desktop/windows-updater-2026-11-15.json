@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "scope": "GitHub-hosted Windows x64; temporary updater signing key and controlled HTTPS peer; real NSIS in-app version transition and restart",
+  "github": {
+    "build_run": "https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43727014430",
+    "acceptance_run": "https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43730209076",
+    "packages_artifact_id": 14168042081,
+    "acceptance_artifact_id": 14168640040,
+    "acceptance_archive_sha256": "f220f0a928a1fb34c03c3ea6bd20014bf4838aa235159c5d21d2c304c4eb6c67"
+  },
+  "package_reuse": {
+    "artifact_run": 43727014430,
+    "build_source": "425bc431837ba98437837a1af7ec8486bfb8d2e4",
+    "acceptance_source": "1bc61127bad57f5a70963cd444d45d2277b32b44",
+    "assertion_only_changes": ["tests/windows/updater.mjs"]
+  },
+  "native_acceptance": {
+    "status": "passed",
+    "source": "425bc431837ba98437837a1af7ec8486bfb8d2e4",
+    "repository": "Morton-Li/Orivelle-Orbit",
+    "scope": "Ephemeral updater key; installed NSIS 0.2.0 to 0.3.0; no published release",
+    "packages": {
+      "base": {
+        "version": "0.2.0",
+        "build_source": "13f351953a1ef21d4f279d4080a710b052018616",
+        "installer_sha256": "7eda97d3ed4b59f2fa6381b09d870baeb7f37f03dbdfac14456aef14d9117f82",
+        "executable_sha256": "138c1d6cdd02c8594471fdd9e296207253b11c582b977ffc0430af38e0b6eea9",
+        "helper_sha256": "57cd3ad38de933af509bcb9230db70c94c3dae09a0f1f25d3d5c6db5cbf96d85",
+        "windows_image": {
+          "machine": "amd64",
+          "format": "PE32+",
+          "subsystem": "windows_gui"
+        }
+      },
+      "target": {
+        "version": "0.3.0",
+        "build_source": "d200fab0d6ab9449837fe88f5f35f2288f54aa0a",
+        "installer_sha256": "71034863abfbc4390848c158f6eb94241df87295e5fe543649972520feeb03ec",
+        "executable_sha256": "6e6c49941d88166ffad9c1b6324af99c9b4e5fbe163bd120ad21f0e95f00fb8d",
+        "helper_sha256": "395fdf71d5cf487295d92026a6c8323bb5a524f0219de3e24947032411d3679a",
+        "windows_image": {
+          "machine": "amd64",
+          "format": "PE32+",
+          "subsystem": "windows_gui"
+        }
+      }
+    },
+    "public_key_sha256": "e564a5623aa3f853351b8a84f9045da1d85faee3023bb036a283d51216e8384b",
+    "public_key": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1NjIyNjdFOENDQkZBMkYKUldRditzdU1maVppWllLbytHZDJramJKSU1pd2s1SFZIZ0gxT3Fuc09TZkQrb3hyWXRYQ1Bwc1IK",
+    "acceptance_source": "1bc61127bad57f5a70963cd444d45d2277b32b44",
+    "artifact_run": "43727014430",
+    "checks": [
+      "Signed Windows build exposes in-app updates and checks the pinned channel on startup",
+      "Changed installer bytes and signatures bound to another version are rejected",
+      "A signed non-executable cannot be installed; maintenance is released and the old app stays usable",
+      "An active download blocks installation; cancellation completes without replacing the application",
+      "Confirmation is required; changes to the cached installer are caught by re-verification immediately before installation",
+      "The settings-page flow installs 0.3.0 over 0.2.0 in a path containing spaces and automatically restarts the packaged app",
+      "Settings, the disabled startup-check choice and existing user data survive; the new embedded helper is deployed and the channel reports up to date"
+    ],
+    "requests": [
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "valid"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "corrupt"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/download/v0.3.0/Orivelle-Orbit-v0.3.0-windows-x64-setup.exe",
+        "mode": "corrupt"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "wrong-version"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/download/v0.3.0/Orivelle-Orbit-v0.3.0-windows-x64-setup.exe",
+        "mode": "wrong-version"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "nonexecutable"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/download/v0.3.0/Orivelle-Orbit-v0.3.0-windows-x64-setup.exe",
+        "mode": "nonexecutable"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "stall"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/download/v0.3.0/Orivelle-Orbit-v0.3.0-windows-x64-setup.exe",
+        "mode": "stall"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "valid"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/download/v0.3.0/Orivelle-Orbit-v0.3.0-windows-x64-setup.exe",
+        "mode": "valid"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "valid"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/download/v0.3.0/Orivelle-Orbit-v0.3.0-windows-x64-setup.exe",
+        "mode": "valid"
+      },
+      {
+        "path": "/Morton-Li/Orivelle-Orbit/releases/latest/download/latest.json",
+        "mode": "valid"
+      }
+    ]
+  },
+  "regression_checks": {
+    "source": "425bc431837ba98437837a1af7ec8486bfb8d2e4",
+    "run": 43727014430,
+    "toolchain": "Rust 1.97.1; Node 24.18.0; npm 11.16.0",
+    "windows_core": {
+      "passed": 227,
+      "failed": 0,
+      "ignored": 2
+    },
+    "windows_helper": {
+      "passed": 2,
+      "failed": 0
+    },
+    "windows_desktop": "cargo check passed",
+    "frontend": {
+      "passed": 168,
+      "files": 13
+    },
+    "release_script_and_host_build_tests": "passed; explicit platform skips remain skips"
+  },
+  "prior_attempts": [
+    {
+      "run": 43722800730,
+      "source": "a891a4319e67fd7a7ba387bd4498d418cf06fd27",
+      "result": "New directory-pin test failed; fixed by pinning the current executable in d40b9ba"
+    },
+    {
+      "run": 43723543531,
+      "source": "d40b9ba14cdee860fb59e738f2dac21670aecf6c",
+      "result": "Build/regressions passed; test transport discarded native error codes; fixed in 425bc43"
+    },
+    {
+      "run": 43727014430,
+      "source": "425bc431837ba98437837a1af7ec8486bfb8d2e4",
+      "result": "Build/regressions and negative cases passed; driver awaited a background button while the automatic confirmation dialog was open; corrected in 1bc6112"
+    }
+  ],
+  "limits": [
+    "Ephemeral signing trust; no production updater private key or release publication",
+    "Single GitHub Windows runner with existing WebView2; no fresh runtime bootstrap acceptance",
+    "Preserved settings and an existing user-data file; this update test does not exercise live Codex/Claude requests or real account credentials",
+    "Windows delegates installation/error handling to NSIS; no macOS-style database/application automatic rollback claim"
+  ],
+  "macos_followup": {
+    "result": "7 focused updates tests and desktop cargo check passed using the already installed Rust 1.98.0; project pin unchanged",
+    "source_scope": "Initial macOS implementation; subsequent production changes were Windows-only image pinning. No formal macOS bundle or native update was performed.",
+    "logs": [
+      "runtime/logs/windows-updater-macos-core.log",
+      "runtime/logs/windows-updater-macos-desktop.log"
+    ]
+  }
+}
