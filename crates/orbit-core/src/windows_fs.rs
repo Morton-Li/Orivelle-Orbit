@@ -358,9 +358,29 @@ pub(crate) fn make_private(path: &Path, is_directory: bool) -> Result<()> {
     let file = open_one(
         path,
         is_directory,
-        FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+        FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC,
         true,
     )?;
+    let before = identity(&file, false)?;
+    let owner_matches = before.owner_sid == current_sid()?;
+    // A file owner can change its DACL without WRITE_OWNER. Ordinary writable
+    // export folders often grant Modify rather than Full Control, so taking
+    // ownership must only be requested when the owner actually needs changing.
+    let file = if owner_matches {
+        file
+    } else {
+        drop(file);
+        let reopened = open_one(
+            path,
+            is_directory,
+            FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+            true,
+        )?;
+        if identity(&reopened, false)? != before {
+            return Err(unverified());
+        }
+        reopened
+    };
     let descriptor = descriptor(is_directory)?;
     let mut owner = null_mut();
     let mut owner_defaulted = 0;
@@ -381,10 +401,14 @@ pub(crate) fn make_private(path: &Path, is_directory: bool) -> Result<()> {
         SetSecurityInfo(
             file.as_raw_handle(),
             SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION
-                | DACL_SECURITY_INFORMATION
-                | PROTECTED_DACL_SECURITY_INFORMATION,
-            owner,
+            DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION
+                | if owner_matches {
+                    0
+                } else {
+                    OWNER_SECURITY_INFORMATION
+                },
+            if owner_matches { null_mut() } else { owner },
             null_mut(),
             acl,
             null(),
@@ -401,6 +425,7 @@ pub(crate) fn make_private(path: &Path, is_directory: bool) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::windows::process::CommandExt;
     #[test]
     fn private_identity_is_stable_and_replacement_is_distinct() {
         let temp = tempfile::tempdir().unwrap();
@@ -433,12 +458,39 @@ mod tests {
         }
     }
     #[test]
+    fn atomic_export_privacy_does_not_require_taking_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("ordinary writable export folder");
+        create_directory(&parent).unwrap();
+        let user = current_sid().unwrap();
+        let status = std::process::Command::new("icacls.exe")
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .arg(&parent)
+            .arg("/grant:r")
+            .arg(format!("*{user}:(OI)(CI)(M)"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let destination = parent.join("image.png");
+        crate::config::atomic_write(&destination, b"exact exported bytes").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"exact exported bytes");
+        assert_eq!(
+            identity(&file(&destination).unwrap(), true)
+                .unwrap()
+                .owner_sid,
+            user
+        );
+        crate::config::atomic_write(&destination, b"replacement bytes").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"replacement bytes");
+    }
+    #[test]
     fn junctions_and_unprivileged_write_grants_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let outside = temp.path().join("outside");
         create_directory(&outside).unwrap();
         let link = temp.path().join("junction");
         let status = std::process::Command::new("cmd.exe")
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
             .args(["/d", "/c", "mklink", "/J"])
             .arg(&link)
             .arg(&outside)
@@ -450,6 +502,7 @@ mod tests {
         assert!(file(&link.join("material")).is_err());
         fs::remove_dir(&link).unwrap();
         let status = std::process::Command::new("icacls.exe")
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
             .arg(&outside)
             .args(["/grant", "*S-1-5-32-545:(OI)(CI)(M)"])
             .status()
