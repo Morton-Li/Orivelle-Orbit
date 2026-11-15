@@ -17,6 +17,10 @@ use std::{
 };
 use url::Url;
 
+#[cfg(windows)]
+#[path = "update_windows.rs"]
+pub mod windows;
+
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_UPDATE_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -29,9 +33,6 @@ pub struct ReleaseTrust {
     pub mac_certificate_sha256: Option<&'static str>,
 }
 pub fn compiled_trust() -> Option<ReleaseTrust> {
-    if cfg!(target_os = "windows") {
-        return None;
-    }
     match (
         option_env!("ORBIT_RELEASE_UPDATER_PUBLIC_KEY"),
         option_env!("ORBIT_RELEASE_UPDATE_ENDPOINT"),
@@ -159,13 +160,28 @@ impl UpdateChannel {
     }
 
     fn artifact_url(&self, http: &Http, raw: &str, version: &str) -> Result<Url> {
+        self.artifact_url_for_target(http, raw, version, target()?)
+    }
+
+    fn artifact_url_for_target(
+        &self,
+        http: &Http,
+        raw: &str,
+        version: &str,
+        target: &str,
+    ) -> Result<Url> {
         let url = http.validate_url(raw)?;
         if url.origin() != self.manifest.origin() || url.query().is_some() {
             return Err(fail("invalid_update_artifact_url"));
         }
         if let Some(repository) = &self.github_repository
             && !github_release_asset(&url, repository).is_some_and(|(tag, asset)| {
-                tag.strip_prefix('v') == Some(version) && asset.ends_with(".app.tar.gz")
+                tag.strip_prefix('v') == Some(version)
+                    && match target {
+                        "darwin-aarch64" => asset.ends_with(".app.tar.gz"),
+                        "windows-x86_64" => asset.ends_with("-setup.exe"),
+                        _ => false,
+                    }
             })
         {
             return Err(fail("invalid_update_artifact_url"));
@@ -437,7 +453,11 @@ pub fn verified_local_candidate(store: &Store, version: &str) -> Result<Verified
     let candidate = store
         .get::<Candidate>("update-candidate", version)?
         .ok_or_else(|| fail("update_not_available"))?;
-    if !candidate.verified || candidate.target != target()? || candidate.version != version {
+    if !candidate.verified
+        || candidate.target != target()?
+        || candidate.version != version
+        || version_parts(version)? <= version_parts(CURRENT_VERSION)?
+    {
         return Err(fail("update_not_verified"));
     }
     let name = candidate
@@ -716,15 +736,26 @@ mod tests {
     fn github_update_artifact_must_match_the_pinned_repository_and_version() {
         let http = Http::new().unwrap();
         let channel = UpdateChannel::new(&http, GITHUB_MANIFEST).unwrap();
-        assert!(channel.artifact_url(&http, GITHUB_ASSET, "0.2.0").is_ok());
-        assert!(channel.artifact_url(&http, GITHUB_ASSET, "0.2.1").is_err());
+        let macos =
+            |url, version| channel.artifact_url_for_target(&http, url, version, "darwin-aarch64");
+        let windows =
+            |url, version| channel.artifact_url_for_target(&http, url, version, "windows-x86_64");
+        let installer =
+            "https://github.com/Owner/Orbit/releases/download/v0.2.0/Orbit-windows-setup.exe";
+        assert!(macos(GITHUB_ASSET, "0.2.0").is_ok());
+        assert!(macos(GITHUB_ASSET, "0.2.1").is_err());
+        assert!(windows(installer, "0.2.0").is_ok());
+        assert!(windows(installer, "0.2.1").is_err());
+        assert!(macos(installer, "0.2.0").is_err());
+        assert!(windows(GITHUB_ASSET, "0.2.0").is_err());
         for bad_url in [
             "https://github.com/Other/Orbit/releases/download/v0.2.0/Orbit-macos.app.tar.gz",
             "https://github.com/Owner/Orbit/releases/download/v0.2.0/Orbit-windows.exe",
             "https://github.com/Owner/Orbit/releases/download/v0.2.0%2fother/Orbit-macos.app.tar.gz",
             "https://release-assets.githubusercontent.com/github-production-release-asset/123/file",
         ] {
-            assert!(channel.artifact_url(&http, bad_url, "0.2.0").is_err());
+            assert!(macos(bad_url, "0.2.0").is_err());
+            assert!(windows(bad_url, "0.2.0").is_err());
         }
         assert!(
             UpdateChannel::new(

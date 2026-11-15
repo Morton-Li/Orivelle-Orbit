@@ -1,0 +1,87 @@
+name: Windows Updater Acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop, feature/windows-in-app-updates]
+    paths:
+      - ".github/workflows/windows-updater.yml"
+      - ".github/workflows/release.yml"
+      - ".github/actions/prepare-native/action.yml"
+      - "crates/orbit-core/src/update*.rs"
+      - "scripts/github-release.mjs"
+      - "scripts/native-workflow.mjs"
+      - "src-tauri/src/**"
+      - "tests/windows/*updater*"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-windows-updater-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  updater:
+    name: Verify signed Windows update and restart
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: orbit-windows-updater-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+
+      - uses: ./.github/actions/prepare-native
+
+      - name: Parse the updater fixture
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/tests/windows/with-updater-fixture.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+
+      - name: Build two signed test versions with a temporary key
+        run: node tests/windows/build-updater.mjs
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Exercise the installed application updater
+        shell: pwsh
+        run: ./tests/windows/with-updater-fixture.ps1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: orbit-windows-updater-acceptance
+          path: |
+            runtime/logs/windows-updater/
+            runtime/updater-acceptance/build.json
+            runtime/logs/native-preflight.json
+            runtime/logs/candidate-manifest.json
+          if-no-files-found: ignore
+          retention-days: 14

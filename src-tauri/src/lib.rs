@@ -57,6 +57,8 @@ fn prepare_native(
     } else {
         SystemPaths::isolated(&root)?
     };
+    #[cfg(windows)]
+    orbit_core::updates::windows::cleanup(&root);
     #[cfg(feature = "system-integration")]
     let paths = {
         let mut paths = paths;

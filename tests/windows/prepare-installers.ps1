@@ -52,15 +52,23 @@ if ($env:ORBIT_BASELINE_TAG) {
     $name = "Orivelle-Orbit-$tag-windows-x64-setup.exe"
     $asset = @($release.assets | Where-Object { $_.name -eq $name })
     $sums = @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS' })
-    if ($asset.Count -ne 1 -or $sums.Count -ne 1) { throw 'The baseline installer or checksums are missing.' }
+    if ($asset.Count -ne 1) { throw 'The baseline installer is missing.' }
     $baseline = Join-Path $env:RUNNER_TEMP $name
     Invoke-WebRequest -Uri $asset[0].browser_download_url -OutFile $baseline
-    $checksumPath = Join-Path $env:RUNNER_TEMP 'orbit-baseline-SHA256SUMS'
-    Invoke-WebRequest -Uri $sums[0].browser_download_url -OutFile $checksumPath
-    $checksums = Get-Content -LiteralPath $checksumPath -Raw
-    $entry = @($checksums -split "`n" | Where-Object { $_.TrimEnd().EndsWith($name) })
-    if ($entry.Count -ne 1 -or $entry[0] -notmatch '^([a-fA-F0-9]{64})\s+') { throw 'Missing baseline checksum.' }
-    if ((Get-FileHash $baseline -Algorithm SHA256).Hash -ne $Matches[1]) { throw 'The baseline checksum is invalid.' }
+    if ($asset[0].digest -match '^sha256:([a-fA-F0-9]{64})$') {
+        $expectedHash = $Matches[1]
+    } elseif ($sums.Count -eq 1) {
+        # Older releases may predate GitHub's asset digest metadata.
+        $checksumPath = Join-Path $env:RUNNER_TEMP 'orbit-baseline-SHA256SUMS'
+        Invoke-WebRequest -Uri $sums[0].browser_download_url -OutFile $checksumPath
+        $checksums = Get-Content -LiteralPath $checksumPath -Raw
+        $entry = @($checksums -split "`n" | Where-Object { $_.TrimEnd().EndsWith($name) })
+        if ($entry.Count -ne 1 -or $entry[0] -notmatch '^([a-fA-F0-9]{64})\s+') { throw 'Missing baseline checksum.' }
+        $expectedHash = $Matches[1]
+    } else {
+        throw 'The baseline has neither a GitHub asset digest nor legacy checksums.'
+    }
+    if ((Get-FileHash $baseline -Algorithm SHA256).Hash -ne $expectedHash) { throw 'The baseline checksum is invalid.' }
     & $archiveTool t -tNsis $baseline
     if ($LASTEXITCODE -ne 0) { throw 'The baseline installer failed its integrity check.' }
     $install = Start-Process -FilePath $baseline -ArgumentList '/S', "/D=$installation" -Wait -PassThru
