@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -131,8 +132,12 @@ test("the release requires both installers and advertises the verified macOS upd
       },
     },
   });
-  assert.equal(assets.length, 6);
-  assert(assets.some(({ name }) => name === names.windows));
+  const expectedAssets = [...Object.values(names), "latest.json"].sort();
+  assert.deepEqual(
+    assets.map(({ name }) => name),
+    expectedAssets,
+  );
+  assert.deepEqual((await readdir(directory)).sort(), expectedAssets);
   await assert.rejects(
     verifyUpdaterSignature(
       update,
