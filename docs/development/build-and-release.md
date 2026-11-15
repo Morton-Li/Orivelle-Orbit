@@ -61,7 +61,7 @@ npm run test:e2e
 | `bundle`         | macOS 生成 `.app` 与候选 ZIP；Windows 生成 NSIS，要求预先准备完整本地 NSIS 缓存并校验插件摘要，跳过 WebView2 引导安装 |
 | `github-bundle`  | 未签名候选；macOS 同 `.app`/ZIP，Windows 使用 bundler 工具下载及 WebView2 downloadBootstrapper，输出标准 NSIS 文件    |
 | `github-dmg`     | macOS 候选 `.app`/DMG，保留 Finder 安装布局；不启用正式 updater 发布                                                  |
-| `github-release` | GitHub-hosted macOS arm64 的正式签名及 updater 产物，要求下节完整公开/私密输入                                        |
+| `github-release` | GitHub-hosted macOS arm64 / Windows x64 的 updater 签名产物；macOS 另验证应用代码签名，要求下节对应平台的输入          |
 
 candidate/bundle 系列在构建前后冻结 HEAD/tree，要求已提交且 tracked 工作树干净；中途源码变化即拒绝。helper 来自本项目，构建脚本核对架构并嵌入摘要，[候选清单](../../scripts/candidate-evidence.mjs)保存主程序、helper、包及来源证据。清单中的 `actual_native_integration_verified=false` 明确表示构建不等于实机验收。
 
@@ -82,13 +82,16 @@ Codex 原始 `NOTICE` 中的 Ratatui 归属行来自上游完整声明，不代�
 | [windows-runner-check.yml](../../.github/workflows/windows-runner-check.yml) | 手动或 main 上自身文件变化；仅核对 Windows x64/PowerShell 环境，不构建或验收 Orbit                                                                       |
 | [macos-self-signed.yml](../../.github/workflows/macos-self-signed.yml)       | 仅 main 上手动运行，使用 codesign 环境生成自签名 DMG artifact；不创建正式 Release 或 updater 频道                                                        |
 | [release.yml](../../.github/workflows/release.yml)                           | 稳定 tag push 或 main 上手动指定 tag。两平台产物通过后，只有 tag push 路径会发布；手动运行仅验证和上传 artifacts                                         |
+| [windows-updater.yml](../../.github/workflows/windows-updater.yml)           | 在 Windows hosted runner 构建两个使用临时 updater 密钥的版本，执行安装后的检查、下载、错误签名、取消、安装重启和数据保留验收；不创建正式 Release          |
 
 prepare-native 在临时 hosted runner 准备锁定工具/依赖，默认执行前端、宿主构建脚本及原生检查。集成工作流的包作业可设置 `validate=false`，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
+
+Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测试包；只有断言、fixture/reuse 脚本或文档变化时才允许复用，并再次核对包摘要及版本签名。生产源码、构建器、锁文件或 updater 工作流变化均重新构建。复用运行检查当前脚本与 PowerShell 语法，回执分别记录构建 source/run 和验收 source/run；[验收结果](../testing/validation.md#2026-11-15-windows-应用内更新)绑定具体产物。
 
 ## 安装包证据
 
 - Windows 候选构建检查主程序为 x64 PE32+ 且子系统为 Windows GUI，拒绝会带出控制台的 console 程序。发布阶段用 7-Zip 检查 NSIS 完整性、提取主程序，核对 ProductVersion。[windows-package-evidence.mjs](../../scripts/windows-package-evidence.mjs)再次验证构建与包内主程序的 GUI 子系统，仅允许固定 Tauri 的 `UNK` → `NSS` 包类型标记变化，其余字节必须相同。
-- Windows 原生集成沿 [prepare-installers.ps1](../../tests/windows/prepare-installers.ps1)与 [with-panel-fixture.ps1](../../tests/windows/with-panel-fixture.ps1)检查正式基线校验和、安装/升级及真实系统行为。Panel/图片服务为受控 HTTPS fixture，不能据此证明真实上游或第三方客户端配置。
+- Windows 原生集成沿 [prepare-installers.ps1](../../tests/windows/prepare-installers.ps1)与 [with-panel-fixture.ps1](../../tests/windows/with-panel-fixture.ps1)检查正式基线摘要、安装/升级及真实系统行为。基线优先使用 GitHub asset 的 SHA-256 digest；缺少此元数据的旧发布仍可读取历史 `SHA256SUMS`。Panel/图片服务为受控 HTTPS fixture，不能据此证明真实上游或第三方客户端配置。
 - macOS [verify-dmg-layout.mjs](../../scripts/verify-dmg-layout.mjs)只在 GitHub-hosted Mac 运行：实际校验并只读挂载 DMG，核对 app、Applications 链接、背景精确字节、Finder 布局及截图。证据写 `runtime/logs/dmg/`；这不包含用户机器实际拖拽安装或在线更新重启。
 
 每次记录候选来源、产物摘要、实际执行组件、失败及未运行项目；[历史验证](../testing/validation.md)中的旧截图或统计不能代替本次结果。
@@ -103,10 +106,14 @@ codesign 环境所需公开变量和 secrets：
 | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `ORBIT_RELEASE_UPDATER_PUBLIC_KEY`                                  | 仓库变量，编入 app/updater 配置并用于发布前验签                                          |
 | `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`  | updater 签名 secrets，仅传给构建完成后的 bundler                                         |
-| `CODESIGN_CERTIFICATE_P12_BASE64` / `CODESIGN_CERTIFICATE_PASSWORD` | macOS 签名 secrets，须匹配[固定证书指纹](../../scripts/macos-signing-certificate.sha256) |
+| `CODESIGN_CERTIFICATE_P12_BASE64` / `CODESIGN_CERTIFICATE_PASSWORD` | 仅 macOS 需要的代码签名 secrets，须匹配[固定证书指纹](../../scripts/macos-signing-certificate.sha256) |
 
 签名公开配置还包括由仓库身份派生的 GitHub latest.json 地址和固定 macOS 证书摘要；基础 Tauri 配置为空频道/占位公钥。普通候选不会继承正式签名环境。代码签名由 [package-self-signed-macos.sh](../../scripts/package-self-signed-macos.sh)在 hosted Mac 临时 Keychain 内完成并清理，核对证书有效期、私钥及嵌入证书；自签名不表示 Apple 公证已完成。
 
-正式文件为 `Orivelle-Orbit-v<版本>-macos-arm64.dmg`、`-windows-x64-setup.exe`、macOS `.app.tar.gz` 与 `.sig`。发布脚本验签后生成 `latest.json`，不再生成或发布 `SHA256SUMS` 校验和文件，只接受上述五个文件组成的完整约定集合；检查 tag 未移动、版本高于现有稳定版，再上传并核对 draft 的远端大小/SHA-256，最终公开。已公开同 tag 或冲突 draft 拒绝，不自动替换稳定版。
+正式文件为 `Orivelle-Orbit-v<版本>-macos-arm64.dmg`、`-windows-x64-setup.exe`、macOS `.app.tar.gz` 及两个平台各自的 `.sig`。发布脚本分别验签后生成同时包含 `darwin-aarch64` 和 `windows-x86_64` 的 `latest.json`，不再生成或发布 `SHA256SUMS` 校验和文件，只接受上述六个文件组成的完整约定集合；检查 tag 未移动、版本高于现有稳定版，再上传并核对 draft 的远端大小/SHA-256，最终公开。已公开同 tag 或冲突 draft 拒绝，不自动替换稳定版。
 
-updater 只发布 `darwin-aarch64`，Windows 仍手动下载安装包。签名同时绑定包内容及可信目标版本，客户端保留 `requireSignedVersion=true` 和禁止降级；应用代码签名、updater 签名、包 SHA-256 是分别核对的事实。源码/合成 signer 测试与实际安装、数据保留、失败恢复和重启验收分别记录，触发工作流、推 tag 或公开 Release 按本次明确发布范围执行。
+两个平台都只有编入正式公钥与频道的构建才启用应用内更新；普通未签名候选仍提示手动安装。签名同时绑定包内容及可信目标版本，客户端保留 `requireSignedVersion=true` 和禁止降级；应用代码签名、updater 签名、包 SHA-256 是分别核对的事实。Windows updater 签名不等同于 Authenticode 代码签名。
+
+Windows 使用当前用户 NSIS 安装包。应用内检查与下载沿用受限 HTTPS、进度和取消逻辑；确认安装时再次核对本地包摘要与版本签名，并要求无活动任务/配置事务、维护状态及独占 helper 锁。只从已安装的 NSIS 程序交接，私有临时安装包通过句柄禁止写入和替换，按 NSIS 的 passive/update/restart 参数更新原目录。进程启动失败时应用继续运行并释放维护状态；启动成功后退出，NSIS 执行安装与重启，现有设置与用户数据保留。旧版 Windows 没有更新通道，需要先手动安装一次支持本功能的新版。
+
+macOS 仍使用现有文件系统更新事务；Windows 使用 NSIS 的安装与错误处理，不宣称具备 macOS 同样的数据库/应用包自动回滚。源码/合成 signer 测试与实际安装、数据保留、失败处理和重启验收分别记录。[Windows updater 验收](../../tests/windows/updater.mjs)使用临时信任密钥和受控 HTTPS peer，覆盖真实版本升级、错误签名、取消、安装前篡改和安装后 helper 部署；不访问实际公开更新频道。触发正式工作流、推 tag 或公开 Release 按本次明确发布范围执行。

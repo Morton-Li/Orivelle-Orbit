@@ -1,0 +1,130 @@
+name: Windows Updater Acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop, feature/windows-in-app-updates]
+    paths:
+      - ".github/workflows/windows-updater.yml"
+      - ".github/workflows/release.yml"
+      - ".github/actions/prepare-native/action.yml"
+      - "crates/orbit-core/src/update*.rs"
+      - "scripts/github-release.mjs"
+      - "scripts/native-workflow.mjs"
+      - "src-tauri/src/**"
+      - "tests/windows/*updater*"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: orbit-windows-updater-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  updater:
+    name: Verify signed Windows update and restart
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Verify whether existing test packages can be reused
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tests/windows/reuse-updater.mjs
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        if: steps.reuse.outputs.reused != 'true'
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: orbit-windows-updater-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            orbit-windows-updater-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+            orbit-windows-updater-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+
+      - uses: ./.github/actions/prepare-native
+        with:
+          validate: ${{ steps.reuse.outputs.reused != 'true' }}
+
+      - name: Check the current updater assertions
+        run: |
+          node node_modules/eslint/bin/eslint.js tests/windows/build-updater.mjs tests/windows/reuse-updater.mjs tests/windows/updater.mjs --max-warnings 0
+          node node_modules/prettier/bin/prettier.cjs --check tests/windows/build-updater.mjs tests/windows/reuse-updater.mjs tests/windows/updater.mjs
+
+      - name: Parse the updater fixture
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem tests/windows/*.ps1) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+
+      - name: Build two signed test versions with a temporary key
+        id: build
+        if: steps.reuse.outputs.reused != 'true'
+        run: node tests/windows/build-updater.mjs
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ !cancelled() && steps.reuse.outputs.reused != 'true' }}
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          name: orbit-windows-updater-test-packages
+          path: |
+            runtime/updater-acceptance/build.json
+            runtime/updater-acceptance/base-setup.exe*
+            runtime/updater-acceptance/target-setup.exe*
+            runtime/updater-acceptance/nonexecutable-setup.exe*
+            runtime/updater-acceptance/wrong-version-setup.exe.sig
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Exercise the installed application updater
+        shell: pwsh
+        run: ./tests/windows/with-updater-fixture.ps1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: orbit-windows-updater-acceptance
+          path: |
+            runtime/logs/windows-updater/
+            runtime/updater-acceptance/build.json
+            runtime/updater-acceptance/reuse.json
+            runtime/logs/native-preflight.json
+            runtime/logs/candidate-manifest.json
+          if-no-files-found: ignore
+          retention-days: 14

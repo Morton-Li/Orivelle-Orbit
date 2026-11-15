@@ -589,25 +589,34 @@ pub async fn install_update(
     if native.service.paths.isolated {
         return Err(fail("integration_authorization_required"));
     }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = app;
-        Err(fail("windows_update_recovery_unverified"))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _maintenance = native.service.begin_maintenance()?;
-        let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
-        let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
-        install_verified_candidate(&app, &native.service, artifact).await
-    }
+    let _maintenance = native.service.begin_maintenance()?;
+    let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
+    let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
+    install_verified_candidate(&app, &native.service, artifact).await
 }
-#[cfg(not(target_os = "windows"))]
 async fn install_verified_candidate(
     app: &AppHandle,
     service: &Service,
     artifact: updates::VerifiedArtifact,
 ) -> Result<UpdateView> {
+    #[cfg(target_os = "windows")]
+    {
+        // The NSIS package stamp is applied by the locked bundler. A standalone
+        // development executable must never update an unrelated registered install.
+        if !matches!(
+            tauri::utils::platform::bundle_type(),
+            Some(tauri::utils::config::BundleType::Nsis)
+        ) {
+            return Err(fail("update_installation_unsupported"));
+        }
+        let current = std::env::current_exe().map_err(|_| fail("update_install_failed"))?;
+        updates::windows::launch(&service.store.root, &current, &artifact)?;
+        service.stop_claude_mappings();
+        app.cleanup_before_exit();
+        // Like Tauri's Windows updater, exit only after CreateProcess succeeds.
+        // Keep the maintenance and helper locks until the process actually exits.
+        std::process::exit(0);
+    }
     #[cfg(target_os = "macos")]
     {
         let exe = std::env::current_exe().map_err(|_| fail("update_install_failed"))?;

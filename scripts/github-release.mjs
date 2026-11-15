@@ -37,9 +37,11 @@ export function updateEndpoint(repository) {
 export function releaseNames(version) {
   const stem = "Orivelle-Orbit-v" + version;
   const update = stem + "-macos-arm64.app.tar.gz";
+  const windows = stem + "-windows-x64-setup.exe";
   return {
     macos: stem + "-macos-arm64.dmg",
-    windows: stem + "-windows-x64-setup.exe",
+    windows,
+    windowsSignature: windows + ".sig",
     update,
     signature: update + ".sig",
   };
@@ -214,15 +216,10 @@ export async function verifyUpdaterSignature(
   }
 }
 
-export async function assembleRelease(
-  directory,
-  tag,
-  repository,
-  publicKey,
-) {
+export async function assembleRelease(directory, tag, repository, publicKey) {
   const version = releaseVersion(tag);
   const files = releaseNames(version);
-  const required = [files.macos, files.windows, files.update, files.signature];
+  const required = Object.values(files);
   const permitted = new Set([...required, "latest.json"]);
   const entries = await readdir(directory);
   if (
@@ -231,18 +228,25 @@ export async function assembleRelease(
   ) {
     throw new Error("The release asset set is incomplete or unexpected.");
   }
-  const signatureFile = path.join(directory, files.signature);
-  const signatureInfo = await lstat(signatureFile);
-  if (!signatureInfo.isFile() || signatureInfo.size > 16 * 1024) {
-    throw new Error("Invalid Tauri updater signature file.");
+  const signatures = new Map();
+  for (const [artifact, signatureName] of [
+    [files.update, files.signature],
+    [files.windows, files.windowsSignature],
+  ]) {
+    const signatureFile = path.join(directory, signatureName);
+    const signatureInfo = await lstat(signatureFile);
+    if (!signatureInfo.isFile() || signatureInfo.size > 16 * 1024) {
+      throw new Error("Invalid Tauri updater signature file.");
+    }
+    const signature = (await readFile(signatureFile, "ascii")).trim();
+    await verifyUpdaterSignature(
+      path.join(directory, artifact),
+      signature,
+      version,
+      publicKey,
+    );
+    signatures.set(artifact, signature);
   }
-  const signature = (await readFile(signatureFile, "ascii")).trim();
-  await verifyUpdaterSignature(
-    path.join(directory, files.update),
-    signature,
-    version,
-    publicKey,
-  );
   const manifest = {
     version,
     platforms: {
@@ -253,7 +257,16 @@ export async function assembleRelease(
           tag +
           "/" +
           files.update,
-        signature,
+        signature: signatures.get(files.update),
+      },
+      "windows-x86_64": {
+        url:
+          repositoryUrl(repository) +
+          "/releases/download/" +
+          tag +
+          "/" +
+          files.windows,
+        signature: signatures.get(files.windows),
       },
     },
   };
@@ -314,13 +327,7 @@ function assetMatches(remote, local) {
   );
 }
 
-async function publishRelease(
-  directory,
-  tag,
-  repository,
-  commit,
-  publicKey,
-) {
+async function publishRelease(directory, tag, repository, commit, publicKey) {
   const assets = await assembleRelease(directory, tag, repository, publicKey);
   const repo = "repos/" + repository;
   if (api(repo + "/commits/" + tag).sha !== commit) {

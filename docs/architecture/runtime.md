@@ -128,14 +128,19 @@ Orbit 不计算平台价格、余额、预算或结算，也不以本地图片�
 ## 更新与桌面生命周期
 
 [更新模块](../../crates/orbit-core/src/updates.rs)只有编译入审核过的渠道/公钥才启用应用内
-更新，Windows 当前使用手动安装包。下载与安装分别确认；候选须匹配平台、更高版本、
+更新，支持 macOS arm64 和 Windows x64 的正式构建。下载与安装分别确认；候选须匹配平台、更高版本、
 签名版本及归档边界，下载 URL/重定向限于固定渠道规则，不能由 WebView 或设置提供信任根。
 
 安装进入 maintenance，排除在途任务、配置操作与授权，并独占 helper 更新锁。
-[恢复事务](../../crates/orbit-core/src/update_recovery.rs)封存旧包/数据库基线，替换应用后
+[macOS 恢复事务](../../crates/orbit-core/src/update_recovery.rs)封存旧包/数据库基线，替换应用后
 重启；下次启动在暴露 Service 前验证并提交数据，失败按 journal 恢复旧包和受控数据状态。
 恢复后要求重启或发现篡改冲突时，不继续用已映射的新二进制提供普通服务；不借数据库回退
 恢复旧凭据有效性，也不回放模型请求。
+
+Windows 的 [NSIS 交接](../../crates/orbit-core/src/update_windows.rs)重新核对本地包摘要和版本签名，
+只从已安装的 NSIS 程序交接到原目录。私有暂存包和当前 EXE 由句柄禁止写入/替换，成功启动
+passive/update/restart 安装器后才退出，NSIS 更新并重新启动应用；启动失败则保持当前应用可用。
+新进程沿现有启动路径重新部署内嵌 helper、清除维护标记。Windows 使用 NSIS 的安装和错误处理。
 
 [窗口/托盘生命周期](../../src-tauri/src/desktop.rs)与 Service 分离：默认关闭窗口只收起，
 后台图片任务和 Claude 映射继续；真正退出停止映射，未确认图片按上述状态保留。
