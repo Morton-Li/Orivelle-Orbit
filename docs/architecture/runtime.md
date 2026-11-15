@@ -94,8 +94,9 @@ Codex 配置与模型目录通过同一事务发布：[catalog binding](../../cr
 目录声明、配置已保存和 `restart_required` 状态均不证明 Codex 已加载或上游请求成功。
 
 Claude 的配置库、活动索引和必要主设置由[Claude 协调器](../../crates/orbit-core/src/service_claude.rs)
-一起处理。当前接入要求分别选择 Sonnet/Opus/Haiku 模型，显示名称记录映射关系，实际请求
-使用所选模型 ID；这三个入口不是失败时换模型的调度策略。
+一起处理。当前接入要求分别选择 Sonnet/Opus/Haiku 模型，显示文字直接使用所选模型名称，实际请求
+使用所选模型 ID；这三个入口不是失败时换模型的调度策略。新映射按 v4 冻结名称快照，旧 v1–v3
+配置保持原有校验与恢复语义；重新接入后更新显示名称。
 
 [mapping manager](../../crates/orbit-core/src/claude_mapping.rs)为绑定保留固定 loopback
 端口及专属本地 token。helper 向 Claude 提供本地 token；[HTTP 映射](../../crates/orbit-core/src/claude_mapping_http.rs)

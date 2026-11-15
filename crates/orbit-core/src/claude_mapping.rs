@@ -34,13 +34,18 @@ const SONNET: &str = "claude-sonnet-5";
 const OPUS: &str = "claude-opus-5";
 const HAIKU: &str = "claude-haiku-4-5";
 const DATED_HAIKU: &str = "claude-haiku-4-5-20251001";
+const ENTRY_NAMES: [&str; 3] = [SONNET, OPUS, HAIKU];
 
 pub fn requires_mapping(model_id: &str) -> bool {
     !(model_id.starts_with("claude-") || model_id.starts_with("anthropic/claude-"))
 }
 
-fn aliases(version: u32, model_id: &str, models: Option<&ClaudeModelMapping>) -> Vec<ModelAlias> {
-    // Versions 1 and 2 are authenticated inside saved configuration contexts.
+fn legacy_aliases(
+    version: u32,
+    model_id: &str,
+    models: Option<&ClaudeModelMapping>,
+) -> Vec<ModelAlias> {
+    // Versions 1 through 3 are authenticated inside saved configuration contexts.
     // Their labels must remain byte-for-byte stable when old plans are read.
     [
         (
@@ -147,8 +152,20 @@ impl MappingPlan {
         };
         let valid_version = match self.version {
             1 => self.models.is_none(),
-            2 | 3 => self.models.is_some(),
+            2 | 3 | 4 => self.models.is_some(),
             _ => false,
+        };
+        let valid_aliases = if self.version == 4 {
+            self.aliases.len() == ENTRY_NAMES.len()
+                && self.aliases.iter().zip(ENTRY_NAMES).all(|(alias, name)| {
+                    alias.name == name
+                        && !alias.label_override.is_empty()
+                        && alias.label_override.len() <= 2048
+                        && !alias.label_override.chars().any(char::is_control)
+                })
+        } else {
+            self.aliases
+                == legacy_aliases(self.version, &self.upstream_model_id, self.models.as_ref())
         };
         if !valid_version
             || self.port == 0
@@ -157,7 +174,7 @@ impl MappingPlan {
                 models.sonnet != self.upstream_model_id
                     || !models.ids().into_iter().all(valid_model)
             })
-            || self.aliases != aliases(self.version, &self.upstream_model_id, self.models.as_ref())
+            || !valid_aliases
             || chrono::DateTime::parse_from_rfc3339(&self.created_at).is_err()
         {
             return Err(fail("invalid_configuration"));
@@ -308,12 +325,14 @@ impl MappingManager {
         profile_id: &str,
         model_id: &str,
         models: Option<&ClaudeModelMapping>,
+        display_names: [&str; 3],
     ) -> Result<MappingPlan> {
         self.reserve_for(
             binding_id,
             profile_id,
             model_id,
             models,
+            display_names,
             Duration::from_secs(300),
         )
     }
@@ -323,6 +342,7 @@ impl MappingManager {
         profile_id: &str,
         model_id: &str,
         models: Option<&ClaudeModelMapping>,
+        display_names: [&str; 3],
         ttl: Duration,
     ) -> Result<MappingPlan> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -336,7 +356,7 @@ impl MappingManager {
             haiku: model_id.into(),
         });
         let plan = MappingPlan {
-            version: 3,
+            version: 4,
             binding_id: binding_id.into(),
             profile_id: profile_id.into(),
             port: listener
@@ -344,7 +364,16 @@ impl MappingManager {
                 .map_err(|_| fail("claude_mapping_unavailable"))?
                 .port(),
             upstream_model_id: model_id.into(),
-            aliases: aliases(3, model_id, Some(&models)),
+            // Display names are frozen with the IDs inside this authenticated
+            // plan. Claude's entry IDs remain stable for request translation.
+            aliases: ENTRY_NAMES
+                .into_iter()
+                .zip(display_names)
+                .map(|(name, label)| ModelAlias {
+                    name: name.into(),
+                    label_override: label.into(),
+                })
+                .collect(),
             created_at: chrono::Utc::now().to_rfc3339(),
             models: Some(models),
         };
@@ -791,6 +820,7 @@ mod tests {
                 &crate::identity::uuid(),
                 "gpt-6-luna",
                 None,
+                ["GPT 6 Luna"; 3],
                 Duration::from_millis(20),
             )
             .unwrap();
@@ -814,6 +844,7 @@ mod tests {
                 &crate::identity::uuid(),
                 "gpt-6-luna",
                 None,
+                ["GPT 6 Luna"; 3],
                 Duration::from_millis(20),
             )
             .unwrap();
@@ -832,6 +863,7 @@ mod tests {
                 &crate::identity::uuid(),
                 "gpt-6-luna",
                 None,
+                ["GPT 6 Luna"; 3],
             )
             .unwrap();
         let ticket = manager.ticket(&plan);
@@ -844,6 +876,7 @@ mod tests {
                     &crate::identity::uuid(),
                     "gpt-6-luna",
                     None,
+                    ["GPT 6 Luna"; 3],
                 )
                 .unwrap();
         }
@@ -854,18 +887,25 @@ mod tests {
                     &crate::identity::uuid(),
                     "gpt-6-luna",
                     None,
+                    ["GPT 6 Luna"; 3],
                 )
                 .is_err()
         );
     }
 
     #[test]
-    fn saved_v1_and_v2_mapping_plans_preserve_their_authenticated_bytes() {
+    fn saved_v1_v2_and_v3_mapping_plans_preserve_their_authenticated_bytes() {
         let v1 = r#"{"version":1,"binding_id":"00000000-0000-4000-8000-000000000001","profile_id":"00000000-0000-4000-8000-000000000002","port":40000,"upstream_model_id":"old-model","aliases":[{"name":"claude-sonnet-5","labelOverride":"old-model · 主模型"},{"name":"claude-opus-5","labelOverride":"old-model · 备用主模型"},{"name":"claude-haiku-4-5","labelOverride":"old-model · 辅助模型"}],"created_at":"2026-11-10T00:00:00Z"}"#;
         let v2 = r#"{"version":2,"binding_id":"00000000-0000-4000-8000-000000000001","profile_id":"00000000-0000-4000-8000-000000000002","port":40000,"upstream_model_id":"sonnet-model","aliases":[{"name":"claude-sonnet-5","labelOverride":"sonnet-model · 主模型"},{"name":"claude-opus-5","labelOverride":"opus-model · 备用主模型"},{"name":"claude-haiku-4-5","labelOverride":"haiku-model · 辅助模型"}],"created_at":"2026-11-10T00:00:00Z","roles":{"primary":"sonnet-model","fallback":"opus-model","auxiliary":"haiku-model"}}"#;
+        let v3 = v2
+            .replacen("\"version\":2", "\"version\":3", 1)
+            .replace("sonnet-model · 主模型", "Sonnet → sonnet-model")
+            .replace("opus-model · 备用主模型", "Opus → opus-model")
+            .replace("haiku-model · 辅助模型", "Haiku → haiku-model");
         for (original, expected) in [
             (v1, ["old-model", "old-model", "old-model"]),
             (v2, ["sonnet-model", "opus-model", "haiku-model"]),
+            (v3.as_str(), ["sonnet-model", "opus-model", "haiku-model"]),
         ] {
             let plan: MappingPlan = serde_json::from_str(original).unwrap();
             plan.validate().unwrap();
@@ -885,19 +925,15 @@ mod tests {
         let binding = crate::identity::uuid();
         let profile = crate::identity::uuid();
         let plan = manager
-            .reserve(&binding, &profile, "gpt-6-luna", None)
+            .reserve(&binding, &profile, "gpt-6-luna", None, ["GPT 6 Luna"; 3])
             .unwrap();
-        assert_eq!(plan.version, 3);
+        assert_eq!(plan.version, 4);
         assert_eq!(
             plan.aliases
                 .iter()
                 .map(|alias| alias.label_override.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "Sonnet → gpt-6-luna",
-                "Opus → gpt-6-luna",
-                "Haiku → gpt-6-luna"
-            ]
+            ["GPT 6 Luna"; 3]
         );
         assert_eq!(
             plan.base_url(),
@@ -923,7 +959,19 @@ mod tests {
         assert!(!allowed_alias(&route, DATED_HAIKU));
         let mut tampered = plan.clone();
         tampered.aliases[0].label_override = "Claude Sonnet".into();
+        assert_ne!(tampered.revision().unwrap(), plan.revision().unwrap());
+        assert!(manager.claim(&tampered).is_err());
+        for label in ["", "invalid\nname"] {
+            tampered.aliases[0].label_override = label.into();
+            assert!(tampered.validate().is_err());
+        }
+        tampered = plan.clone();
+        tampered.aliases[0].name = "unqualified-entry".into();
         assert!(tampered.validate().is_err());
+        let restored: MappingPlan =
+            serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(restored.revision().unwrap(), plan.revision().unwrap());
+        assert_eq!(restored, plan);
         drop(manager);
         assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_ok());
     }
