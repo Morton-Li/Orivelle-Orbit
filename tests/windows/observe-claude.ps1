@@ -15,6 +15,7 @@ $source='Orbit-Claude-Helper-'+[Guid]::NewGuid().ToString('N')
 $subscription=$null
 $screenReaderChanged=$false
 $originalScreenReader=0
+$externalTrace=$env:ORBIT_WINDOWS_PROCESS_TRACE_DIRECTORY
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing,UIAutomationClient,UIAutomationTypes
 Add-Type -TypeDefinition @'
 using System;using System.Runtime.InteropServices;
@@ -35,8 +36,9 @@ public static class OrbitClaudeInput {
 '@
 $proof=[ordered]@{ helper_started_by_installed_client=$false; client_version=(Get-Item $exe).VersionInfo.ProductVersion; app_path=$AppPath; ui=@() }
 try {
-    $subscription=Register-CimIndicationEvent -Query 'SELECT * FROM Win32_ProcessStartTrace' -SourceIdentifier $source
+    if(-not $externalTrace){$subscription=Register-CimIndicationEvent -Query 'SELECT * FROM Win32_ProcessStartTrace' -SourceIdentifier $source}
     $trace=@{}
+    $observeAfter=[DateTime]::UtcNow
     if(-not [OrbitClaudeInput]::GetSetting(0x46,0,[ref]$originalScreenReader,0)){throw 'Could not read the transient accessibility state.'}
     if($originalScreenReader -eq 0){
         if(-not [OrbitClaudeInput]::SetSetting(0x47,1,[IntPtr]::Zero,2)){throw 'Could not enable transient accessibility.'}
@@ -88,6 +90,16 @@ try {
     } catch {$proof.driver.error=$_.Exception.Message}
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
     while([DateTime]::UtcNow -lt $deadline -and -not $proof.helper_started_by_installed_client){
+        if($externalTrace){
+            foreach($file in @(Get-ChildItem -LiteralPath $externalTrace -Filter 'helper-*.json')){
+                $observation=Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8|ConvertFrom-Json
+                if([DateTime]::Parse($observation.started_utc).ToUniversalTime() -lt $observeAfter){continue}
+                $ancestor=$observation.ancestors|Where-Object {$_.path -and $_.path.StartsWith($AppPath,[StringComparison]::OrdinalIgnoreCase)}|Select-Object -First 1
+                if($ancestor){$proof.helper_started_by_installed_client=$true;$proof.helper_ancestor=$ancestor.name;$proof.helper_observation=$observation;break}
+            }
+            if(-not $proof.helper_started_by_installed_client){Start-Sleep -Milliseconds 200}
+            continue
+        }
         $event=Wait-Event -SourceIdentifier $source -Timeout 1
         if(-not $event){continue}
         $started=$event.SourceEventArgs.NewEvent

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$Executable,
-    [Parameter(Mandatory)][string]$OutputDirectory
+    [Parameter(Mandatory)][string]$OutputDirectory,
+    [string]$ExpectedClientVersion
 )
 $ErrorActionPreference = 'Stop'
 if ($env:ORBIT_WINDOWS_TEST_SCOPE -ne 'disposable-vm') {
@@ -20,6 +21,9 @@ $receipt = [ordered]@{
     elevated = $false
     executable_sha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+if ($ExpectedClientVersion) {
+    $receipt.scope = 'Ordinary interactive user; transient loopback inspector for native backend readiness; no HTTPS fixture'
+}
 $app = $null
 try {
     $startupJson = & powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -STA -File "$PSScriptRoot\lifecycle.ps1" -OrbitProcess 0 -Action startup -StartExecutable $Executable -Screenshot "$OutputDirectory\startup-user.png"
@@ -34,6 +38,20 @@ try {
     $receipt.window = $stateJson | ConvertFrom-Json
     if (-not $receipt.window.main_responsive -or -not $receipt.window.tray_exists) {
         throw 'The ordinary-user main window and tray are unavailable.'
+    }
+    if ($ExpectedClientVersion) {
+        # The optional backend pass uses a transient loopback inspector. Keep
+        # its scope distinct from the preceding inspector-free startup pass.
+        $nativePreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $result = & node "$PSScriptRoot\probe-user-backend.mjs" $ExpectedClientVersion
+            $probeExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $nativePreference }
+        if ($probeExit -ne 0) { throw 'The ordinary-user native backend probe failed; inspect startup-user.log.' }
+        $receipt.backend = $result | ConvertFrom-Json
+        $receipt.native_backend_verified = $true
+        $receipt.startup_to_backend_ready_ms = [int]([DateTime]::UtcNow - $app.StartTime.ToUniversalTime()).TotalMilliseconds
     }
     $receipt.status = 'passed'
 } catch {

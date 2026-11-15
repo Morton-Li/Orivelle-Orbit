@@ -1,8 +1,15 @@
 import { chromium, expect } from "@playwright/test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -42,6 +49,7 @@ let launchError;
 let baseline;
 let startupProof;
 let startupFailure;
+let configuredClients = false;
 const receipt = {
   source: process.env.GITHUB_SHA,
   build_source:
@@ -59,6 +67,7 @@ function launch(binary) {
   launchError = undefined;
   app = spawn(binary, {
     stdio: "inherit",
+    windowsHide: true,
     env: { ...appEnvironment, WEBVIEW2_USER_DATA_FOLDER: profile },
   });
   app.unref();
@@ -75,6 +84,48 @@ function launch(binary) {
 }
 
 async function native(action, item, screenshot) {
+  const inputDirectory = process.env.ORBIT_WINDOWS_NATIVE_INPUT_DIRECTORY;
+  if (
+    inputDirectory &&
+    [
+      "click",
+      "right-click",
+      "double-click",
+      "main-click",
+      "menu-item",
+      "dialog",
+    ].includes(action)
+  ) {
+    const id = path.join(inputDirectory, randomUUID());
+    await writeFile(
+      id + ".request.tmp",
+      JSON.stringify({
+        action,
+        process: app.pid,
+        item,
+        screenshot: screenshot && path.join(evidence, screenshot),
+      }),
+    );
+    await rename(id + ".request.tmp", id + ".request.json");
+    let response;
+    await expect
+      .poll(
+        async () => {
+          response = await readFile(id + ".response.json", "utf8").then(
+            JSON.parse,
+            (error) => {
+              if (error.code === "ENOENT") return null;
+              throw error;
+            },
+          );
+          return Boolean(response);
+        },
+        { timeout: 35_000 },
+      )
+      .toBe(true);
+    assert(response.ok, response.stderr);
+    return JSON.parse(response.stdout.trim());
+  }
   const args = [
     "-NoProfile",
     "-NonInteractive",
@@ -267,8 +318,13 @@ async function exerciseImages(page, navigation) {
   });
   assert.equal(await configPreviews.count(), 2);
   if (process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm") {
-    if (process.env.ORBIT_WINDOWS_ACCEPTANCE_SCOPE !== "desktop-only")
+    if (
+      process.env.ORBIT_WINDOWS_ACCEPTANCE_SCOPE !== "desktop-only" &&
+      !configuredClients
+    ) {
       await exerciseClientConfiguration(page, { invoke, evidence, receipt });
+      configuredClients = true;
+    }
   } else {
     for (const preview of await configPreviews.all())
       assert(!(await preview.isEnabled()));
@@ -499,8 +555,12 @@ async function connect() {
     !initialLocalePrepared
   ) {
     const state = await invoke(page, "bootstrap");
-    if (state.settings.locale !== "zh-CN")
-      await invoke(page, "update_settings", { patch: { locale: "zh-CN" } });
+    const patch = {};
+    if (state.settings.locale !== "zh-CN") patch.locale = "zh-CN";
+    if (!baseline && state.settings.close_behavior === "quit")
+      patch.close_behavior = "platform_default";
+    if (Object.keys(patch).length)
+      await invoke(page, "update_settings", { patch });
     initialLocalePrepared = true;
   }
   await page
@@ -512,8 +572,42 @@ async function connect() {
 async function exerciseTrayPanel() {
   const originalTheme = (await invoke(page, "bootstrap")).settings.theme;
   let panel;
+  const scrollbarStyles = {};
   for (const theme of ["light", "dark"]) {
     await choose(page, "setting-theme", theme === "dark" ? "深色" : "浅色");
+    await expect(page.locator("html")).toHaveClass(/windows-platform/);
+    if (theme === "dark")
+      await expect(page.locator("html")).toHaveClass(/dark/);
+    else await expect(page.locator("html")).not.toHaveClass(/dark/);
+    await page.mouse.move(320, 120);
+    const styles = await page.locator(".main-shell").evaluate((root) => ({
+      width: getComputedStyle(root, "::-webkit-scrollbar").width,
+      track: getComputedStyle(root, "::-webkit-scrollbar-track")
+        .backgroundColor,
+      thumb: getComputedStyle(root, "::-webkit-scrollbar-thumb")
+        .backgroundColor,
+      accent: getComputedStyle(root).getPropertyValue("--accent").trim(),
+      scrollable: root.scrollHeight > root.clientHeight,
+      top: root.getBoundingClientRect().top,
+      bottom: root.getBoundingClientRect().bottom,
+      titlebar_bottom: document.querySelector(".topbar").getBoundingClientRect()
+        .bottom,
+      viewport_height: window.innerHeight,
+      document_scrolls:
+        document.scrollingElement.scrollHeight >
+        document.documentElement.clientHeight,
+    }));
+    assert.equal(styles.width, "10px");
+    assert.equal(styles.track, "rgba(0, 0, 0, 0)");
+    assert.notEqual(styles.thumb, "rgba(0, 0, 0, 0)");
+    assert.equal(styles.scrollable, true);
+    assert.equal(styles.document_scrolls, false);
+    assert(styles.top >= styles.titlebar_bottom);
+    assert.equal(styles.bottom, styles.viewport_height);
+    scrollbarStyles[theme] = styles;
+    await page.screenshot({
+      path: path.join(evidence, `scrollbar-${theme}.png`),
+    });
     const taskbarBefore = (await native("state")).taskbar_entries;
     assert(taskbarBefore.length > 0, "The main window has a taskbar entry.");
     await native(theme === "light" ? "click" : "right-click");
@@ -566,6 +660,11 @@ async function exerciseTrayPanel() {
       .poll(async () => (await native("state")).panel_visible)
       .toBe(false);
   }
+  assert.notEqual(scrollbarStyles.light.thumb, scrollbarStyles.dark.thumb);
+  receipt.scrollbar_styles = scrollbarStyles;
+  receipt.checks.push(
+    "Windows scrollbars use a narrow rounded thumb and transparent track, with distinct light and dark theme colors",
+  );
   // Navigation restores the existing main window and closes the panel.
   await native("close");
   await visible(false);
@@ -736,11 +835,23 @@ try {
     ),
   );
   if (!baseline) await authorizeAccount(page);
+  if (
+    !baseline &&
+    process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm" &&
+    process.env.ORBIT_WINDOWS_ACCEPTANCE_SCOPE !== "desktop-only"
+  ) {
+    // Complete native client writes/restores independently of the input robot.
+    await navigation.getByRole("link", { name: "接入", exact: true }).click();
+    await choose(page, "access-node", fixture.nodeLabel);
+    await exerciseClientConfiguration(page, { invoke, evidence, receipt });
+    configuredClients = true;
+  }
   assert.equal((await native("state")).tray_exists, true);
   await native("close");
   await visible(false);
   const secondary = spawn(executable, {
     stdio: "inherit",
+    windowsHide: true,
     env: { ...appEnvironment, WEBVIEW2_USER_DATA_FOLDER: profile },
   });
   await expect.poll(() => secondary.exitCode, { timeout: 15_000 }).toBe(0);
