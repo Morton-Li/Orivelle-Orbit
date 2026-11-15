@@ -79,6 +79,16 @@ body {
   margin: 0;
   min-width: 320px;
 }
+html:not(.menubar-window),
+html:not(.menubar-window) body,
+html:not(.menubar-window) #app {
+  height: 100%;
+  overflow: hidden;
+}
+html:not(.menubar-window) #app {
+  display: grid;
+  grid-template-rows: var(--topbar-height) minmax(0, 1fr);
+}
 button,
 input,
 select,
@@ -167,7 +177,8 @@ pre {
 .app-shell {
   display: grid;
   grid-template-columns: 204px minmax(0, 1fr);
-  min-height: calc(100vh - var(--topbar-height));
+  min-height: 0;
+  overflow: hidden;
 }
 .sidebar {
   background: var(--sidebar);
@@ -175,9 +186,9 @@ pre {
   display: flex;
   flex-direction: column;
   padding: 29px 16px 18px;
-  height: calc(100vh - var(--topbar-height));
-  position: sticky;
-  top: var(--topbar-height);
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
 }
 .brand {
   display: flex;
@@ -248,6 +259,9 @@ pre {
 }
 .main-shell {
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .topbar {
   position: sticky;
@@ -1535,9 +1549,9 @@ textarea::placeholder {
 @media (max-width: 760px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .sidebar {
-    position: sticky;
     height: auto;
     padding: 13px 20px 0;
     z-index: 10;
