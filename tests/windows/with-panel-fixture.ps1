@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') {
+if (($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') -and $env:ORBIT_WINDOWS_TEST_SCOPE -ne 'disposable-vm') {
     throw 'Run the Panel fixture on a GitHub-hosted Windows x64 runner.'
 }
 
@@ -49,9 +49,20 @@ try {
     }
     $env:NO_PROXY = "$panelHost,127.0.0.1,localhost"
 
-    node tests/windows/desktop.mjs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Windows desktop integration failed with exit code $LASTEXITCODE."
+    $nativePreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 turns native stderr into ErrorRecords. Let Node
+        # finish its receipt/finally, then use its exit code as the result.
+        $ErrorActionPreference = 'Continue'
+        if ($env:ORBIT_WINDOWS_ACCEPTANCE_SCOPE -eq 'client-only') {
+            node tests/windows/client-configuration.mjs
+        } else {
+            node tests/windows/desktop.mjs
+        }
+        $nativeExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $nativePreference }
+    if ($nativeExit -ne 0) {
+        throw "Windows desktop integration failed with exit code $nativeExit."
     }
 } finally {
     if ($debugAdded) {

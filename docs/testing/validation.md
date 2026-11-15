@@ -1,6 +1,6 @@
 # 验证入口与历史结果
 
-当前产品操作见[用户说明](../../README.md)，架构与数据边界见[运行机制](../architecture/runtime.md)，日常命令和发布要求见[开发、构建与发布](../development/build-and-release.md)。本页集中维护原生验收和历史关键结论；以下结果来自原报告及保留的回执，本次文档整理没有重跑业务测试、访问远端 CI、安装应用或调用真实上游。
+当前产品操作见[用户说明](../../README.md)，架构与数据边界见[运行机制](../architecture/runtime.md)，日常命令和发布要求见[开发、构建与发布](../development/build-and-release.md)。本页集中维护原生验收和历史关键结论；旧记录仅描述当时验收，新增结果按日期单列，不自动延伸至当前发布包。
 
 ## 按变更选择验证
 
@@ -35,6 +35,12 @@
 Windows 的[原生回执](../../tests/acceptance/desktop/v1.0.2-windows.json)绑定验收源码 `99b2eb4`、应用构建 `3c64e7f`；其中旧参数复用只描述当时版本，当前入口已移除。NSIS 负载与安装文件只允许固定 Tauri 的 `__TAURI_BUNDLE_TYPE_VAR_UNK`→`__TAURI_BUNDLE_TYPE_VAR_NSS` 标记变化，其他字节须相同，不能泛化为任意哈希差异。DMG 的[布局回执](../../tests/acceptance/desktop/v1.0.2-dmg.json)绑定源码 `e1f379c`、构建 `29f4cec`；原生截图属于当时 Actions artifact，不保证永久可下载。
 
 这些结果只覆盖表列候选的原生菜单与托盘行为；后续快捷面板、全屏空间或托盘实现变更需按实际影响范围重新验证。
+
+## 2026-11-15 Windows 原生补齐
+
+本次已使用 Windows x64 VM 构建、安装并验证实际 NSIS 候选。原生启动与托盘、Codex MSIX 的 helper 认证请求、Claude MSIX 的实际 GUI 请求、完整卸载后的完整 EXE 重装复验与配置恢复，见[当前验收范围](../../tests/acceptance/desktop/windows-tray.md)及[机器回执](../../tests/acceptance/desktop/windows-native-2026-11-15.json)。源码文件清单、包与可执行文件摘要分别绑定，不能用本节替代正式发布签名或推送证明。
+
+客户端请求使用真实安装程序、Windows Credential Manager 和默认配置路径，远端为专用受控 HTTPS peer。Claude 首次运行会改写主设置，因此另验收明确选择保留当前设置的恢复模式；严格恢复仍拒绝冲突。单屏已有 WebView2 环境不证明真实多屏 DPI 或全新系统运行库引导安装通过。Windows 默认更新设置的变更没有改变既有手动安装包更新能力。
 
 ## 历史图片链路
 

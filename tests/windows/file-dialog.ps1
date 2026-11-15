@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$FilePath
 )
 $ErrorActionPreference = 'Stop'
-if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
+if (($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') -and $env:ORBIT_WINDOWS_TEST_SCOPE -ne 'disposable-vm') {
     throw 'Use this picker automation only on a GitHub-hosted Windows runner.'
 }
 

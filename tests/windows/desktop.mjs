@@ -1,17 +1,20 @@
 import { chromium, expect } from "@playwright/test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { startPanelFixture } from "./panel-fixture.mjs";
+import { exerciseClientConfiguration } from "./client-configuration.mjs";
 import { verifyWindowsGuiExecutable } from "../../scripts/windows-package-evidence.mjs";
 
 if (
   process.platform !== "win32" ||
   process.arch !== "x64" ||
-  process.env.RUNNER_ENVIRONMENT !== "github-hosted"
+  (process.env.RUNNER_ENVIRONMENT !== "github-hosted" &&
+    process.env.ORBIT_WINDOWS_TEST_SCOPE !== "disposable-vm")
 ) {
   throw new Error("Run this test on a GitHub-hosted Windows x64 runner.");
 }
@@ -27,7 +30,9 @@ const profile = await mkdtemp(
 );
 const endpoint = "http://127.0.0.1:9222";
 const fixture = await startPanelFixture();
-const powershell = promisify(execFile);
+const exec = promisify(execFile);
+const powershell = (file, args, options = {}) =>
+  exec(file, args, { windowsHide: true, ...options });
 const appEnvironment = { ...process.env };
 delete appEnvironment.ORBIT_FIXTURE_PFX;
 delete appEnvironment.ORBIT_FIXTURE_PASSPHRASE;
@@ -35,15 +40,18 @@ delete appEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS;
 let app;
 let launchError;
 let baseline;
+let startupProof;
+let startupFailure;
 const receipt = {
   source: process.env.GITHUB_SHA,
   build_source:
     process.env.ORBIT_WINDOWS_BUILD_SOURCE ?? process.env.GITHUB_SHA,
   artifact_run:
     process.env.ORBIT_WINDOWS_ARTIFACT_RUN ?? process.env.GITHUB_RUN_ID,
+  source_manifest_sha256: process.env.ORBIT_WINDOWS_SOURCE_MANIFEST,
   baseline_tag: process.env.ORBIT_BASELINE_TAG ?? null,
   scope:
-    "Real NSIS installation and version transition, native OS behavior and controlled HTTPS peer",
+    "Installed NSIS candidate, native OS behavior and controlled HTTPS peer; version transition only when a baseline is supplied",
   checks: [],
 };
 
@@ -57,6 +65,13 @@ function launch(binary) {
   app.on("error", (error) => {
     launchError = error;
   });
+  if (binary === executable)
+    startupProof = native("startup", undefined, "startup-responsive.png").catch(
+      (error) => {
+        startupFailure = error;
+        return null;
+      },
+    );
 }
 
 async function native(action, item, screenshot) {
@@ -169,7 +184,10 @@ async function authorizeAccount(page) {
     .waitFor();
 
   const external = await chromium.launch({
-    channel: "chrome",
+    channel:
+      process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm"
+        ? "msedge"
+        : "chrome",
     args: ["--disable-background-networking", "--no-proxy-server"],
   });
   try {
@@ -199,8 +217,14 @@ async function waitForImages(page, count) {
         const state = await invoke(page, "bootstrap");
         return {
           images: state.image_history.length,
-          reconciled: state.tasks.filter(
-            (task) => task.state === "completed" && task.charges.length > 0,
+          reconciled: state.image_history.filter((image) =>
+            state.tasks.some(
+              (task) =>
+                task.id === image.task_id &&
+                task.account_id === image.account_id &&
+                task.state === "completed" &&
+                task.charges.length > 0,
+            ),
           ).length,
         };
       },
@@ -211,7 +235,10 @@ async function waitForImages(page, count) {
 
 async function choose(page, id, label) {
   await page.locator(`#${id}`).click();
-  await page.getByRole("option", { name: label, exact: true }).click();
+  await page
+    .getByRole("option")
+    .filter({ has: page.getByText(label, { exact: true }) })
+    .click();
 }
 
 async function exerciseImages(page, navigation) {
@@ -239,8 +266,12 @@ async function exerciseImages(page, navigation) {
     exact: true,
   });
   assert.equal(await configPreviews.count(), 2);
-  for (const preview of await configPreviews.all()) {
-    assert(!(await preview.isEnabled()));
+  if (process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm") {
+    if (process.env.ORBIT_WINDOWS_ACCEPTANCE_SCOPE !== "desktop-only")
+      await exerciseClientConfiguration(page, { invoke, evidence, receipt });
+  } else {
+    for (const preview of await configPreviews.all())
+      assert(!(await preview.isEnabled()));
   }
   await navigation
     .getByRole("link", { name: "图片工作台", exact: true })
@@ -416,6 +447,8 @@ async function exerciseImages(page, navigation) {
 }
 
 async function logout(page, navigation) {
+  const revocationsBefore =
+    fixture.requests.get("POST /api/v1/orbit/sessions/current/revoke") ?? 0;
   await navigation.getByRole("link", { name: "设置", exact: true }).click();
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await page
@@ -426,13 +459,14 @@ async function logout(page, navigation) {
   assert.equal((await invoke(page, "bootstrap")).session.status, "logged_out");
   assert.equal(
     fixture.requests.get("POST /api/v1/orbit/sessions/current/revoke"),
-    1,
+    revocationsBefore + 1,
   );
   console.log("Local logout and server session revocation verified.");
 }
 
 let browser;
 let page;
+let initialLocalePrepared = false;
 async function connect() {
   await waitForWebView();
   browser = await chromium.connectOverCDP(endpoint, {
@@ -459,6 +493,16 @@ async function connect() {
     .toBe(true);
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => console.error(error));
+  await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
+  if (
+    process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm" &&
+    !initialLocalePrepared
+  ) {
+    const state = await invoke(page, "bootstrap");
+    if (state.settings.locale !== "zh-CN")
+      await invoke(page, "update_settings", { patch: { locale: "zh-CN" } });
+    initialLocalePrepared = true;
+  }
   await page
     .getByRole("navigation")
     .getByRole("link", { name: "首页", exact: true })
@@ -470,6 +514,8 @@ async function exerciseTrayPanel() {
   let panel;
   for (const theme of ["light", "dark"]) {
     await choose(page, "setting-theme", theme === "dark" ? "深色" : "浅色");
+    const taskbarBefore = (await native("state")).taskbar_entries;
+    assert(taskbarBefore.length > 0, "The main window has a taskbar entry.");
     await native(theme === "light" ? "click" : "right-click");
     await expect
       .poll(async () => (await native("state")).panel_visible)
@@ -497,7 +543,9 @@ async function exerciseTrayPanel() {
     const os = await native("state", undefined, `tray-panel-${theme}.png`);
     assert.equal(os.panel_focused, true);
     assert.equal(os.panel_inside_work_area, true);
-    assert.equal(os.panel_tool_window, true);
+    // Tao implements skip_taskbar with ITaskbarList::DeleteTab, rather than
+    // WS_EX_TOOLWINDOW. Observe the actual Shell entries instead of that flag.
+    assert.deepEqual(os.taskbar_entries, taskbarBefore);
     assert.equal(os.native_menu_visible, false);
     assert.equal(
       await panel
@@ -610,17 +658,59 @@ try {
       "candidate NSIS upgraded the v1.0.1 installation and installed bytes match the compiled program with the Tauri NSIS marker",
     );
   }
-  receipt.windows_image = verifyWindowsGuiExecutable(
-    await readFile(executable),
-  );
+  const compiledImage = await readFile(executable);
+  receipt.windows_image = verifyWindowsGuiExecutable(compiledImage);
+  receipt.executable_sha256 = createHash("sha256")
+    .update(compiledImage)
+    .digest("hex");
   launch(executable);
   await connect();
+  const helperImage = await readFile(
+    path.join(
+      process.env.APPDATA,
+      "io.orivelle.orbit",
+      "bin",
+      "orbit-credential-helper.exe",
+    ),
+  );
+  receipt.helper_image = verifyWindowsGuiExecutable(helperImage);
+  receipt.helper_sha256 = createHash("sha256")
+    .update(helperImage)
+    .digest("hex");
+  const startup = await startupProof;
+  if (startupFailure) throw startupFailure;
+  assert(
+    startup?.main_seen,
+    "The native main window must appear during startup.",
+  );
+  assert(
+    startup.maximum_consecutive_unresponsive < 3,
+    "Startup must not hold the Windows message loop.",
+  );
+  assert.equal(
+    startup.visible_console,
+    false,
+    "Orbit and its children must not show a console/PowerShell window.",
+  );
+  receipt.startup = startup;
+  receipt.checks.push(
+    "startup window stays responsive with no visible console or PowerShell child",
+  );
 
   const navigation = page.getByRole("navigation");
   await navigation.getByRole("link", { name: "首页", exact: true }).waitFor({
     timeout: 90_000,
   });
-  const initial = await invoke(page, "bootstrap");
+  let initial = await invoke(page, "bootstrap");
+  if (
+    process.env.ORBIT_WINDOWS_TEST_SCOPE === "disposable-vm" &&
+    initial.session.status === "authenticated"
+  ) {
+    await invoke(page, "logout", {
+      connection_id: initial.active_connection_id,
+    });
+    initial = await invoke(page, "bootstrap");
+  }
   assert.equal(initial.platform, "windows");
   if (baseline) {
     assert.equal(initial.session.status, "authenticated");
@@ -635,14 +725,14 @@ try {
     receipt.checks.push(
       "candidate reopened v1.0.1 credential, account, connection, settings and image history",
     );
-  } else {
+  } else if (process.env.ORBIT_WINDOWS_TEST_SCOPE !== "disposable-vm") {
     assert.deepEqual(initial.connections, []);
   }
   assert.equal(initial.clients.length, 2);
   assert(initial.clients.every((client) => client.platform_supported));
   assert(
     initial.clients.every(
-      (client) => client.configuration_access !== "allowed",
+      (client) => client.installed || client.configuration_access !== "allowed",
     ),
   );
   if (!baseline) await authorizeAccount(page);
