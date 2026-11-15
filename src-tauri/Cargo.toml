@@ -28,6 +28,11 @@ image.workspace = true
 system-integration = []
 native-acceptance = []
 
+[target.'cfg(windows)'.dependencies]
+# The opener plugin shares this crate: launch the browser through ShellExecute,
+# rather than starting PowerShell as an intermediary.
+open.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "=0.6.2"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSWindow"] }

@@ -1,11 +1,12 @@
 param(
     [Parameter(Mandatory)][int]$OrbitProcess,
-    [Parameter(Mandatory)][ValidateSet('state', 'close', 'click', 'double-click', 'main-click', 'menu', 'dialog')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('state', 'startup', 'close', 'click', 'right-click', 'double-click', 'main-click', 'menu-item', 'dialog')][string]$Action,
     [string]$Item,
-    [string]$Screenshot
+    [string]$Screenshot,
+    [string]$StartExecutable
 )
 $ErrorActionPreference = 'Stop'
-if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
+if (($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') -and $env:ORBIT_WINDOWS_TEST_SCOPE -ne 'disposable-vm') {
     throw 'Use native lifecycle automation only on a GitHub-hosted Windows runner.'
 }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes, Accessibility
@@ -23,6 +24,7 @@ public static class OrbitLifecycle {
         public uint Size; public IntPtr Window; public uint Id; public Guid Guid;
     }
     [DllImport("user32.dll")] private static extern bool EnumWindows(Callback callback, IntPtr data);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls,string title);
     [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, Callback callback, IntPtr data);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int size);
@@ -33,6 +35,21 @@ public static class OrbitLifecycle {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+    [DllImport("user32.dll", SetLastError=true)] private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out UIntPtr result);
+    public static bool Responsive(int process) {
+        var window=Find(process,"main"); if(window==IntPtr.Zero)return false;
+        UIntPtr result; return SendMessageTimeout(window,0,IntPtr.Zero,IntPtr.Zero,2,250,out result)!=IntPtr.Zero;
+    }
+    public static string[] VisibleConsoles(int[] processes) {
+        var ids=new HashSet<int>(processes); var names=new List<string>();
+        EnumWindows((window,data)=>{
+            uint owner; GetWindowThreadProcessId(window,out owner);
+            if(!ids.Contains((int)owner)||!IsWindowVisible(window))return true;
+            var cls=new StringBuilder(256);GetClassName(window,cls,cls.Capacity);
+            if(cls.ToString()=="ConsoleWindowClass"||cls.ToString()=="CASCADIA_HOSTING_WINDOW_CLASS")names.Add(cls.ToString());
+            return true;
+        },IntPtr.Zero); return names.ToArray();
+    }
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -153,9 +170,12 @@ public static class OrbitLifecycle {
     }
     public static void Click(Rect rect, bool twice, bool right) {
         if (!SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2)) throw new Exception("Could not position the native pointer.");
+        System.Threading.Thread.Sleep(100);
         uint down = right ? 0x0008u : 0x0002u;
         uint up = right ? 0x0010u : 0x0004u;
-        mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(40);
+        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
         if (twice) {
             System.Threading.Thread.Sleep(80);
             mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero);
@@ -178,30 +198,88 @@ function Save-Screen {
     }
 }
 
-if ($Action -eq 'close') { [OrbitLifecycle]::Close($OrbitProcess) }
-if ($Action -eq 'main-click') { [OrbitLifecycle]::ClickMain($OrbitProcess) }
-if ($Action -eq 'click' -or $Action -eq 'double-click' -or $Action -eq 'menu') {
-    # Newly registered icons may start in Windows' overflow panel.
-    # Invoking an already-open panel closes it and leaves the icon rect stale.
-    if (-not [OrbitLifecycle]::OverflowVisible()) {
-        $buttons = [Windows.Automation.AutomationElement]::RootElement.FindAll(
-            [Windows.Automation.TreeScope]::Descendants,
-            (New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::Button))
-        )
-        foreach ($button in $buttons) {
-            if ($button.Current.AutomationId -eq 'SystemTrayIcon' -or $button.Current.Name -eq 'Show hidden icons') {
-                $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-                $deadline = (Get-Date).AddSeconds(5)
-                while (-not [OrbitLifecycle]::OverflowVisible() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
-                if (-not [OrbitLifecycle]::OverflowVisible()) { Save-Screen; throw 'The Windows tray overflow panel did not open.' }
-                break
-            }
-        }
+if ($Action -eq 'startup') {
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    if($StartExecutable){
+        if($OrbitProcess -ne 0){throw 'An observer-launched startup must use process id zero.'}
+        $OrbitProcess=(Start-Process -FilePath $StartExecutable -PassThru).Id
     }
-    [OrbitLifecycle]::Click([OrbitLifecycle]::IconRect($OrbitProcess), $Action -eq 'double-click', $Action -eq 'menu')
+    $samples=[Collections.Generic.List[object]]::new()
+    $misses=0; $maximum=0; $visibleConsole=$false; $seen=$false
+    while($clock.Elapsed.TotalSeconds -lt 12){
+        $main=[OrbitLifecycle]::Find($OrbitProcess,'main')
+        if($main -ne [IntPtr]::Zero){
+            $seen=$true
+            $responsive=[OrbitLifecycle]::Responsive($OrbitProcess)
+            if($responsive){$misses=0}else{$misses++;$maximum=[math]::Max($maximum,$misses)}
+            $ids=[Collections.Generic.HashSet[int]]::new();[void]$ids.Add($OrbitProcess)
+            $processes=@(Get-CimInstance Win32_Process)
+            do{$changed=$false;foreach($process in $processes){if($ids.Contains([int]$process.ParentProcessId) -and $ids.Add([int]$process.ProcessId)){$changed=$true}}}while($changed)
+            $consoles=@([OrbitLifecycle]::VisibleConsoles([int[]]@($ids)))
+            if($consoles.Count){$visibleConsole=$true}
+            $samples.Add([pscustomobject]@{elapsed_ms=$clock.ElapsedMilliseconds;responsive=$responsive;visible_console_count=$consoles.Count})
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Save-Screen
+    [pscustomobject]@{process_id=$OrbitProcess;observer_ready_before_launch=[bool]$StartExecutable;main_seen=$seen;maximum_consecutive_unresponsive=$maximum;visible_console=$visibleConsole;samples=$samples.ToArray()} | ConvertTo-Json -Depth 4 -Compress
+    exit 0
 }
 
-if ($Action -eq 'menu') {
+if ($Action -eq 'close') { [OrbitLifecycle]::Close($OrbitProcess) }
+if ($Action -eq 'main-click') { [OrbitLifecycle]::ClickMain($OrbitProcess) }
+if ($Action -eq 'click' -or $Action -eq 'double-click' -or $Action -eq 'right-click') {
+    $taskbar=[Windows.Automation.AutomationElement]::FromHandle([OrbitLifecycle]::FindWindow('Shell_TrayWnd',$null))
+    $buttonCondition=[Windows.Automation.AndCondition]::new(
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button),
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'NotifyItemIcon'))
+    function Find-Overflow {
+        [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.Condition]::TrueCondition) | Where-Object {
+            $_.Current.ClassName -eq 'TopLevelWindowForOverflowXamlIsland' -and -not $_.Current.IsOffscreen
+        } | Select-Object -First 1
+    }
+    function Find-OrbitIcon {
+        foreach($surface in @($taskbar,(Find-Overflow))){
+            if(-not $surface){continue}
+            $found=$surface.FindAll([Windows.Automation.TreeScope]::Descendants,$buttonCondition) | Where-Object {
+                -not $_.Current.IsOffscreen -and $_.Current.BoundingRectangle.Width -gt 0 -and $_.Current.Name.TrimStart() -match '^(Orivelle Orbit|Orbit(?:\s|\u00b7|$))'
+            } | Select-Object -First 1
+            if($found){return $found}
+        }
+    }
+    $icon=Find-OrbitIcon
+    if(-not $icon){
+        $buttons=$taskbar.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $overflow=$buttons | Where-Object {$_.Current.Name -match '^(Show hidden icons|\u663e\u793a\u9690\u85cf\u7684\u56fe\u6807)$' -and -not $_.Current.IsOffscreen} | Select-Object -First 1
+        if(-not $overflow){Save-Screen;throw 'The actual Windows hidden-icons control was not available.'}
+        if(-not (Find-Overflow)){$overflow.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()}
+        $deadline=(Get-Date).AddSeconds(5)
+        do {$icon=Find-OrbitIcon;if(-not $icon){Start-Sleep -Milliseconds 100}} while(-not $icon -and (Get-Date) -lt $deadline)
+    }
+    if(-not $icon){Save-Screen;throw 'The visible Orbit notification icon was not available.'}
+    # Windows 11 exposes overflow children before their opening animation ends.
+    # Wait for the actual icon bounds to settle before sending physical input.
+    $lastBounds='';$settled=0;$deadline=(Get-Date).AddSeconds(4)
+    do {
+        Start-Sleep -Milliseconds 100
+        $icon=Find-OrbitIcon
+        if(-not $icon){$settled=0;continue}
+        $currentBounds=$icon.Current.BoundingRectangle.ToString()
+        if($currentBounds -eq $lastBounds){$settled++}else{$lastBounds=$currentBounds;$settled=0}
+    } while($settled -lt 3 -and (Get-Date) -lt $deadline)
+    if(-not $icon -or $settled -lt 3){Save-Screen;throw 'The Orbit notification icon did not settle.'}
+    $bounds=$icon.Current.BoundingRectangle
+    $clickTarget=@{name=$icon.Current.Name;automation_id=$icon.Current.AutomationId;bounds=$bounds.ToString()}
+    $hit=[Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new($bounds.Left+$bounds.Width/2,$bounds.Top+$bounds.Height/2))
+    $clickTarget.hit_name=$hit.Current.Name
+    $clickTarget.hit_class=$hit.Current.ClassName
+    $clickTarget.hit_process=$hit.Current.ProcessId
+    $rect=New-Object OrbitLifecycle+Rect
+    $rect.Left=[int]$bounds.Left;$rect.Top=[int]$bounds.Top;$rect.Right=[int]$bounds.Right;$rect.Bottom=[int]$bounds.Bottom
+    [OrbitLifecycle]::Click($rect, $Action -eq 'double-click', $Action -eq 'right-click')
+}
+
+if ($Action -eq 'menu-item') {
     $deadline = (Get-Date).AddSeconds(10)
     do {
         $menu = [OrbitLifecycle]::Find($OrbitProcess, 'menu')
@@ -245,14 +323,22 @@ if ($panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::GetWindowRect($panel, [ref]
     $panelInsideWorkArea = $panelRect.Left -ge $work.Left -and $panelRect.Right -le $work.Right -and $panelRect.Top -ge $work.Top -and $panelRect.Bottom -le $work.Bottom
     $panelToolWindow = ([OrbitLifecycle]::GetWindowLongPtr($panel, -20).ToInt64() -band 0x80) -ne 0
 }
+$taskbarRoot=[Windows.Automation.AutomationElement]::FromHandle([OrbitLifecycle]::FindWindow('Shell_TrayWnd',$null))
+$taskbarEntries=@($taskbarRoot.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition) | Where-Object {
+    $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.AutomationId -eq 'Appid: io.orivelle.orbit'
+} | ForEach-Object {$_.Current.Name})
 @{
     main_exists = $main -ne [IntPtr]::Zero
+    main_responsive = $main -ne [IntPtr]::Zero -and [OrbitLifecycle]::Responsive($OrbitProcess)
     main_visible = $main -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($main)
     tray_exists = $tray -ne [IntPtr]::Zero
+    native_menu_visible = [OrbitLifecycle]::Find($OrbitProcess, 'menu') -ne [IntPtr]::Zero
     panel_visible = $panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::IsWindowVisible($panel)
     panel_focused = $panel -ne [IntPtr]::Zero -and [OrbitLifecycle]::GetForegroundWindow() -eq $panel
     panel_bounds = $panelBounds
     panel_inside_work_area = $panelInsideWorkArea
     panel_tool_window = $panelToolWindow
+    taskbar_entries = $taskbarEntries
     selected_item = if ($selected) { $name } else { $null }
+    click_target = $clickTarget
 } | ConvertTo-Json -Compress

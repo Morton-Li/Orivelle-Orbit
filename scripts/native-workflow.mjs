@@ -29,6 +29,7 @@ import {
   prepareProjectDirectory,
   runSyntheticSignerProbe,
 } from "./updater-signer-probe.mjs";
+import { verifyWindowsGuiExecutable } from "./windows-package-evidence.mjs";
 
 const root = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const mode = process.argv[2] ?? "preflight";
@@ -376,6 +377,8 @@ if (mode === "preflight") {
     "release",
     `orbit-credential-helper${suffix}`,
   );
+  if (process.platform === "win32")
+    verifyWindowsGuiExecutable(await readFile(helper));
   env.ORBIT_BUNDLED_HELPER_PATH = helper;
   const packageFlags = [
     "--target",
@@ -438,6 +441,8 @@ if (mode === "preflight") {
     "release",
     `orivelle-orbit${suffix}`,
   );
+  if (process.platform === "win32")
+    verifyWindowsGuiExecutable(await readFile(executable));
   const helperEvidence = await digest(helper);
   const executableEvidence = await digest(executable);
   let appEvidence = null;

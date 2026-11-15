@@ -295,7 +295,34 @@ pub(crate) fn observe(paths: &SystemPaths, target: &ClientView) -> Snapshot {
             &Path::new(app).join("Contents/Info.plist"),
             Format::Identity,
         ));
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            let observed = (|| -> Result<String> {
+                let root = Path::new(app);
+                let executable = root.join(if target.client == ClientKind::Codex {
+                    "Codex.exe"
+                } else {
+                    "Claude.exe"
+                });
+                let stamps = [executable, root.join("resources/app.asar")]
+                    .iter()
+                    .map(|p| crate::windows_fs::stamp(&crate::windows_fs::file(p)?))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(sha256(
+                    &serde_json::to_vec(&stamps).map_err(|_| fail("serialization_failed"))?,
+                ))
+            })();
+            sources.push(match observed {
+                Ok(digest) => Source {
+                    id: "client_identity",
+                    status: Status::Present,
+                    effect: Effect::None,
+                    digest,
+                },
+                Err(_) => Source::status("client_identity", Status::Unavailable),
+            });
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         let _ = app;
     }
     // Neither CFPreferences, filesystem absence nor the Windows registry reports
@@ -308,14 +335,22 @@ pub(crate) fn observe(paths: &SystemPaths, target: &ClientView) -> Snapshot {
     Snapshot::resolve_with_local(target, &sources, false, local_complete)
 }
 fn codex_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
-    let required = [
-        "codex_system_requirements",
-        "codex_legacy_defaults",
-        "codex_macos_mdm_defaults",
-        "codex_macos_mdm_requirements",
-        "client_identity",
-    ];
-    cfg!(target_os = "macos")
+    let required: &[&str] = if cfg!(windows) {
+        &[
+            "codex_system_requirements",
+            "codex_legacy_defaults",
+            "client_identity",
+        ]
+    } else {
+        &[
+            "codex_system_requirements",
+            "codex_legacy_defaults",
+            "codex_macos_mdm_defaults",
+            "codex_macos_mdm_requirements",
+            "client_identity",
+        ]
+    };
+    cfg!(any(target_os = "macos", windows))
         && target.client == ClientKind::Codex
         && required
             .iter()
@@ -330,9 +365,16 @@ fn claude_configuration_identity(target: &ClientView) -> bool {
         && target.bundle_id.as_deref() == Some("com.anthropic.claudefordesktop")
 }
 fn claude_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
-    cfg!(target_os = "macos")
-        && claude_configuration_identity(target)
-        && [
+    let required: &[&str] = if cfg!(windows) {
+        &[
+            "claude_machine_registry",
+            "claude_user_registry",
+            "claude_schema_pin",
+            "claude_default_locations",
+            "client_identity",
+        ]
+    } else {
+        &[
             "claude_machine_mdm",
             "claude_user_mdm",
             "claude_macos_forced_keys",
@@ -340,8 +382,12 @@ fn claude_local_coverage(target: &ClientView, sources: &[Source]) -> bool {
             "claude_default_locations",
             "client_identity",
         ]
-        .iter()
-        .all(|id| sources.iter().filter(|source| source.id == *id).count() == 1)
+    };
+    cfg!(any(target_os = "macos", windows))
+        && claude_configuration_identity(target)
+        && required
+            .iter()
+            .all(|id| sources.iter().filter(|source| source.id == *id).count() == 1)
 }
 fn claude_key_effect<'a>(keys: impl Iterator<Item = &'a str>) -> Effect {
     let mut effect = Effect::None;
@@ -396,7 +442,7 @@ fn claude_forced_observation(before: &[(&str, bool)], after: &[(&str, bool)]) ->
         ),
     }
 }
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn claude_default_locations(user_data_override: bool, managed_override: bool) -> Source {
     Source {
         id: "claude_default_locations",
@@ -782,7 +828,30 @@ fn native_sources(paths: &SystemPaths, target: &ClientView) -> Vec<Source> {
                 }
                 sources
             }
-            ClientKind::Claude => windows::claude_sources(target.version.as_deref()),
+            ClientKind::Claude => {
+                let mut sources = windows::claude_sources(target.version.as_deref());
+                sources.push(if claude_configuration_identity(target) {
+                    Source {
+                        id: "claude_schema_pin",
+                        status: Status::Present,
+                        effect: Effect::None,
+                        digest: sha256(
+                            &serde_json::to_vec(&(
+                                &target.version,
+                                crate::claude_config::SCHEMA_KEYS_SHA256,
+                            ))
+                            .unwrap_or_default(),
+                        ),
+                    }
+                } else {
+                    Source::status("claude_schema_pin", Status::Unavailable)
+                });
+                sources.push(claude_default_locations(
+                    std::env::var_os("CLAUDE_USER_DATA_DIR").is_some(),
+                    std::env::var_os("CLAUDE_E2E_MANAGED_PLIST").is_some(),
+                ));
+                sources
+            }
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

@@ -5,15 +5,31 @@ import ImagesPage from "./pages/ImagesPage.vue";
 import UsagePage from "./pages/UsagePage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
 
+const scrollPositions = new Map<string, { left: number; top: number }>();
 export const router = createRouter({
   history: createWebHashHistory(),
   scrollBehavior(to, _from, saved) {
-    return (
-      saved ??
-      (/^#client-(codex|claude)$/.test(to.hash)
-        ? { el: to.hash, top: 66 }
-        : { top: 0 })
+    const content = document.querySelector<HTMLElement>(".main-shell");
+    if (!content) return false;
+    const previous = saved && scrollPositions.get(to.fullPath);
+    const target = /^#client-(codex|claude)$/.test(to.hash)
+      ? document.getElementById(to.hash.slice(1))
+      : null;
+    content.scrollTo(
+      previous || {
+        left: 0,
+        top: target
+          ? Math.max(
+              0,
+              target.getBoundingClientRect().top -
+                content.getBoundingClientRect().top +
+                content.scrollTop -
+                16,
+            )
+          : 0,
+      },
     );
+    return false;
   },
   routes: [
     { path: "/", name: "home", component: HomePage },
@@ -23,4 +39,12 @@ export const router = createRouter({
     { path: "/settings", name: "settings", component: SettingsPage },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
+});
+router.beforeEach((_to, from) => {
+  const content = document.querySelector<HTMLElement>(".main-shell");
+  if (content)
+    scrollPositions.set(from.fullPath, {
+      left: content.scrollLeft,
+      top: content.scrollTop,
+    });
 });

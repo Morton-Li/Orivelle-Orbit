@@ -638,9 +638,9 @@ pub(crate) fn ensure_local_secret(
             let bytes = Zeroizing::new(
                 serde_json::to_vec(&secret).map_err(|_| fail("serialization_failed"))?,
             );
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             vault.create_claude_mapping_secret(&record.context.binding_id, &bytes)?;
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", windows)))]
             vault.put(&reference, &bytes)?;
             secret
         }

@@ -17,6 +17,8 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let home = directory.path().join("home");
         fs::create_dir_all(home.join("Library/Application Support")).unwrap();
+        #[cfg(windows)]
+        crate::store::private_directory(&home.join("Library/Application Support")).unwrap();
         let root = home.join("Library/Application Support/Claude-3p");
         let store = Store::open(&directory.path().join("orbit")).unwrap();
         let vault = FakeVault::default();
@@ -52,13 +54,18 @@ impl Fixture {
             fs::write(root.join("claude_desktop_config.json"), main).unwrap();
         }
         let target = ClaudeConfigurationTarget::synthetic(root.clone()).unwrap();
+        let helper = if cfg!(windows) {
+            directory.path().join("orbit-credential-helper.exe")
+        } else {
+            PathBuf::from("/synthetic/orbit-credential-helper")
+        };
         let compiled = claude_config::compile(&claude_config::LibraryPlan {
             app_version: &target.app_version,
             source_member_sha256: &target.source_member_sha256,
             user_root: &root,
             profile_id: &profile_id,
             gateway_base_url: "https://claude.edge.test",
-            helper: Path::new("/synthetic/orbit-credential-helper"),
+            helper: &helper,
             binding_id: &binding.id,
             model_id: "claude-test-model",
             mapping: None,
@@ -106,7 +113,7 @@ impl Fixture {
             local_policy_revision: sha256(b"synthetic-local-policy"),
             profile_id,
             binding_id: binding.id,
-            helper_path: "/synthetic/orbit-credential-helper".into(),
+            helper_path: helper.display().to_string(),
             files: files
                 .iter()
                 .map(ClaudeFileDigest::from_change)
@@ -323,6 +330,113 @@ fn claude_preferences_restore_v1_is_explicit_encrypted_and_preserves_exact_curre
 }
 
 #[test]
+fn claude_main_settings_v2_handles_first_run_fields_and_preserves_raw_current_settings() {
+    for existing in [false, true] {
+        let fixture = Fixture::new(existing);
+        let guard = |_: &ClaudeContext, _: bool| Ok(());
+        let engine = fixture.engine(&guard);
+        let original = fixture.prepare(&engine);
+        engine.apply(&original.id).unwrap();
+        let current = br#"{"deploymentMode":"3p","preferences":{"number":184467440737095516170001},"coworkUserFilesPath":"C:\\Users\\person\\Claude","clientAdded":{"fraction":1.0000000000000000000001}}"#;
+        fs::write(&fixture.files[2].path, current).unwrap();
+        assert!(engine.prepare_restore(&original.id).is_err());
+        assert!(
+            engine
+                .prepare_claude_preferences_restore(&original.id)
+                .is_err()
+        );
+        let (preview, _, mode) = engine
+            .prepare_claude_main_restore_details(&original.id, true)
+            .unwrap();
+        assert_eq!(mode.as_deref(), existing.then_some("1p"));
+        let frozen = engine.decrypt(&preview).unwrap();
+        let proof = frozen.claude_main_preferences_restore_v1.as_ref().unwrap();
+        assert!(proof.preserve_main_settings);
+        assert_eq!(proof.original_main_before.is_some(), existing);
+        engine
+            .apply_claude_with_restore_mode(&preview.id, true)
+            .unwrap();
+        let result = fs::read(&fixture.files[2].path).unwrap();
+        let result: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_slice(&result).unwrap();
+        let expected: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_slice(current).unwrap();
+        for (key, value) in expected
+            .iter()
+            .filter(|(key, _)| key.as_str() != "deploymentMode")
+        {
+            assert_eq!(result[key].get(), value.get());
+        }
+        assert_eq!(
+            result.get("deploymentMode").map(|value| value.get()),
+            existing.then_some(r#""1p""#)
+        );
+        assert!(equal_current(&fixture.files[1], &fixture.files[1].before).unwrap());
+        assert!(!Path::new(&fixture.files[0].path).exists());
+        assert!(
+            !fixture
+                .binding(&fixture.context.binding_id)
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(
+            fixture
+                .store
+                .get::<Journal>("journal", &original.id)
+                .unwrap()
+                .unwrap()
+                .phase,
+            "restored"
+        );
+    }
+    let legacy: ClaudeMainPreferencesRestoreV1 =
+        serde_json::from_value(serde_json::json!({"original_main_before":[123,125]})).unwrap();
+    assert_eq!(
+        legacy.original_main_before.as_deref(),
+        Some(b"{}".as_slice())
+    );
+    assert!(!legacy.preserve_main_settings);
+}
+
+#[test]
+fn claude_main_settings_v2_freezes_added_fields_and_rejects_deployment_mode_changes() {
+    let fixture = Fixture::new(false);
+    let guard = |_: &ClaudeContext, _: bool| Ok(());
+    let engine = fixture.engine(&guard);
+    let original = fixture.prepare(&engine);
+    engine.apply(&original.id).unwrap();
+    fs::write(
+        &fixture.files[2].path,
+        br#"{"deploymentMode":"1p","coworkUserFilesPath":"changed"}"#,
+    )
+    .unwrap();
+    assert!(
+        engine
+            .prepare_claude_main_restore_details(&original.id, true)
+            .is_err()
+    );
+    fs::write(
+        &fixture.files[2].path,
+        br#"{"deploymentMode":"3p","coworkUserFilesPath":"first"}"#,
+    )
+    .unwrap();
+    let (preview, _, _) = engine
+        .prepare_claude_main_restore_details(&original.id, true)
+        .unwrap();
+    let external = br#"{"deploymentMode":"3p","coworkUserFilesPath":"second"}"#;
+    fs::write(&fixture.files[2].path, external).unwrap();
+    assert!(
+        engine
+            .apply_claude_with_restore_mode(&preview.id, true)
+            .is_err()
+    );
+    assert_eq!(fs::read(&fixture.files[2].path).unwrap(), external);
+    for file in &fixture.files[..2] {
+        assert!(equal_current(file, &file.after).unwrap());
+    }
+}
+
+#[test]
 fn claude_preferences_restore_v1_frozen_files_source_and_vault_changes_stop_before_writes() {
     for fault in [
         "preferences",
@@ -519,6 +633,7 @@ fn claude_b2a_v3_context_authenticates_exact_group_and_preview_has_no_side_effec
             .unwrap()
             .enabled
     );
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     for path in [
         &fixture.context.configuration_target.config_root,
@@ -528,10 +643,13 @@ fn claude_b2a_v3_context_authenticates_exact_group_and_preview_has_no_side_effec
             .config_root
             .join("configLibrary"),
     ] {
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o700
         );
+        #[cfg(windows)]
+        crate::windows_fs::identity(&crate::windows_fs::directory(path).unwrap(), true).unwrap();
     }
     let mut changed = journal.clone();
     changed.target_policy_revision = None;

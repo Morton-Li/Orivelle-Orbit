@@ -168,7 +168,9 @@ pub struct FileChange {
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 struct ClaudeMainPreferencesRestoreV1 {
-    original_main_before: Vec<u8>,
+    original_main_before: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    preserve_main_settings: bool,
 }
 
 struct ClaudePreferencesRestoreSeed<'a> {
@@ -293,8 +295,13 @@ pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {
         return Err(fail("configuration_unreadable"));
     }
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|f| f.take(MAX_CONFIG_BYTES + 1).read_to_end(&mut bytes))
+    #[cfg(windows)]
+    let opened = crate::windows_fs::file(path).map_err(|_| fail("configuration_unreadable"));
+    #[cfg(not(windows))]
+    let opened = File::open(path).map_err(|_| fail("configuration_unreadable"));
+    opened?
+        .take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|_| fail("configuration_unreadable"))?;
     if bytes.len() as u64 > MAX_CONFIG_BYTES {
         return Err(fail("configuration_unreadable"));
@@ -303,6 +310,9 @@ pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or_else(|| fail("invalid_path"))?;
+    #[cfg(windows)]
+    let _scope =
+        crate::windows_fs::lock_directory(parent).map_err(|_| fail("configuration_conflict"))?;
     if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(fail("configuration_conflict"));
     }
@@ -531,7 +541,8 @@ impl ConfigEngine<'_> {
             || context.files[1].path
                 != target
                     .config_root
-                    .join("configLibrary/_meta.json")
+                    .join("configLibrary")
+                    .join("_meta.json")
                     .to_string_lossy()
             || context.files[2].path
                 != target
@@ -597,7 +608,8 @@ impl ConfigEngine<'_> {
                     .is_some_and(|size| size > MAX_CONFIG_BYTES)
                 || expected.before_sha256.is_some() != expected.before_size.is_some()
                 || if let Some(proof) = coordinated_main {
-                    !expected.matches_before(Some(&proof.original_main_before))
+                    !expected.matches_before(proof.original_main_before.as_deref())
+                        || (!proof.preserve_main_settings && proof.original_main_before.is_none())
                         || file
                             .before
                             .as_ref()
@@ -628,7 +640,7 @@ impl ConfigEngine<'_> {
             if index == 2
                 && let Some(proof) = preferences_proof
             {
-                return Some(proof.original_main_before.as_slice());
+                return proof.original_main_before.as_deref();
             }
             if operation.restore {
                 operation.files[2 - index].after.as_deref()
@@ -684,10 +696,11 @@ impl ConfigEngine<'_> {
                 .before
                 .as_deref()
                 .ok_or_else(|| fail("backup_invalid"))?;
-            let derived = crate::claude_config::restore_main_preserving_preferences(
-                &proof.original_main_before,
+            let derived = crate::claude_config::restore_main_settings(
+                proof.original_main_before.as_deref(),
                 applied_main,
                 before,
+                proof.preserve_main_settings,
             )
             .map_err(|_| fail("backup_invalid"))?;
             if main.after.as_deref() != Some(derived.as_slice())
@@ -1837,6 +1850,13 @@ impl ConfigEngine<'_> {
         &self,
         id: &str,
     ) -> Result<(Journal, ClaudeContext, Option<String>)> {
+        self.prepare_claude_main_restore_details(id, false)
+    }
+    pub(crate) fn prepare_claude_main_restore_details(
+        &self,
+        id: &str,
+        preserve_main_settings: bool,
+    ) -> Result<(Journal, ClaudeContext, Option<String>)> {
         self.check_policy()?;
         let selected = self
             .store
@@ -1862,22 +1882,23 @@ impl ConfigEngine<'_> {
         if original.restore || original.claude_main_preferences_restore_v1.is_some() {
             return Err(fail("backup_invalid"));
         }
-        let original_main_before = original.files[2]
-            .before
-            .as_ref()
-            .ok_or_else(|| fail("configuration_conflict"))?;
+        let original_main_before = &original.files[2].before;
+        if !preserve_main_settings && original_main_before.is_none() {
+            return Err(fail("configuration_conflict"));
+        }
         let mut files = Vec::new();
         for (index, file) in original.files.iter().enumerate() {
             let current = read_file(Path::new(&file.path))?;
             let after = if index == 2 {
-                Some(crate::claude_config::restore_main_preserving_preferences(
-                    original_main_before,
+                Some(crate::claude_config::restore_main_settings(
+                    original_main_before.as_deref(),
                     file.after
                         .as_deref()
                         .ok_or_else(|| fail("backup_invalid"))?,
                     current
                         .as_deref()
                         .ok_or_else(|| fail("configuration_conflict"))?,
+                    preserve_main_settings,
                 )?)
             } else {
                 if current != file.after {
@@ -1907,6 +1928,7 @@ impl ConfigEngine<'_> {
                 grants_after: original.grants_before.clone(),
                 proof: ClaudeMainPreferencesRestoreV1 {
                     original_main_before: original_main_before.clone(),
+                    preserve_main_settings,
                 },
             }),
         )?;
@@ -1930,8 +1952,9 @@ impl ConfigEngine<'_> {
             .claude_main_preferences_restore_v1
             .as_ref()
             .ok_or_else(|| fail("backup_invalid"))?;
-        let original_mode: OriginalMainMode = serde_json::from_slice(&proof.original_main_before)
-            .map_err(|_| fail("backup_invalid"))?;
+        let original_mode: OriginalMainMode =
+            serde_json::from_slice(proof.original_main_before.as_deref().unwrap_or(b"{}"))
+                .map_err(|_| fail("backup_invalid"))?;
         let context = operation
             .claude_context
             .clone()
@@ -2213,7 +2236,7 @@ pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String
     Ok(out)
 }
 #[cfg(test)]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[path = "config_claude_tests.rs"]
 mod claude_transaction_tests;
 #[cfg(test)]
