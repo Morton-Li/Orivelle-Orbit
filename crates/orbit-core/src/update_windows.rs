@@ -49,6 +49,9 @@ fn stage(root: &Path, current: &Path, artifact: &VerifiedArtifact) -> Result<Sta
     }
     let installation = current.parent().ok_or_else(|| fail("invalid_path"))?;
     let mut pins = windows_fs::lock_directory(installation)?;
+    // A metadata-only handle does not pin the leaf directory's own name on
+    // Windows. Pin its running executable too, until we hand off and exit.
+    pins.push(windows_fs::lock_installed_file(current)?);
     let updates = root.join("updates");
     private_directory(&updates)?;
     pins.extend(windows_fs::lock_directory(&updates)?);
@@ -157,6 +160,7 @@ mod tests {
         let installation = root.path().join("installation with spaces");
         private_directory(&installation).unwrap();
         let current = installation.join("orivelle-orbit.exe");
+        fs::write(&current, b"current application").unwrap();
         let staged = stage(root.path(), &current, &artifact()).unwrap();
         let path = staged.directory.path().join("setup.exe");
         windows_fs::identity(&staged._file, true).unwrap();
@@ -188,6 +192,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let current = root.path().join("orivelle-orbit.exe");
         // MZ/PE magic alone does not make this synthetic buffer executable.
+        fs::write(&current, b"current application").unwrap();
         assert!(launch(root.path(), &current, &artifact()).is_err());
         assert_eq!(
             fs::read_dir(root.path().join("updates")).unwrap().count(),
