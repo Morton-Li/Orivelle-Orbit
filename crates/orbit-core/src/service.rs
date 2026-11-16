@@ -9566,6 +9566,195 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn api_edit_admission_sends_frozen_material_once_and_saves_the_complete_batch() {
+        use base64::engine::general_purpose::STANDARD;
+
+        for markup in [false, true] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../../tests/contracts/images-api-catalog.json"
+            ))
+            .unwrap();
+            let mut cache = service.account_cache(&record).unwrap();
+            let model = cache
+                .models
+                .iter_mut()
+                .find(|model| model.category == "image")
+                .unwrap();
+            model.image_api_parameters = Some(
+                serde_json::from_value(
+                    fixture["models"][if markup {
+                        "gpt-image-2.6-flare"
+                    } else {
+                        "gpt-image-1.5"
+                    }]
+                    .clone(),
+                )
+                .unwrap(),
+            );
+            let model_id = model.id.clone();
+            service
+                .store
+                .put(
+                    "account-cache",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &cache,
+                )
+                .unwrap();
+            let reference_path = service.store.root.join("private-reference.png");
+            let material_path = service.store.root.join("private-material.png");
+            let wrong_size_path = service.store.root.join("private-wrong-size.png");
+            std::fs::write(&reference_path, export_png(16, 16, 0)).unwrap();
+            let material_bytes = export_png(16, 16, 1);
+            std::fs::write(&material_path, &material_bytes).unwrap();
+            std::fs::write(&wrong_size_path, export_png(32, 16, 0)).unwrap();
+            let imported = service
+                .import_inputs(
+                    &record.view.id,
+                    &[reference_path, material_path, wrong_size_path],
+                )
+                .unwrap();
+            let parameters = ImageParameters {
+                n: Some(2),
+                quality: Some("high".into()),
+                size: Some("1536x1024".into()),
+                output_format: Some("jpeg".into()),
+                output_compression: Some(85),
+                background: Some("opaque".into()),
+                input_fidelity: (!markup).then(|| "high".into()),
+                ..Default::default()
+            };
+            let admit = |material: &str| {
+                service.create_image_task_with_materials(
+                    &record.view.id,
+                    record.view.revision,
+                    &model_id,
+                    "Synthetic advanced edit".into(),
+                    parameters.clone(),
+                    vec![imported[0].id.clone()],
+                    (!markup).then(|| material.to_owned()),
+                    markup.then(|| material.to_owned()),
+                )
+            };
+            assert_eq!(
+                admit(&imported[2].id).unwrap_err().code,
+                "invalid_image_material"
+            );
+            let mut input: InputRecord = service
+                .store
+                .get("input", &imported[1].id)
+                .unwrap()
+                .unwrap();
+            input.connection_revision += 1;
+            service
+                .store
+                .put("input", &input.view.id, &input.account_id, &input)
+                .unwrap();
+            assert_eq!(
+                admit(&input.view.id).unwrap_err().code,
+                "input_scope_mismatch"
+            );
+            assert!(
+                service
+                    .store
+                    .list::<TaskView>("task", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            input.connection_revision -= 1;
+            service
+                .store
+                .put("input", &input.view.id, &input.account_id, &input)
+                .unwrap();
+
+            let calls = Arc::new(AtomicU64::new(0));
+            let observed = calls.clone();
+            let expected_model = model_id.clone();
+            let output = export_png(16, 16, 2);
+            let returned = output.clone();
+            service.http.scripted(Arc::new(move |request| {
+                if request.method != Method::POST {
+                    return Box::pin(async { Err(fail("synthetic_fact_not_observed")) });
+                }
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert!(request.url.ends_with("/images/edits"));
+                assert!(request.headers.iter().any(|(key, value)| key == "X-Orivelle-Images-Contract" && value == images::API_CONTRACT));
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["model"], expected_model);
+                assert_eq!(body["n"], 2);
+                assert_eq!(body["quality"], "high");
+                assert_eq!(body["size"], "1536x1024");
+                assert_eq!(body["output_format"], "jpeg");
+                assert_eq!(body["output_compression"], 85);
+                assert_eq!(body["response_format"], "b64_json");
+                assert_eq!(body["images"].as_array().unwrap().len(), 1);
+                let name = if markup { "markup" } else { "mask" };
+                let expected_material = format!("data:image/png;base64,{}", STANDARD.encode(&material_bytes));
+                assert_eq!(body[name]["image_url"], expected_material);
+                assert!(body.get(if markup { "mask" } else { "markup" }).is_none());
+                if markup { assert!(body.get("input_fidelity").is_none()); }
+                else { assert_eq!(body["input_fidelity"], "high"); }
+                assert!(!String::from_utf8_lossy(&request.body).contains("private-"));
+                let encoded = STANDARD.encode(&returned);
+                Box::pin(async move { Ok(crate::network::RemoteResponse {
+                    status: 200, request_id: Some("33333333-3333-4333-8333-333333333333".into()),
+                    bytes: serde_json::to_vec(&json!({"created":1,"usage":{"input_tokens":5},"data":[{"b64_json":encoded},{"b64_json":encoded}]})).unwrap(),
+                }) })
+            }));
+            let queued = admit(&imported[1].id).unwrap();
+            let completed = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let task: TaskView = service.store.get("task", &queued.id).unwrap().unwrap();
+                    if !["queued", "sending", "waiting", "saving"].contains(&task.state.as_str())
+                        && service.image_workers.available_permits() == 2
+                    {
+                        break task;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(completed.state, "completed", "{:?}", completed.error);
+            assert_eq!(completed.image_ids.len(), 2);
+            for id in &completed.image_ids {
+                let image: HistoryImage = service.store.get("image", id).unwrap().unwrap();
+                assert_eq!(image.mime, "image/png");
+                let name: String = service.store.get("image-file", id).unwrap().unwrap();
+                assert_eq!(
+                    std::fs::read(images::owned_image_path(&service.store, &name).unwrap())
+                        .unwrap(),
+                    output
+                );
+            }
+            let snapshot: TaskSnapshot = service
+                .store
+                .get("task-snapshot", &queued.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(snapshot.api_contract.as_deref(), Some(images::API_CONTRACT));
+            assert_eq!(snapshot.maximum_results, 2);
+            assert_eq!(
+                service
+                    .send_image_once(&mut snapshot.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "task_state_conflict"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn missing_image_api_pool_reports_only_frozen_adjusted_parameters() {
         let (_dir, _service, _vault, record, _install) = setup();
         let mut snapshot = task_snapshot(&record);
