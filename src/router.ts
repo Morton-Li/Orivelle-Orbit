@@ -4,6 +4,7 @@ import AccessPage from "./pages/AccessPage.vue";
 import ImagesPage from "./pages/ImagesPage.vue";
 import UsagePage from "./pages/UsagePage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
+import ApiKeysPage from "./pages/ApiKeysPage.vue";
 
 const scrollPositions = new Map<string, { left: number; top: number }>();
 export const router = createRouter({
@@ -35,6 +36,7 @@ export const router = createRouter({
     { path: "/", name: "home", component: HomePage },
     { path: "/images", name: "images", component: ImagesPage },
     { path: "/access", name: "access", component: AccessPage },
+    { path: "/api-keys", name: "api-keys", component: ApiKeysPage },
     { path: "/usage", name: "usage", component: UsagePage },
     { path: "/settings", name: "settings", component: SettingsPage },
     { path: "/:pathMatch(.*)*", redirect: "/" },

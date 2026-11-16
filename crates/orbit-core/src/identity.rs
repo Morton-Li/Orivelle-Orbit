@@ -249,6 +249,13 @@ pub fn bound_helper_token(
 ) -> Result<zeroize::Zeroizing<String>> {
     crate::update_recovery::ensure_ready(&store.root)?;
     if store
+        .meta(&credential_disabled_reference(&binding.secret_reference))?
+        .as_deref()
+        == Some("1")
+    {
+        return Err(fail("binding_disabled"));
+    }
+    if store
         .meta(&format!(
             "installation_forgetting/{}",
             binding.installation_id
@@ -280,6 +287,10 @@ pub fn bound_helper_token(
         .and_then(|s| s.parse::<u64>().ok());
     if latest != Some(epoch)
         || store
+            .meta(&credential_disabled_reference(&binding.secret_reference))?
+            .as_deref()
+            == Some("1")
+        || store
             .meta(&format!(
                 "installation_forgetting/{}",
                 binding.installation_id
@@ -290,6 +301,9 @@ pub fn bound_helper_token(
         return Err(fail("binding_disabled"));
     }
     Ok(token)
+}
+pub fn credential_disabled_reference(secret_reference: &str) -> String {
+    format!("api_key_disabled/{}", sha256(secret_reference.as_bytes()))
 }
 #[cfg(test)]
 mod tests {

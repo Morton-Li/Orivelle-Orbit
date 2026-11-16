@@ -6,12 +6,12 @@ Edge 执行模型请求。Orbit 管理桌面授权、本地配置、Claude 转�
 
 ## 进程与模块职责
 
-| 层                | 职责与入口                                                                                                                                                        |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vue / Pinia UI    | 展示原生状态、收集用户选择和确认，通过[typed bridge](../../src/shared/bridge.ts)调用命令；不持有凭据或直接访问 Panel/Edge                                         |
-| Tauri 桌面壳      | [commands](../../src-tauri/src/commands.rs)提供闭合 IPC、原生文件选择/剪贴板和更新动作；[应用入口](../../src-tauri/src/lib.rs)组装 Service、事件、窗口及单实例    |
-| orbit-core        | [Service](../../crates/orbit-core/src/service.rs)协调账户作用域、网络、vault、store、配置事务及图片任务，返回[公开 DTO](../../crates/orbit-core/src/dto.rs)       |
-| credential helper | [独立可执行文件](../../crates/orbit-helper/src/main.rs)只接受客户端类型和 opaque binding UUID，从固定部署位置定位只读 store，再按冻结授权读取凭据或本地映射 token |
+| 层                | 职责与入口                                                                                                                                                           |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vue / Pinia UI    | 展示原生元数据、收集选择和确认，通过[typed bridge](../../src/shared/bridge.ts)调用命令；明文只进入主动揭示的临时组件状态，不进入 Pinia 或事件，不直接访问 Panel/Edge |
+| Tauri 桌面壳      | [commands](../../src-tauri/src/commands.rs)提供闭合 IPC、原生文件选择/剪贴板和更新动作；[应用入口](../../src-tauri/src/lib.rs)组装 Service、事件、窗口及单实例       |
+| orbit-core        | [Service](../../crates/orbit-core/src/service.rs)协调账户作用域、网络、vault、store、配置事务及图片任务，返回[公开 DTO](../../crates/orbit-core/src/dto.rs)          |
+| credential helper | [独立可执行文件](../../crates/orbit-helper/src/main.rs)只接受客户端类型和 opaque binding UUID，从固定部署位置定位只读 store，再按冻结授权读取凭据或本地映射 token    |
 
 主窗口 capability 仅开放声明的 Orbit 命令；CSP 将前端网络限制为 IPC 和本地图片预览。
 `orbit://state`、授权、错误、图片输入及下载进度事件用于刷新视图；UI 的状态和按钮不代替
@@ -44,7 +44,7 @@ epoch、有效期和 enabled 状态逐项匹配，不跟随当前 GUI 选择切�
 ## vault、本地存储与启动恢复
 
 [vault](../../crates/orbit-core/src/vault.rs)使用 macOS Keychain 或 Windows 原生凭据存储，
-保存签名私钥、会话、推理凭据、备份密钥及 Claude 本地 token；机密不进入公开 IPC DTO。
+保存签名私钥、会话、推理凭据、备份密钥及 Claude 本地 token。普通 DTO 不含机密；唯一例外是主窗口主动调用的单次 Key 揭示响应，组件在关闭、失焦、切换账户或 30 秒后清空。复制响应不含密钥，最终原生剪贴板写入与登出持有同一账户锁。
 helper 只有对应读取路径，Claude 映射 secret 的新建能力单独注入 GUI，不开放通用 ACL 更新。
 
 [Store](../../crates/orbit-core/src/store.rs)使用私有应用目录和 SQLite WAL，保存连接/安装
@@ -57,6 +57,18 @@ Store 和 Service；中断的图片任务标为 `unconfirmed`，不重放网络�
 journal 协调；恢复不能确认时保留冲突并阻止同客户端新应用，不擅自覆盖外部改动。
 
 ## 配置预览、应用与切回
+
+### API Key 的本地选择与升级清理
+
+[Key service](../../crates/orbit-core/src/service_api_keys.rs)使用固定的 api-keys-v1 授权 profile。旧会话不扩权，Key 读、明文揭示、写和使用凭据分别检查 scope。所有接口固定路径并签署 Bearer 摘要；凭据 ticket 绑定安装、会话、Key revision 和 use/reveal 用途。普通列表、详情和管理结果只有元数据。
+
+默认 Key 的 ID/revision 和 vault 引用保存在本地 connection；Panel 无默认选择表。每次选择生成唯一 secret reference。已接入 helper、Claude 映射及图片任务保留原有冻结引用，选择新默认不改变其授权 epoch。远端权限、风险、Key revision、有效期发生变化时，先写持久化的逐引用停用标记，再撤销相关 binding 并尽力清理 vault；删除失败也不能复活旧授权。
+
+管理请求在发送前落地同一个 operation ID、时间和完整请求；结果不明确时阻止新操作，核对时重发相同请求。Panel 在原业务写锁内把动作和审计回执一起提交，审计被清理后也拒绝超过时限的旧请求。已确认成功不因随后元数据刷新失败而再次执行。
+
+接入页没有独立的 Key 选择，原生预览冻结 API Key 页所选默认 Key，确认前默认选择变化即失效。接入确认弹窗只列节点和密钥，取消接入仅保留简短确认；账户归属、目录、目标文件及差异继续用于原生校验。切换客户端 Key 复用既有恢复与应用事务，避免重写原始切换快照。取消 Claude 接入默认使用主设置协调模式，只显示一个取消入口。普通提示默认 4 秒、错误提示默认 6 秒关闭。
+
+旧自动 Key 由 Panel 根据明确的 orbit_issued 关联自主清理，不等待本地 helper、快照、任务或替代 Key。定时维护和新版 bootstrap/Key 列表请求均可完成有界升级清理；删除后保留安装 tombstone。Orbit 只按服务端新状态停用相应凭据，不再发出清理确认请求。
 
 [SystemPaths / 检测](../../crates/orbit-core/src/system.rs)核对安装身份、所需配置能力、
 默认用户目录及[本地托管策略](../../crates/orbit-core/src/policy.rs)。自动配置支持

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recover-api-key-operation"
+description = "Enables the recover_api_key_operation command without any pre-configured scope."
+commands.allow = ["recover_api_key_operation"]
+
+[[permission]]
+identifier = "deny-recover-api-key-operation"
+description = "Denies the recover_api_key_operation command without any pre-configured scope."
+commands.deny = ["recover_api_key_operation"]

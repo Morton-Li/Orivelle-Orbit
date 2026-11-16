@@ -569,6 +569,31 @@ impl Http {
             )
             .await?;
         if !(200..300).contains(&response.status) {
+            if target.starts_with("/api/v1/orbit/api-keys") {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&response.bytes).unwrap_or_default();
+                let code = value["error"]["code"]
+                    .as_str()
+                    .or_else(|| value["code"].as_str())
+                    .unwrap_or("");
+                if [
+                    "api_key_changed",
+                    "api_key_operation_conflict",
+                    "api_key_operation_expired",
+                    "api_key_expired",
+                    "api_key_unavailable",
+                    "orbit_legacy_key_changed",
+                    "orbit_delivery_unusable",
+                    "orbit_credential_unavailable",
+                ]
+                .contains(&code)
+                {
+                    return Err(fail(code));
+                }
+                if response.status == 422 {
+                    return Err(fail("invalid_api_key_request"));
+                }
+            }
             return Err(fail(match response.status {
                 404 => "endpoint_unavailable",
                 401 => "session_expired",

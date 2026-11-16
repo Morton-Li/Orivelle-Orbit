@@ -1,4 +1,5 @@
-//! Orbit's native services. Secrets never appear in its public IPC DTOs.
+//! Orbit native services. Ordinary DTOs exclude secrets; explicit API Key reveal is ephemeral.
+pub mod api_keys;
 pub const SCHEMA_VERSION: u32 = 1;
 pub mod claude_config;
 pub mod claude_mapping;

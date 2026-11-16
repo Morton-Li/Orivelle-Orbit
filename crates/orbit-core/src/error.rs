@@ -13,6 +13,18 @@ impl PublicError {
             "credential_missing" => "所需凭据不可用，请在 Orbit 重新登录。",
             "binding_disabled" => "此客户端连接已停用。",
             "connection_conflict" => "连接已经改变，请重新预览。",
+            "api_key_management_unavailable" => "Panel 尚不支持此版本的密钥管理，请先更新服务端。",
+            "api_key_authorization_required" => "请重新连接账户，授权 Orbit 管理 API Key。",
+            "api_key_operation_pending" => "上次密钥操作的结果尚待确认，请先核对该次操作。",
+            "api_key_operation_conflict" => "该次密钥操作的内容已改变，请刷新后重试。",
+            "api_key_operation_missing" => "没有待核对的密钥操作。",
+            "api_key_operation_expired" => "旧操作已过期，请先核对当前密钥列表，再发起新的操作。",
+            "api_key_changed" | "orbit_legacy_key_changed" => "密钥信息已经变化，请刷新后重试。",
+            "api_key_unavailable" | "orbit_credential_unavailable" => {
+                "这把密钥暂不可用，请刷新或选择其他密钥。"
+            }
+            "api_key_expired" => "请先更新密钥有效期，再进行轮换。",
+            "invalid_api_key_request" => "请检查密钥名称、有效期、速度策略与限额设置。",
             "panel_origin_not_allowed" => "此版本仅连接 Orivelle 官方服务，请重新登录。",
             "configuration_conflict" => "配置已被其他程序修改，需协调冲突。",
             "schema_unverified" => "Claude 自动写入合同尚未启用；诊断候选仅供核查。",

@@ -175,9 +175,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   );
   const connectionTasks = computed(() =>
     tasks.value.filter(
-      (task) =>
-        task.connection_id === activeConnection.value?.id &&
-        task.connection_revision === activeConnection.value.revision,
+      (task) => task.connection_id === activeConnection.value?.id,
     ),
   );
   const imagePreviewTask = computed(
@@ -220,7 +218,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   function notify(
     text: string,
     tone: "success" | "error" | "neutral" = "neutral",
-    durationMs = 0,
+    durationMs = tone === "error" ? 6000 : 4000,
   ) {
     clearNotice();
     notice.value = { text, tone };
@@ -686,6 +684,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     textModels,
     imageModels,
     notify,
+    report,
     clearNotice,
     acceptState,
     acceptError,

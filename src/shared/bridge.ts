@@ -8,7 +8,7 @@ import type {
   ScopedErrorEvent,
   UpdateProgress,
 } from "./contracts";
-import { t } from "./i18n";
+import { t, type MessageKey } from "./i18n";
 import { imageFailureMessage } from "./image-parameters";
 
 export class OrbitError extends Error {
@@ -32,10 +32,24 @@ export function publicFailure(error: unknown): OrbitError {
     typeof value?.code === "string" && /^[a-z0-9_]{1,80}$/.test(value.code)
       ? value.code
       : "operation_failed";
+  const keyErrors: Partial<Record<string, MessageKey>> = {
+    api_key_changed: "keys.errorChanged",
+    api_key_operation_conflict: "keys.errorChanged",
+    api_key_authorization_required: "keys.errorAuthorization",
+    api_key_management_unavailable: "keys.errorUpgrade",
+    api_key_operation_pending: "keys.errorPending",
+    api_key_operation_expired: "keys.errorExpired",
+    api_key_operation_missing: "keys.errorExpired",
+    api_key_expired: "keys.errorUnavailable",
+    api_key_unavailable: "keys.errorUnavailable",
+    invalid_api_key_request: "keys.errorInvalid",
+    orbit_delivery_unusable: "keys.errorDelivery",
+    orbit_credential_unavailable: "keys.errorUnavailable",
+  };
   // Native and network messages can contain paths, headers or secret material.
   return new OrbitError(
     code,
-    imageFailureMessage(code),
+    keyErrors[code] ? t(keyErrors[code]) : imageFailureMessage(code),
     value?.retryable === true,
   );
 }

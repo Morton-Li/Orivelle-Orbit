@@ -1,4 +1,6 @@
 import { usageSummary, usagePage } from "../usage-fixtures";
+import { apiKeyPage } from "../api-key-fixtures";
+import type { ApiKeyPage } from "../../src/shared/api-keys";
 import type { Page } from "@playwright/test";
 import type {
   AuthorizationEvent,
@@ -35,6 +37,7 @@ export async function fixture(
     restoreMode?: "blocked" | "recoverable";
     updateAvailable?: boolean;
     usageRecords?: ReturnType<typeof usagePage>;
+    apiKeys?: ApiKeyPage;
   } = {},
 ) {
   const state = options.state ?? bootstrap();
@@ -43,6 +46,7 @@ export async function fixture(
       initial,
       sampleUsageSummary,
       sampleUsagePage,
+      initialApiKeys,
       models,
       initialTask,
       paidFailure,
@@ -72,6 +76,8 @@ export async function fixture(
       };
       testWindow.isTauri = true;
       let current = initial;
+      const keyPage = initialApiKeys;
+      let previewKey: typeof keyPage.selected = null;
       const callbacks = new Map<number, (event: unknown) => void>();
       const listeners = new Map<string, Set<number>>();
       let next = 0;
@@ -150,6 +156,79 @@ export async function fixture(
           const request = (args.request ?? {}) as Record<string, unknown>;
           control.lastRequests[command] = structuredClone(request);
           if (command === "bootstrap") return structuredClone(current);
+          if (command === "list_api_keys") {
+            const items = keyPage.items.filter(
+              (key) =>
+                (!request.search ||
+                  (key.name + key.prefix).includes(String(request.search))) &&
+                (!request.status || key.status === request.status),
+            );
+            return structuredClone({ ...keyPage, items, total: items.length });
+          }
+          if (command === "get_api_key")
+            return structuredClone(
+              keyPage.items.find((key) => key.id === request.api_key_id),
+            );
+          if (command === "select_api_key") {
+            const key = keyPage.items.find(
+              (key) => key.id === request.api_key_id,
+            )!;
+            keyPage.selected = key;
+            keyPage.selected_ready = true;
+            keyPage.bindings = keyPage.bindings.map((binding) => ({
+              ...binding,
+              current: binding.api_key_id === key.id,
+            }));
+            const connection = current.connections.find(
+              (item) => item.id === request.connection_id,
+            )!;
+            connection.credential_revision = key.key_revision;
+            connection.revision++;
+            current.session.inference_credential_status = "ready";
+            update();
+            return structuredClone(current);
+          }
+          if (command === "reveal_api_key")
+            return {
+              api_key_id: request.api_key_id,
+              plain_text_token: "orv_sk_SYNTHETIC_BROWSER_SECRET",
+            };
+          if (command === "copy_api_key") return null;
+          if (command === "mutate_api_key") {
+            let key =
+              keyPage.items.find((key) => key.id === request.api_key_id) ??
+              null;
+            if (request.action === "create") {
+              key = {
+                ...keyPage.items[0]!,
+                ...(request.changes as object),
+                id: "E".repeat(26),
+                prefix: "orv_sk_eeeeeeee",
+                key_revision: "e".repeat(64),
+              };
+              keyPage.items.unshift(key);
+              keyPage.total++;
+            } else if (request.action === "update" && key)
+              Object.assign(key, request.changes);
+            else if (request.action === "delete") {
+              keyPage.items = keyPage.items.filter((item) => item !== key);
+              key = null;
+              keyPage.total--;
+            } else if (request.action === "revoke" && key) {
+              key.status = "revoked";
+              key.state = "revoked";
+              key.selectable = false;
+            } else if (request.action === "rotate" && key) {
+              key.key_revision = "9".repeat(64);
+            } else if (request.action === "reset" && key) {
+              key.spending_active_used = "0.00000000";
+            }
+            return structuredClone({
+              api_key: key,
+              operation_id: "synthetic-operation",
+              completed: true,
+            });
+          }
           if (command === "menubar_control") {
             if (request.action === "ready")
               emit("orbit://menubar-opened", null);
@@ -285,7 +364,11 @@ export async function fixture(
               (item) => item.id === request.snapshot_id,
             )!;
             return {
-              id: "synthetic-restore-preview",
+              id:
+                control.counts.preview_restore === 1
+                  ? "synthetic-restore-preview"
+                  : "synthetic-restore-preview-" +
+                    control.counts.preview_restore,
               client: backup.client,
               operation: "restore",
               target_version: "synthetic-version",
@@ -315,6 +398,7 @@ export async function fixture(
                 snapshot_id: backup.id,
                 expires_at: backup.expires_at,
               },
+              restore_coordination: request.coordination ?? null,
               impact: ["Synthetic complete original operation group"],
               redacted_diff: "- mixed fixture state\n+ original fixture group",
               expires_at: new Date(Date.now() + 60000).toISOString(),
@@ -333,6 +417,9 @@ export async function fixture(
                 item.id === control.lastRequests.preview_restore?.snapshot_id,
             )!;
             {
+              keyPage.bindings = keyPage.bindings.filter(
+                (binding) => binding.client !== backup.client,
+              );
               current.switch_snapshots = current.switch_snapshots.filter(
                 (item) => item.id !== backup.id,
               );
@@ -353,6 +440,21 @@ export async function fixture(
             const client = current.clients.find(
               (item) => item.client === kind,
             )!;
+            if (previewKey) {
+              keyPage.bindings = keyPage.bindings.filter(
+                (binding) => binding.client !== client.client,
+              );
+              keyPage.bindings.push({
+                client: client.client,
+                api_key_id: previewKey.id,
+                name: previewKey.name,
+                key_revision: previewKey.key_revision,
+                current: previewKey.id === keyPage.selected?.id,
+                claude_mapping: (control.lastRequests.preview_client_config
+                  ?.claude_mapping ??
+                  null) as (typeof keyPage.bindings)[number]["claude_mapping"],
+              });
+            }
             client.configuration_state = "saved";
             client.configuration_revision = "synthetic-saved-configuration";
             client.loaded_state = "restart_required";
@@ -380,11 +482,17 @@ export async function fixture(
             };
           }
           if (command === "preview_client_config") {
+            previewKey = keyPage.selected
+              ? structuredClone(keyPage.selected)
+              : null;
             const connection = current.connections.find(
               (item) => item.id === request.connection_id,
             )!;
             return {
-              id: "synthetic-preview",
+              id:
+                control.counts.preview_client_config === 1
+                  ? "synthetic-preview"
+                  : "synthetic-preview-" + control.counts.preview_client_config,
               client: request.client,
               operation: "apply",
               target_version: "synthetic-version",
@@ -413,6 +521,13 @@ export async function fixture(
                 connection_id: connection.id,
                 connection_revision: connection.revision,
                 credential_revision: connection.credential_revision,
+                api_key: keyPage.selected
+                  ? {
+                      id: keyPage.selected.id,
+                      name: keyPage.selected.name,
+                      prefix: keyPage.selected.prefix,
+                    }
+                  : null,
                 node_id: connection.node_id,
                 node_label: connection.node_label,
                 model_revision: "model-revision-1",
@@ -440,6 +555,7 @@ export async function fixture(
       initial: state,
       sampleUsageSummary: usageSummary(),
       sampleUsagePage: options.usageRecords ?? usagePage(),
+      initialApiKeys: options.apiKeys ?? apiKeyPage(),
       models: options.models ?? [imageModel(), syntheticCodexModel()],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-api-key"
+description = "Enables the select_api_key command without any pre-configured scope."
+commands.allow = ["select_api_key"]
+
+[[permission]]
+identifier = "deny-select-api-key"
+description = "Denies the select_api_key command without any pre-configured scope."
+commands.deny = ["select_api_key"]
