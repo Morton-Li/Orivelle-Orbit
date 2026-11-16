@@ -67,19 +67,22 @@ export function useUsage() {
       if (generation === summaryGeneration) summaryLoading.value = false;
     }
   }
-  async function loadRecords(cursor?: string) {
-    if (!available.value) return;
+  async function loadRecords(cursor?: string): Promise<boolean> {
+    if (!available.value) return false;
     const generation = ++recordsGeneration,
       before = scope.value;
     recordsLoading.value = true;
     recordsError.value = "";
     try {
       const value = await call("list_usage_records", request(cursor));
-      if (generation === recordsGeneration && before === scope.value)
-        records.value = value;
+      if (generation !== recordsGeneration || before !== scope.value)
+        return false;
+      records.value = value;
+      return true;
     } catch {
       if (generation === recordsGeneration && before === scope.value)
         recordsError.value = t("usage.loadFailed");
+      return false;
     } finally {
       if (generation === recordsGeneration) recordsLoading.value = false;
     }

@@ -34,6 +34,7 @@ export async function fixture(
     claudeImport?: boolean;
     restoreMode?: "blocked" | "recoverable";
     updateAvailable?: boolean;
+    usageRecords?: ReturnType<typeof usagePage>;
   } = {},
 ) {
   const state = options.state ?? bootstrap();
@@ -205,12 +206,12 @@ export async function fixture(
             const selected = sampleUsagePage.data.filter(
               (row) => !request.outcome || row.outcome === request.outcome,
             );
+            const second = request.cursor === "demo-next";
             return {
               ...sampleUsagePage,
-              data: request.cursor ? selected.slice(4) : selected.slice(0, 4),
-              prev_cursor: request.cursor ? "demo-prev" : null,
-              next_cursor:
-                !request.cursor && selected.length > 4 ? "demo-next" : null,
+              data: second ? selected.slice(4) : selected.slice(0, 4),
+              prev_cursor: second ? "demo-prev" : null,
+              next_cursor: !second && selected.length > 4 ? "demo-next" : null,
             };
           }
           if (command === "list_models") return models;
@@ -438,7 +439,7 @@ export async function fixture(
     {
       initial: state,
       sampleUsageSummary: usageSummary(),
-      sampleUsagePage: usagePage(),
+      sampleUsagePage: options.usageRecords ?? usagePage(),
       models: options.models ?? [imageModel(), syntheticCodexModel()],
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,

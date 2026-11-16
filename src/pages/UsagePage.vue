@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import { useUsage } from "../composables/useUsage";
 import { locale, t, type MessageKey } from "../shared/i18n";
@@ -32,6 +32,25 @@ const mode = ref<"requests" | "spend">("requests");
 const currency = ref("");
 const hovered = ref<number | null>(null);
 const expanded = ref<string | null>(null);
+const recordsSection = ref<HTMLElement | null>(null);
+async function changeRecordsPage(cursor: string | null | undefined) {
+  if (!cursor || recordsLoading.value) return;
+  if (!(await usage.loadRecords(cursor))) return;
+  expanded.value = null;
+  await nextTick();
+  const section = recordsSection.value;
+  const content = section?.closest<HTMLElement>(".main-shell");
+  if (!section || !content) return;
+  content.scrollTo({
+    top: Math.max(
+      0,
+      section.getBoundingClientRect().top -
+        content.getBoundingClientRect().top +
+        content.scrollTop -
+        16,
+    ),
+  });
+}
 const number = (value: number | undefined) =>
   value === undefined ? "—" : value.toLocaleString(locale.value);
 const total = computed(() => summary.value?.summary);
@@ -437,7 +456,11 @@ function duration(value: number | null) {
         <span class="usage-legend-dot"></span>{{ t("usage.aggregationHint") }}
       </p>
     </section>
-    <section class="usage-panel usage-history" :aria-busy="recordsLoading">
+    <section
+      ref="recordsSection"
+      class="usage-panel usage-history"
+      :aria-busy="recordsLoading"
+    >
       <div class="usage-panel-heading">
         <div>
           <h2>{{ t("usage.records") }}</h2>
@@ -468,6 +491,7 @@ function duration(value: number | null) {
       </p>
       <div
         class="usage-table-scroll"
+        :class="{ 'usage-updating': recordsLoading }"
         tabindex="0"
         :aria-label="t('usage.records')"
       >
@@ -605,13 +629,13 @@ function duration(value: number | null) {
           <button
             class="button ghost"
             :disabled="!records?.prev_cursor || recordsLoading"
-            @click="usage.loadRecords(records!.prev_cursor!)"
+            @click="changeRecordsPage(records?.prev_cursor)"
           >
             {{ t("usage.previous") }}</button
           ><button
             class="button ghost"
             :disabled="!records?.next_cursor || recordsLoading"
-            @click="usage.loadRecords(records!.next_cursor!)"
+            @click="changeRecordsPage(records?.next_cursor)"
           >
             {{ t("usage.next") }}<OrbitIcon name="chevron" :size="12" />
           </button>
