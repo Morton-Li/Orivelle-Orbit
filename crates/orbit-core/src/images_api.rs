@@ -337,6 +337,53 @@ mod tests {
             .1,
             10
         );
+        assert!(
+            adjusted(
+                &ImageParameters::default(),
+                0,
+                &"中".repeat(10922),
+                false,
+                false
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            adjusted(
+                &ImageParameters::default(),
+                0,
+                &"中".repeat(10923),
+                false,
+                false
+            ),
+            ["prompt"]
+        );
+        assert!(
+            validate(
+                &model(true),
+                &ImageParameters::default(),
+                &"中".repeat(32000),
+                0,
+                MAX_REQUEST_BYTES,
+                false,
+                false
+            )
+            .unwrap()
+            .2
+        );
+        assert_eq!(
+            validate(
+                &model(true),
+                &ImageParameters::default(),
+                &"中".repeat(32001),
+                0,
+                MAX_REQUEST_BYTES,
+                false,
+                false
+            )
+            .unwrap_err()
+            .code,
+            "image_limit_exceeded"
+        );
     }
     #[test]
     fn api_combinations_and_unknown_capability_versions_fail_before_network() {

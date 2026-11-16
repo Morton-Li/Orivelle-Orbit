@@ -521,6 +521,11 @@ const zh = {
   "images.svgAuthorRequired":
     "请填写有效的 SVG 编写模型，并选择支持的推理强度。",
   "images.partialPreview": "生成中预览，尚不是最终结果",
+  "images.copyFirstFrame": "复制首帧",
+  "images.rasterReferenceOnly":
+    "参考图仅支持 PNG、JPEG 或 WebP，请先转换图片格式。",
+  "images.gifPreviewHint": "动图预览经过缩小；另存保留原尺寸及完整动画。",
+  "images.unsafeContent": "SVG 含有无法安全预览的脚本或外部资源。",
   "images.characters": "字符",
   "images.serviceDefault": "使用默认设置",
   "images.apiUpgradeHint": "更多高级能力需要更新图片服务。",
@@ -572,6 +577,8 @@ const zh = {
   "images.completed": "本地结果已保存",
   "images.cancelHint": "取消本地等待不能保证服务端停止或不结算。",
   "images.promptLimit": "提示词超过 32768 个 UTF-8 字节。",
+  "images.promptCharacterLimit": "提示词超过当前模型的字符上限。",
+  "images.errorLimit": "图片内容、尺寸或完整请求超过本机处理上限。",
   "images.requestedModel": "请求模型",
   "images.unverified": "此模型的参数组合尚未验证",
   "images.backgroundUsageHint": "透明背景可能增加图片 token 用量。",
@@ -1238,6 +1245,13 @@ const en: Record<keyof typeof zh, string> = {
   "images.svgAuthorRequired":
     "Enter a valid SVG author model and supported reasoning effort.",
   "images.partialPreview": "Generation preview, not the final result",
+  "images.copyFirstFrame": "Copy first frame",
+  "images.rasterReferenceOnly":
+    "References support PNG, JPEG or WebP. Convert the image first.",
+  "images.gifPreviewHint":
+    "The animation preview is scaled down. Saving preserves the original dimensions and animation.",
+  "images.unsafeContent":
+    "The SVG contains scripts or external resources that cannot be previewed safely.",
   "images.characters": "characters",
   "images.serviceDefault": "Use defaults",
   "images.apiUpgradeHint":
@@ -1299,6 +1313,10 @@ const en: Record<keyof typeof zh, string> = {
   "images.cancelHint":
     "Stopping local waiting does not guarantee execution or billing stops.",
   "images.promptLimit": "Prompt exceeds 32768 UTF-8 bytes.",
+  "images.promptCharacterLimit":
+    "The prompt exceeds this model's character limit.",
+  "images.errorLimit":
+    "Image content, dimensions or the complete request exceeds local processing limits.",
   "images.requestedModel": "Requested model",
   "images.unverified": "This model’s parameter combination is unverified",
   "images.backgroundUsageHint":

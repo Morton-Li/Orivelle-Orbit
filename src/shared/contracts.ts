@@ -330,7 +330,8 @@ export type HistoryImage = {
   created_at: string;
   requested_model: string;
   observed_model: string | null;
-  mime: "image/png" | "image/jpeg" | "image/webp";
+  mime:
+    "image/png" | "image/jpeg" | "image/webp" | "image/svg+xml" | "image/gif";
   width: number;
   height: number;
   bytes: number;

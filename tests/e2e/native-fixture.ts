@@ -306,6 +306,8 @@ export async function fixture(
               request.purpose ? (material ? [material] : []) : imageInputs,
             );
           }
+          if (command === "save_image_as") return { saved: true };
+          if (command === "copy_image") return { copied: true };
           if (command === "probe_nodes")
             return current.nodes
               .filter((node) =>

@@ -54,6 +54,8 @@ impl PublicError {
             }
             "generation_response_failed" => "图片服务未能完成请求，请核对任务状态。",
             "invalid_image" => "图片格式或内容无效。",
+            "unsafe_image_content" => "SVG 含有无法安全预览的脚本或外部资源。",
+            "unsupported_image_input" => "参考图仅支持 PNG、JPEG 或 WebP；请先转换图片格式。",
             "local_save_failed" => "结果已收到，本地保存失败；仅重试本地保存。",
             "update_disabled" => "当前构建没有正式更新信任配置。",
             "update_busy" => "活动任务或凭据 helper 尚未结束，更新已暂停。",

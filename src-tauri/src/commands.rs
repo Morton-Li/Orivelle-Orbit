@@ -534,11 +534,7 @@ pub async fn save_image_as(
     let name = format!(
         "orbit-{}.{}",
         &image.id[..8],
-        match image.mime.as_str() {
-            "image/jpeg" => "jpg",
-            "image/webp" => "webp",
-            _ => "png",
-        }
+        orbit_core::images::extension_for_mime(&image.mime)?
     );
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog().file().set_file_name(name).blocking_save_file()

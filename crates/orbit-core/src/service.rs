@@ -810,11 +810,19 @@ impl Service {
                     .into_iter()
                     .filter(|i| task_ids.contains(&i.task_id))
                     .map(|mut i| {
+                        let animated = i.mime == "image/gif"
+                            && self
+                                .store
+                                .root
+                                .join("previews")
+                                .join(format!("{}.gif", i.id))
+                                .is_file();
+                        let extension = if animated { "gif" } else { "png" };
                         if !self
                             .store
                             .root
                             .join("previews")
-                            .join(format!("{}.png", i.id))
+                            .join(format!("{}.{extension}", i.id))
                             .exists()
                         {
                             i.preview_url = None;
@@ -824,7 +832,7 @@ impl Service {
                                     .meta
                                     .get("preview_runtime_nonce")
                                     .and_then(|nonce| {
-                                        images::preview_url_with_token(
+                                        images::media_preview_url_with_token(
                                             &i.id,
                                             &crate::store::preview_scope_token(
                                                 nonce,
@@ -834,6 +842,7 @@ impl Service {
                                                 &record.view.id,
                                                 record.view.revision,
                                             ),
+                                            animated,
                                         )
                                         .ok()
                                     });
@@ -1855,6 +1864,9 @@ impl Service {
         Ok(self.record(id)?.view)
     }
     pub fn read_preview_asset(&self, path: &str) -> Result<Vec<u8>> {
+        self.read_preview_media_asset(path).map(|(bytes, _)| bytes)
+    }
+    pub fn read_preview_media_asset(&self, path: &str) -> Result<(Vec<u8>, &'static str)> {
         let _gate = self
             .account_gate
             .lock()
@@ -1870,8 +1882,10 @@ impl Service {
         {
             return Err(fail("preview_scope_unavailable"));
         }
+        let animated = parts[1].ends_with(".gif");
+        let extension = if animated { "gif" } else { "png" };
         let id = parts[1]
-            .strip_suffix(".png")
+            .strip_suffix(if animated { ".gif" } else { ".png" })
             .ok_or_else(|| fail("preview_scope_unavailable"))?;
         validate_uuid(id)?;
         let scope = self
@@ -1891,7 +1905,8 @@ impl Service {
             self.store
                 .get::<TaskSnapshot>("task-snapshot", &image.task_id)?
                 .is_some_and(|s| {
-                    image.account_id == scope.account_id
+                    (!animated || image.mime == "image/gif")
+                        && image.account_id == scope.account_id
                         && s.task.account_id == scope.account_id
                         && s.panel_origin == scope.origin
                         && s.task.id == image.task_id
@@ -1912,17 +1927,27 @@ impl Service {
         } else {
             false
         };
-        if !input_owned && !history_owned && !partial_owned {
+        if animated && !history_owned || !input_owned && !history_owned && !partial_owned {
             return Err(fail("preview_scope_unavailable"));
         }
         let bytes = images::bounded_read(
-            &self.store.root.join("previews").join(format!("{id}.png")),
-            4 * 1024 * 1024,
+            &self
+                .store
+                .root
+                .join("previews")
+                .join(format!("{id}.{extension}")),
+            if animated {
+                crate::image_media::MAX_GIF_PREVIEW_BYTES
+            } else {
+                4 * 1024 * 1024
+            },
         )?;
-        if image::guess_format(&bytes).ok() != Some(image::ImageFormat::Png) {
+        if animated {
+            crate::image_media::gif_structure(&bytes, true)?;
+        } else if image::guess_format(&bytes).ok() != Some(image::ImageFormat::Png) {
             return Err(fail("invalid_image"));
         }
-        Ok(bytes)
+        Ok((bytes, if animated { "image/gif" } else { "image/png" }))
     }
     pub fn active_tasks(&self) -> Result<bool> {
         if self.claude_mappings.inflight() != 0
@@ -3615,6 +3640,9 @@ impl Service {
         {
             return Err(fail("account_scope_mismatch"));
         }
+        if !["image/png", "image/jpeg", "image/webp"].contains(&image.mime.as_str()) {
+            return Err(fail("unsupported_image_input"));
+        }
         let filename = self
             .store
             .get::<String>("image-file", image_id)?
@@ -4056,11 +4084,17 @@ impl Service {
             .acquire_owned()
             .await
             .map_err(|_| fail("image_busy"))?;
-        let result = if snapshot.api_contract.as_deref() == Some(images::API_CONTRACT) {
-            images::parse_api_response(&response.bytes, snapshot.maximum_results)?
-        } else {
-            images::parse_response(&response.bytes, snapshot.maximum_results)?
-        };
+        let api = snapshot.api_contract.as_deref() == Some(images::API_CONTRACT);
+        let maximum_results = snapshot.maximum_results;
+        let result = tokio::task::spawn_blocking(move || {
+            if api {
+                images::parse_api_response(&response.bytes, maximum_results)
+            } else {
+                images::parse_response(&response.bytes, maximum_results)
+            }
+        })
+        .await
+        .map_err(|_| fail("invalid_image_response"))??;
         snapshot.task.result_parameters = Some(result.parameters);
         let received = result.images;
         snapshot.task.state = "saving".into();
@@ -4078,8 +4112,13 @@ impl Service {
         };
         snapshot.task.image_ids = pending.iter().map(|p| p.id.clone()).collect();
         self.persist_task(snapshot)?;
-        let images = images::finish_local_save(&self.store, snapshot)
-            .map_err(|_| fail("local_save_failed"))?;
+        let store = self.store.clone();
+        let frozen = snapshot.clone();
+        let images =
+            tokio::task::spawn_blocking(move || images::finish_local_save(&store, &frozen))
+                .await
+                .map_err(|_| fail("local_save_failed"))?
+                .map_err(|_| fail("local_save_failed"))?;
         snapshot.task.image_ids = images.into_iter().map(|i| i.id).collect();
         snapshot.task.state = "completed".into();
         snapshot.task.local_save_available = false;
@@ -4443,13 +4482,15 @@ impl Service {
                     std::fs::remove_file(path).map_err(|_| fail("local_delete_failed"))?;
                 }
             }
-            let preview = self
-                .store
-                .root
-                .join("previews")
-                .join(format!("{}.png", image.id));
-            if preview.exists() {
-                std::fs::remove_file(preview).map_err(|_| fail("local_delete_failed"))?;
+            for extension in ["png", "gif"] {
+                let preview = self
+                    .store
+                    .root
+                    .join("previews")
+                    .join(format!("{}.{extension}", image.id));
+                if preview.exists() {
+                    std::fs::remove_file(preview).map_err(|_| fail("local_delete_failed"))?;
+                }
             }
             self.store.delete("image", &image.id)?;
             self.store.delete("image-file", &image.id)?;
@@ -9565,6 +9606,143 @@ mod tests {
             assert_eq!(read_file(&path).unwrap(), Some(b"model='old'\n".to_vec()));
         }
     }
+    #[tokio::test]
+    async fn api_media_keeps_original_exports_scoped_previews_and_native_clipboard_pixels() {
+        for animated in [false, true] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let original = if animated {
+                crate::image_media::tests::animation(2)
+            } else {
+                crate::image_media::tests::SVG.to_vec()
+            };
+            let format = if animated { "gif" } else { "svg" };
+            let mime = if animated {
+                "image/gif"
+            } else {
+                "image/svg+xml"
+            };
+            let mut snapshot = task_snapshot(&record);
+            snapshot.api_contract = Some(images::API_CONTRACT.into());
+            snapshot.task.state = "queued".into();
+            snapshot.task.parameters = ImageParameters {
+                output_format: Some(format.into()),
+                ..Default::default()
+            };
+            service.persist_task(&snapshot).unwrap();
+            let calls = Arc::new(AtomicU64::new(0));
+            let observed = calls.clone();
+            let returned = original.clone();
+            service.http.scripted(Arc::new(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["output_format"],format);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&returned);
+                Box::pin(async move { Ok(crate::network::RemoteResponse {status:200,
+                    request_id:Some("33333333-3333-4333-8333-333333333333".into()),
+                    bytes:serde_json::to_vec(&json!({"created":1,"output_format":format,"usage":{"input_tokens":1},"data":[{"b64_json":encoded}]})).unwrap()}) })
+            }));
+            service.send_image_once(&mut snapshot).await.unwrap();
+            service.persist_task(&snapshot).unwrap();
+            assert_eq!(snapshot.task.state, "completed");
+            let image_id = snapshot.task.image_ids[0].clone();
+            let id = &image_id;
+            let image: HistoryImage = service.store.get("image", id).unwrap().unwrap();
+            assert_eq!(image.mime, mime);
+            let name: String = service.store.get("image-file", id).unwrap().unwrap();
+            assert!(name.ends_with(&format!(".{format}")));
+            assert_eq!(
+                std::fs::read(images::owned_image_path(&service.store, &name).unwrap()).unwrap(),
+                original
+            );
+            let path = url::Url::parse(image.preview_url.as_ref().unwrap())
+                .unwrap()
+                .path()
+                .to_owned();
+            let (preview, preview_mime) = service.read_preview_media_asset(&path).unwrap();
+            assert_eq!(
+                preview_mime,
+                if animated { "image/gif" } else { "image/png" }
+            );
+            if animated {
+                assert_eq!(
+                    crate::image_media::gif_structure(&preview, true).unwrap().2,
+                    2
+                );
+            } else {
+                assert_eq!(
+                    image::guess_format(&preview).unwrap(),
+                    image::ImageFormat::Png
+                );
+            }
+            let renewed = service
+                .bootstrap()
+                .unwrap()
+                .image_history
+                .into_iter()
+                .find(|image| &image.id == id)
+                .unwrap();
+            assert!(
+                renewed
+                    .preview_url
+                    .unwrap()
+                    .ends_with(if animated { ".gif" } else { ".png" })
+            );
+            let target = service.store.root.join(format!("exported.{format}"));
+            service
+                .begin_image_export(id)
+                .unwrap()
+                .read()
+                .unwrap()
+                .save(&target)
+                .unwrap();
+            assert_eq!(std::fs::read(target).unwrap(), original);
+            let mut sink = FakeImageClipboard::default();
+            service
+                .begin_image_export(id)
+                .unwrap()
+                .decode()
+                .unwrap()
+                .commit(&mut sink)
+                .unwrap();
+            assert_eq!(sink.frames.len(), 1);
+            assert_eq!(
+                (sink.frames[0].0, sink.frames[0].1),
+                (image.width as usize, image.height as usize)
+            );
+            if animated {
+                assert_eq!(&sink.frames[0].2[..4], &[255, 0, 0, 255]);
+            }
+            assert_eq!(
+                service
+                    .use_history_as_input(id, &record.view.id, record.view.revision)
+                    .unwrap_err()
+                    .code,
+                "unsupported_image_input"
+            );
+            assert!(service.send_image_once(&mut snapshot).await.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            service.delete_history(&[id.clone()], true).unwrap();
+            assert!(service.read_preview_media_asset(&path).is_err());
+            for extension in ["png", "gif"] {
+                assert!(
+                    !service
+                        .store
+                        .root
+                        .join("previews")
+                        .join(format!("{id}.{extension}"))
+                        .exists()
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn api_edit_admission_sends_frozen_material_once_and_saves_the_complete_batch() {
         use base64::engine::general_purpose::STANDARD;

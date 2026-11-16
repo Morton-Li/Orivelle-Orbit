@@ -442,6 +442,10 @@ async function copy(image: HistoryImage) {
   if (result?.copied) store.notify(t("common.copied"), "success");
 }
 async function edit(image: HistoryImage) {
+  if (!referenceAllowed(image)) {
+    store.notify(t("images.rasterReferenceOnly"), "error");
+    return;
+  }
   const connection = store.activeConnection;
   const captured = store.scope;
   if (!connection || !store.ready) return;
@@ -502,6 +506,19 @@ function imageDescription(image: HistoryImage) {
       (task) =>
         task.id === image.task_id && task.account_id === image.account_id,
     )?.prompt ?? t("images.generate")
+  );
+}
+function imageFormat(image: HistoryImage) {
+  return image.mime === "image/svg+xml"
+    ? "SVG"
+    : image.mime.replace("image/", "").toUpperCase();
+}
+function referenceAllowed(image: HistoryImage) {
+  return ["image/png", "image/jpeg", "image/webp"].includes(image.mime);
+}
+function copyLabel(image: HistoryImage) {
+  return t(
+    image.mime === "image/gif" ? "images.copyFirstFrame" : "action.copy",
   );
 }
 </script>
@@ -573,7 +590,9 @@ function imageDescription(image: HistoryImage) {
             {{ apiCaps ? t("images.characters") : "UTF-8 B" }}
           </div>
           <p v-if="promptBytes > promptLimit" class="error-text" role="alert">
-            {{ t("images.promptLimit") }}
+            {{
+              t(apiCaps ? "images.promptCharacterLimit" : "images.promptLimit")
+            }}
           </p>
         </div>
         <div class="field">
@@ -929,9 +948,7 @@ function imageDescription(image: HistoryImage) {
               </button>
               <div class="image-card-meta">
                 <span>{{ image.width }} × {{ image.height }}</span
-                ><span>{{
-                  image.mime.replace("image/", "").toUpperCase()
-                }}</span
+                ><span>{{ imageFormat(image) }}</span
                 ><span>{{ formatBytes(image.bytes) }}</span>
               </div>
               <div class="image-card-actions">
@@ -945,13 +962,22 @@ function imageDescription(image: HistoryImage) {
                 ><button
                   class="icon-button"
                   :disabled="store.busy.has(`copy-${image.id}`)"
-                  :aria-label="t('action.copy')"
+                  :aria-label="copyLabel(image)"
                   @click="copy(image)"
                 >
                   <OrbitIcon name="copy" /></button
                 ><button
                   class="icon-button"
-                  :disabled="!store.ready || store.busy.has('image-reedit')"
+                  :disabled="
+                    !store.ready ||
+                    !referenceAllowed(image) ||
+                    store.busy.has('image-reedit')
+                  "
+                  :title="
+                    !referenceAllowed(image)
+                      ? t('images.rasterReferenceOnly')
+                      : undefined
+                  "
                   :aria-label="t('action.edit')"
                   @click="edit(image)"
                 >
@@ -1071,7 +1097,7 @@ function imageDescription(image: HistoryImage) {
           <div class="history-card-info">
             <strong>{{ image.width }} × {{ image.height }}</strong>
             <p class="muted">
-              {{ image.mime.replace("image/", "").toUpperCase() }} ·
+              {{ imageFormat(image) }} ·
               {{ formatBytes(image.bytes) }}
             </p>
             <p class="muted">
@@ -1088,13 +1114,18 @@ function imageDescription(image: HistoryImage) {
                 <OrbitIcon name="download" /></button
               ><button
                 class="icon-button"
-                :aria-label="t('action.copy')"
+                :aria-label="copyLabel(image)"
                 @click="copy(image)"
               >
                 <OrbitIcon name="copy" /></button
               ><button
                 class="icon-button"
-                :disabled="!store.ready"
+                :disabled="!store.ready || !referenceAllowed(image)"
+                :title="
+                  !referenceAllowed(image)
+                    ? t('images.rasterReferenceOnly')
+                    : undefined
+                "
                 :aria-label="t('action.edit')"
                 @click="edit(image)"
               >
@@ -1130,17 +1161,26 @@ function imageDescription(image: HistoryImage) {
         :height="enlarged.height"
       />
       <p class="muted">
-        {{ enlarged.width }} × {{ enlarged.height }} · {{ enlarged.mime }} ·
+        {{ enlarged.width }} × {{ enlarged.height }} ·
+        {{ imageFormat(enlarged) }} ·
         {{ formatBytes(enlarged.bytes) }}
+      </p>
+      <p v-if="enlarged.mime === 'image/gif'" class="field-hint">
+        {{ t("images.gifPreviewHint") }}
       </p>
       <div class="dialog-actions">
         <button class="button secondary" @click="save(enlarged)">
           {{ t("action.save") }}</button
         ><button class="button secondary" @click="copy(enlarged)">
-          {{ t("action.copy") }}</button
+          {{ copyLabel(enlarged) }}</button
         ><button
           class="button primary"
-          :disabled="!store.ready"
+          :disabled="!store.ready || !referenceAllowed(enlarged)"
+          :title="
+            !referenceAllowed(enlarged)
+              ? t('images.rasterReferenceOnly')
+              : undefined
+          "
           @click="edit(enlarged)"
         >
           {{ t("action.edit") }}

@@ -133,23 +133,27 @@ pub fn run() {
         .manage(desktop::Lifecycle::default())
         .on_menu_event(desktop::menu_event)
         .register_uri_scheme_protocol("asset", |context, request| {
-            let bytes = if context.webview_label() == "main"
+            let asset = if context.webview_label() == "main"
                 && request.method() == tauri::http::Method::GET
                 && request.uri().query().is_none()
             {
-                context
-                    .app_handle()
-                    .try_state::<Native>()
-                    .and_then(|n| n.service.read_preview_asset(request.uri().path()).ok())
+                context.app_handle().try_state::<Native>().and_then(|n| {
+                    n.service
+                        .read_preview_media_asset(request.uri().path())
+                        .ok()
+                })
             } else {
                 None
             };
             tauri::http::Response::builder()
-                .status(if bytes.is_some() { 200 } else { 404 })
-                .header("Content-Type", "image/png")
+                .status(if asset.is_some() { 200 } else { 404 })
+                .header(
+                    "Content-Type",
+                    asset.as_ref().map(|(_, mime)| *mime).unwrap_or("image/png"),
+                )
                 .header("Cache-Control", "no-store, max-age=0")
                 .header("X-Content-Type-Options", "nosniff")
-                .body(bytes.unwrap_or_default())
+                .body(asset.map(|(bytes, _)| bytes).unwrap_or_default())
                 .unwrap()
         })
         .plugin(tauri_plugin_dialog::init())

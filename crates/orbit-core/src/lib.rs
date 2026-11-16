@@ -15,6 +15,7 @@ pub mod dto;
 pub mod error;
 pub mod helper_artifact;
 pub mod identity;
+mod image_media;
 pub mod images;
 pub mod images_api;
 pub mod images_stream;
