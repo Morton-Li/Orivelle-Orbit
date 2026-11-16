@@ -90,6 +90,8 @@ export const useOrbitStore = defineStore("orbit", () => {
   const native = ref(nativeAvailable());
   const models = ref<ModelView[]>([]);
   const modelsLoading = ref(false);
+  // Workbench selection lasts for this app session, independently of saved history.
+  const imagePreviewTaskId = ref<string | null>(null);
   const busy = ref(new Set<string>());
   const update = ref<UpdateView | null>(null);
   const updateOperation = ref<"check" | "download" | "install" | null>(null);
@@ -170,6 +172,23 @@ export const useOrbitStore = defineStore("orbit", () => {
             connection.panel_origin === activeConnection.value?.panel_origin,
         ),
     ),
+  );
+  const connectionTasks = computed(() =>
+    tasks.value.filter(
+      (task) =>
+        task.connection_id === activeConnection.value?.id &&
+        task.connection_revision === activeConnection.value.revision,
+    ),
+  );
+  const imagePreviewTask = computed(
+    () =>
+      connectionTasks.value.find(
+        (task) => task.id === imagePreviewTaskId.value,
+      ) ??
+      connectionTasks.value.find((task) =>
+        ["save_failed", "unconfirmed"].includes(task.state),
+      ) ??
+      null,
   );
   const history = computed(() =>
     state.value.image_history.filter(
@@ -285,9 +304,21 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       loginOpen.value = false;
     if (scope.value !== before) {
+      imagePreviewTaskId.value = null;
       modelGeneration++;
       models.value = [];
       void loadModels();
+    }
+    if (
+      !connectionTasks.value.some(
+        (task) => task.id === imagePreviewTaskId.value,
+      )
+    ) {
+      // Track live work across page changes without selecting persisted results.
+      imagePreviewTaskId.value =
+        connectionTasks.value.find((task) =>
+          ["queued", "sending", "waiting", "saving"].includes(task.state),
+        )?.id ?? null;
     }
     return true;
   }
@@ -612,6 +643,11 @@ export const useOrbitStore = defineStore("orbit", () => {
       )
     )
       return;
+    if (
+      task.connection_id === activeConnection.value?.id &&
+      task.connection_revision === activeConnection.value.revision
+    )
+      imagePreviewTaskId.value = task.id;
     const index = state.value.tasks.findIndex((item) => item.id === task.id);
     // Command acknowledgements may arrive after a newer authoritative state event.
     // Existing tasks are refreshed through monotonic bootstrap/events, never replaced by acknowledgements.
@@ -625,6 +661,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     native,
     models,
     modelsLoading,
+    imagePreviewTaskId,
+    imagePreviewTask,
     busy,
     update,
     updateOperation,

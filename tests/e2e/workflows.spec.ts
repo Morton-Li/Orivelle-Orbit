@@ -617,7 +617,8 @@ test("available image controls keep legacy parameters out of the workbench", asy
   await expect(page.locator(".parameter-details")).toContainText(
     "透明背景可能增加图片 token 用量",
   );
-  await expect(page.locator(".task-facts")).not.toContainText("1536x864");
+  await expect(page.locator(".task-facts")).toHaveCount(0);
+  await expect(page.locator(".image-result")).not.toContainText("1536x864");
   await page.locator(".parameter-details").screenshot({
     path: ".cache/evidence/images-background-explicit-choice.png",
   });
@@ -690,10 +691,8 @@ test("deleting one local image never deletes other results of the same task", as
   }));
   await fixture(page, { state });
   await page.goto("/#/images");
-  await expect(page.locator(".task-facts dt")).toHaveText([
-    "请求模型",
-    "Request ID",
-  ]);
+  await expect(page.locator(".task-header")).toHaveCount(0);
+  await expect(page.locator(".result-card")).toHaveCount(0);
   await page.getByRole("tab", { name: "本地历史" }).click();
   await expect(page.locator(".history-card")).toHaveCount(2);
   await expect(page.locator(".history-card strong").first()).toHaveText(
