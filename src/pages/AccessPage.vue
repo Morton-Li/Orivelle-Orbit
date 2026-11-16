@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
+import { useApiKeysStore } from "../stores/api-keys";
+import ApiKeyPickerDialog from "../components/ApiKeyPickerDialog.vue";
 import { useOrbitStore } from "../stores/orbit";
 import { t, type MessageKey } from "../shared/i18n";
 import { nodeName } from "../shared/format";
@@ -8,6 +11,7 @@ import type {
   ClaudeModelMapping,
   ClientKind,
   ConfigPreview,
+  ConfigResult,
 } from "../shared/contracts";
 import { CAPABILITIES } from "../shared/contracts";
 import ClientRow from "../components/ClientRow.vue";
@@ -16,6 +20,10 @@ import OrbitSelect from "../components/OrbitSelect.vue";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import { useNodeLatency } from "../composables/useNodeLatency";
 const store = useOrbitStore();
+const apiKeys = useApiKeysStore();
+const keyPickerOpen = ref(false);
+const route = useRoute();
+const updatingClient = ref<ClientKind | null>(null);
 const latency = useNodeLatency();
 const nodeOptions = computed(() =>
   store.state.nodes.map((node, index) => ({
@@ -100,7 +108,7 @@ function connectReason(kind: ClientKind): MessageKey | null {
   if (store.activeConnection?.permission_state === "readonly")
     return "access.readonly";
   if (store.state.session.inference_credential_status !== "ready")
-    return "access.waitCredential";
+    return apiKeys.page ? "access.chooseKeyFirst" : "access.waitCredential";
   if (!store.activeConnection?.node_id) return "access.chooseNodeFirst";
   if (store.state.maintenance_active) return "access.waitMaintenance";
   if (!client?.installed) return "access.installClientFirst";
@@ -250,12 +258,54 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   }
   preview.value = result;
 }
+async function configurationApplied(result: ConfigResult) {
+  preview.value = null;
+  if (updatingClient.value === result.client && result.state === "restored") {
+    await store.loadModels();
+    await requestPreview(result.client);
+  } else if (result.state === "saved") {
+    updatingClient.value = null;
+    apiKeys.updateMapping = null;
+    await apiKeys.load();
+  }
+}
+function closePreview() {
+  preview.value = null;
+  updatingClient.value = null;
+  apiKeys.updateMapping = null;
+}
+onMounted(async () => {
+  await apiKeys.load();
+  const client = route?.query.update;
+  if (
+    (client !== "codex" && client !== "claude") ||
+    apiKeys.updateMapping?.client !== client
+  )
+    return;
+  const backup = switchSnapshot(client);
+  if (
+    !backup ||
+    backup.account_id !== store.account?.id ||
+    backup.panel_origin !== store.activeConnection?.panel_origin
+  )
+    return;
+  updatingClient.value = client;
+  if (client === "claude" && apiKeys.updateMapping.mapping)
+    selectedMapping.value = { ...apiKeys.updateMapping.mapping };
+  await restore(
+    backup.id,
+    client === "claude" ? "claude_main_settings_v2" : undefined,
+  );
+});
 </script>
 <template>
   <section class="page-heading">
     <h1>{{ t("access.title") }}</h1>
     <p class="page-description">{{ t("access.description") }}</p>
   </section>
+  <p v-if="updatingClient" class="info-box" role="status">
+    {{ t("access.updatingKey") }}
+  </p>
   <section class="connection-settings" :aria-label="t('access.connection')">
     <div class="access-account">
       <span class="account-avatar" aria-hidden="true"
@@ -315,6 +365,30 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
         :options="nodeOptions"
         @update:model-value="store.selectNode"
       />
+    </div>
+    <div class="field">
+      <div class="field-heading">
+        <label class="field-label" for="access-api-key">API Key</label>
+        <RouterLink to="/api-keys" class="text-button">{{
+          t("access.manageKeys")
+        }}</RouterLink>
+      </div>
+      <button
+        id="access-api-key"
+        class="select-trigger"
+        :disabled="!apiKeys.page?.can_write || apiKeys.busy"
+        @click="keyPickerOpen = true"
+      >
+        <span class="select-choice"
+          ><span class="select-choice-label">{{
+            apiKeys.page?.selected?.name ?? t("access.selectKey")
+          }}</span
+          ><span v-if="apiKeys.page?.selected" class="select-detail mono"
+            >{{ apiKeys.page.selected.prefix }}…</span
+          ></span
+        >
+        <OrbitIcon name="chevron-down" :size="16" />
+      </button>
     </div>
   </section>
   <p
@@ -444,7 +518,8 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   </section>
   <ConfigReviewDialog
     :preview="preview"
-    @close="preview = null"
-    @applied="preview = null"
+    @close="closePreview"
+    @applied="configurationApplied"
   />
+  <ApiKeyPickerDialog v-model:open="keyPickerOpen" />
 </template>

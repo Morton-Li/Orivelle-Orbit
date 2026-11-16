@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
-import type { ConfigPreview } from "../shared/contracts";
+import type { ConfigPreview, ConfigResult } from "../shared/contracts";
 import { t } from "../shared/i18n";
 import {
   configPolicyMessage,
@@ -11,7 +11,7 @@ import {
 import OrbitDialog from "./OrbitDialog.vue";
 import OrbitIcon from "./OrbitIcon.vue";
 const props = defineProps<{ preview: ConfigPreview | null }>();
-const emit = defineEmits<{ close: []; applied: [] }>();
+const emit = defineEmits<{ close: []; applied: [result: ConfigResult] }>();
 const store = useOrbitStore();
 const now = ref(Date.now());
 const rejectedPreviewIds = ref(new Set<string>());
@@ -213,7 +213,7 @@ async function confirm() {
           ),
       result.state === "conflict" ? "error" : "neutral",
     );
-    emit("applied");
+    emit("applied", result);
   }
 }
 </script>
@@ -231,6 +231,13 @@ async function confirm() {
   >
     <template v-if="preview"
       ><dl class="preview-context">
+        <div v-if="preview.operation === 'apply' && preview.context.api_key">
+          <dt>API Key</dt>
+          <dd>
+            {{ preview.context.api_key.name }}
+            <small class="mono">{{ preview.context.api_key.prefix }}…</small>
+          </dd>
+        </div>
         <div>
           <dt>{{ t("common.account") }}</dt>
           <dd>

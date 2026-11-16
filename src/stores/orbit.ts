@@ -175,9 +175,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   );
   const connectionTasks = computed(() =>
     tasks.value.filter(
-      (task) =>
-        task.connection_id === activeConnection.value?.id &&
-        task.connection_revision === activeConnection.value.revision,
+      (task) => task.connection_id === activeConnection.value?.id,
     ),
   );
   const imagePreviewTask = computed(
@@ -686,6 +684,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     textModels,
     imageModels,
     notify,
+    report,
     clearNotice,
     acceptState,
     acceptError,

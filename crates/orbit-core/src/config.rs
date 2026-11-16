@@ -1,5 +1,5 @@
 use crate::{
-    dto::{ClientKind, CodexCatalogBindingView, ReasoningPolicyView},
+    dto::{ClaudeModelMapping, ClientKind, CodexCatalogBindingView, ReasoningPolicyView},
     error::{Result, fail},
     identity::{HelperBinding, Installation, sha256, uuid},
     store::{Store, private_file},
@@ -336,6 +336,46 @@ fn equal_current(file: &FileChange, expected: &Option<Vec<u8>>) -> Result<bool> 
     Ok(read_file(Path::new(&file.path))? == *expected)
 }
 impl ConfigEngine<'_> {
+    /// Read authenticated binding identity without authorizing configuration writes.
+    pub(crate) fn key_binding(
+        &self,
+        journal: &Journal,
+    ) -> Result<(Option<String>, String, Option<ClaudeModelMapping>)> {
+        let operation = self.decrypt(journal)?;
+        match journal.client {
+            ClientKind::Codex => {
+                let context = operation
+                    .codex_context
+                    .clone()
+                    .ok_or_else(|| fail("backup_invalid"))?;
+                if context.account_id != journal.account_id
+                    || context.panel_origin != journal.installation.origin
+                    || context.installation_id != journal.installation.id
+                {
+                    return Err(fail("account_scope_mismatch"));
+                }
+                Ok((context.api_key_id, context.credential_revision, None))
+            }
+            ClientKind::Claude => {
+                let context = operation
+                    .claude_context
+                    .clone()
+                    .ok_or_else(|| fail("backup_invalid"))?;
+                if context.account_id != journal.account_id
+                    || context.panel_origin != journal.installation.origin
+                    || context.installation_id != journal.installation.id
+                {
+                    return Err(fail("account_scope_mismatch"));
+                }
+                let mapping = context.mapping.as_ref().map(|plan| ClaudeModelMapping {
+                    sonnet: plan.upstream_model("claude-sonnet-5").unwrap_or("").into(),
+                    opus: plan.upstream_model("claude-opus-5").unwrap_or("").into(),
+                    haiku: plan.upstream_model("claude-haiku-4-5").unwrap_or("").into(),
+                });
+                Ok((context.api_key_id, context.credential_revision, mapping))
+            }
+        }
+    }
     fn check_context(&self, journal: &Journal, operation: &Operation) -> Result<()> {
         self.check_context_for(journal, operation, false)
     }
@@ -784,6 +824,16 @@ impl ConfigEngine<'_> {
     }
 
     fn claude_grant_scope_current(&self, binding: &HelperBinding) -> Result<bool> {
+        if self
+            .store
+            .meta(&crate::identity::credential_disabled_reference(
+                &binding.secret_reference,
+            ))?
+            .as_deref()
+            == Some("1")
+        {
+            return Ok(false);
+        }
         crate::update_recovery::ensure_ready(&self.store.root)?;
         Ok(!binding
             .expires_at

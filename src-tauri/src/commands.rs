@@ -1,4 +1,8 @@
 use orbit_core::{
+    api_keys::{
+        ApiKeyMutation, ApiKeyPage, ApiKeyQuery, ApiKeyView, KeyMutationResult, KeyReference,
+        KeyScope, RevealedApiKey,
+    },
     clipboard::{ClipboardImage, ImageClipboardSink},
     dto::*,
     error::{Result, fail},
@@ -18,6 +22,55 @@ pub struct Native {
     pub service: Arc<Service>,
     pub downloads: orbit_core::update_download::Downloads,
     pub _instance: orbit_core::runtime_lock::RuntimeLock,
+}
+#[tauri::command]
+pub async fn list_api_keys(native: State<'_, Native>, request: ApiKeyQuery) -> Result<ApiKeyPage> {
+    native.service.list_api_keys(&request).await
+}
+#[tauri::command]
+pub async fn get_api_key(native: State<'_, Native>, request: KeyReference) -> Result<ApiKeyView> {
+    native.service.get_api_key(&request).await
+}
+#[tauri::command]
+pub async fn mutate_api_key(
+    native: State<'_, Native>,
+    request: ApiKeyMutation,
+) -> Result<KeyMutationResult> {
+    native.service.mutate_api_key(&request).await
+}
+#[tauri::command]
+pub async fn recover_api_key_operation(
+    native: State<'_, Native>,
+    request: KeyScope,
+) -> Result<KeyMutationResult> {
+    native.service.recover_api_key_operation(&request).await
+}
+#[tauri::command]
+pub async fn select_api_key(
+    native: State<'_, Native>,
+    request: KeyReference,
+) -> Result<BootstrapView> {
+    native.service.select_api_key(&request).await
+}
+#[tauri::command]
+pub async fn reveal_api_key(
+    native: State<'_, Native>,
+    request: KeyReference,
+) -> Result<RevealedApiKey> {
+    native.service.reveal_api_key(&request).await
+}
+#[tauri::command]
+pub async fn copy_api_key(native: State<'_, Native>, request: KeyReference) -> Result<()> {
+    let secret = native.service.reveal_api_key(&request).await?;
+    native
+        .service
+        .commit_api_key_copy(&request, &secret, |token| {
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|_| fail("clipboard_unavailable"))?;
+            clipboard
+                .set_text(token.to_owned())
+                .map_err(|_| fail("clipboard_unavailable"))
+        })
 }
 struct NativeImageClipboard;
 impl ImageClipboardSink for NativeImageClipboard {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { useOrbitStore } from "../stores/orbit";
 import { useUsage } from "../composables/useUsage";
 import { locale, t, type MessageKey } from "../shared/i18n";
@@ -14,7 +15,14 @@ import OrbitIcon from "../components/OrbitIcon.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 const store = useOrbitStore();
-const usage = useUsage();
+const route = useRoute();
+const router = useRouter();
+const apiKeyId = computed(() =>
+  typeof route?.query.api_key_id === "string"
+    ? route.query.api_key_id
+    : undefined,
+);
+const usage = useUsage(apiKeyId);
 const {
   draft,
   range,
@@ -197,7 +205,9 @@ function duration(value: number | null) {
 <template>
   <section class="page-heading usage-heading">
     <div>
-      <p class="usage-eyebrow">{{ t("usage.scope") }}</p>
+      <p class="usage-eyebrow">
+        {{ t(apiKeyId ? "usage.keyScope" : "usage.scope") }}
+      </p>
       <h1>{{ t("usage.title") }}</h1>
       <p class="page-description">{{ t("usage.description") }}</p>
     </div>
@@ -227,6 +237,12 @@ function duration(value: number | null) {
     </button>
   </section>
   <template v-else>
+    <p v-if="apiKeyId" class="usage-panel-footnote">
+      {{ t("usage.keyFilter") }} · {{ apiKeyId }}
+      <button class="text-button" @click="router.replace({ path: '/usage' })">
+        {{ t("usage.clearKeyFilter") }}
+      </button>
+    </p>
     <form class="usage-filter" @submit.prevent="usage.applyRange">
       <div class="usage-segment" :aria-label="t('usage.rangeLabel')">
         <button

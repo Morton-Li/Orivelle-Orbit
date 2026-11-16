@@ -38,6 +38,8 @@ use tokio::{
 };
 use zeroize::Zeroizing;
 
+#[path = "service_api_keys.rs"]
+mod api_keys;
 #[path = "service_claude.rs"]
 mod claude;
 #[cfg(all(test, any(target_os = "macos", windows)))]
@@ -80,6 +82,8 @@ struct AccountCache {
     keys: Vec<KeyMetadata>,
     #[serde(default)]
     claude_endpoints: HashMap<String, String>,
+    #[serde(default)]
+    api_keys_supported: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct KeyMetadata {
@@ -88,6 +92,10 @@ struct KeyMetadata {
     key_revision: Option<String>,
     state: String,
     expires_at: Option<i64>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    prefix: String,
 }
 #[derive(Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 struct SessionEnvelope {
@@ -295,6 +303,7 @@ impl Service {
         let _ = store.list::<HistoryImage>("image", None)?;
         let _ = store.list::<InputRecord>("input", None)?;
         let _ = store.list::<Journal>("journal", None)?;
+        Self::validate_api_key_store(store)?;
         Ok(())
     }
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
@@ -989,7 +998,7 @@ impl Service {
         OsRng.fill_bytes(&mut *entropy);
         let verifier = Zeroizing::new(URL_SAFE_NO_PAD.encode(*entropy));
         let challenge = URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
-        let body=serde_json::to_vec(&json!({"client_id":"orivelle-orbit","installation_id":installation.id,"public_key":installation.public_key,"installation_name":"Orivelle Orbit desktop","redirect_uri":redirect_uri,"state":state,"code_challenge":challenge,"code_challenge_method":"S256"})).map_err(|_|fail("serialization_failed"))?;
+        let body=serde_json::to_vec(&json!({"client_id":"orivelle-orbit","client_profile":"api-keys-v1","installation_id":installation.id,"public_key":installation.public_key,"installation_name":"Orivelle Orbit desktop","redirect_uri":redirect_uri,"state":state,"code_challenge":challenge,"code_challenge_method":"S256"})).map_err(|_|fail("serialization_failed"))?;
         #[derive(Deserialize)]
         struct Start {
             authorization_request_id: String,
@@ -1227,6 +1236,9 @@ impl Service {
             self.invalidate_evidence()?;
         }
         self.changed();
+        // Only restore the actor/installation-bound ID after a fresh explicit use
+        // grant. A remembered choice never revives an old vault authorization.
+        let _ = self.restore_local_key_selection(&id).await;
         let text = "Orbit authorization completed. You may close this window.";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
@@ -1606,6 +1618,10 @@ impl Service {
         record: &mut ConnectionRecord,
         cache: &AccountCache,
     ) -> Result<()> {
+        let keys_profile = self.has_key_access(record, "api-keys:read");
+        if keys_profile {
+            self.synchronize_key_credentials(record, cache)?;
+        }
         let key = cache.keys.iter().find(|k| {
             k.provider_id == record.view.provider_id
                 && k.api_key_id == record.api_key_id
@@ -1621,7 +1637,22 @@ impl Service {
             let state = key
                 .map(|k| k.state.clone())
                 .unwrap_or_else(|| "unavailable".into());
-            self.disable_inference_before_cleanup(record, &state)?;
+            if keys_profile {
+                record.credential_reference = None;
+                record.view.credential_revision = None;
+                record.credential_expires_at = None;
+                record.credential_state = state;
+                record.view.permission_state = "unavailable".into();
+                record.view.revision += 1;
+                self.store.put(
+                    "connection",
+                    &record.view.id,
+                    &record.view.account_id,
+                    record,
+                )?;
+            } else {
+                self.disable_inference_before_cleanup(record, &state)?;
+            }
         } else if let Some(key) = key {
             record.credential_state = key.state.clone();
             record.credential_expires_at = key.expires_at;
@@ -1804,6 +1835,7 @@ impl Service {
                 }
             }
         }
+        let _ = self.cleanup_legacy_api_key(id).await;
         self.bootstrap()
     }
     #[cfg(test)]
@@ -1999,6 +2031,7 @@ impl Service {
     }
     fn retire_account(&self, mut record: ConnectionRecord) -> Result<bool> {
         record.authorization_epoch = self.advance_authorization_epoch(&record)?;
+        self.retire_api_key_credentials(&mut record)?;
         if record.session_status != "logged_out"
             && !record
                 .cleanup_references
@@ -2113,6 +2146,27 @@ impl Service {
             .find(|n| n.id == node_id && n.available)
             .ok_or_else(|| fail("node_unavailable"))?;
         Ok(PreviewContext {
+            api_key: cache
+                .keys
+                .iter()
+                .find(|key| {
+                    key.api_key_id == record.api_key_id
+                        && key.key_revision == record.view.credential_revision
+                })
+                .filter(|_| cache.api_keys_supported)
+                .and_then(|key| {
+                    key.api_key_id
+                        .as_ref()
+                        .map(|id| crate::api_keys::ApiKeyLabel {
+                            id: id.clone(),
+                            name: if key.name.is_empty() {
+                                "API Key".into()
+                            } else {
+                                key.name.clone()
+                            },
+                            prefix: key.prefix.clone(),
+                        })
+                }),
             account_id: record.view.account_id.clone(),
             account_label: cache.account.label.clone(),
             connection_id: record.view.id.clone(),
@@ -2127,7 +2181,6 @@ impl Service {
             model_revision: model.revision.clone(),
         })
     }
-    #[cfg(test)]
     fn config_engine(&self) -> ConfigEngine<'_> {
         ConfigEngine {
             store: &self.store,
@@ -3181,6 +3234,11 @@ impl Service {
                 .map_err(|_| fail("state_unavailable"))?
                 .remove(id);
         }
+        if result.is_ok() {
+            if let Some(context) = view.context.as_ref() {
+                let _ = self.cleanup_legacy_api_key(&context.connection_id).await;
+            }
+        }
         result
     }
     pub fn apply_client_config(
@@ -3747,9 +3805,13 @@ impl Service {
         }
         let _ = self.persist_task(&snapshot);
         let _ = self.reconcile_task(&mut snapshot).await;
+        let _ = self
+            .cleanup_legacy_api_key(&snapshot.task.connection_id)
+            .await;
+        let _ = self.prune_api_key_credentials(&snapshot.task.connection_id);
     }
     async fn send_image_once(&self, snapshot: &mut TaskSnapshot) -> Result<()> {
-        let record = self.record(&snapshot.task.connection_id)?;
+        let record = self.image_key_record(snapshot)?;
         self.ensure_installation_available(&record.installation_id)?;
         if record.view.panel_origin != snapshot.panel_origin
             || record.view.account_id != snapshot.task.account_id
@@ -3896,7 +3958,7 @@ impl Service {
         if current.state != "queued" {
             return Err(fail("task_state_conflict"));
         }
-        let record = self.record(&snapshot.task.connection_id)?;
+        let record = self.image_key_record(snapshot)?;
         self.ensure_installation_available(&record.installation_id)?;
         if record.view.account_id != snapshot.task.account_id
             || record.view.panel_origin != snapshot.panel_origin
@@ -4688,9 +4750,12 @@ fn map_account_cache(value: &Value, record: &ConnectionRecord) -> Result<Account
                         .as_deref()
                         .map(parse_timestamp)
                         .transpose()?,
+                    name: k["name"].as_str().unwrap_or("").into(),
+                    prefix: k["prefix"].as_str().unwrap_or("").into(),
                 })
             })
             .collect::<Result<Vec<_>>>()?,
+        api_keys_supported: value["api_key_management"].as_bool().unwrap_or(false),
     })
 }
 fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
@@ -6434,7 +6499,7 @@ mod tests {
             error: None,
         }
     }
-    fn task_snapshot(record: &ConnectionRecord) -> TaskSnapshot {
+    pub(super) fn task_snapshot(record: &ConnectionRecord) -> TaskSnapshot {
         TaskSnapshot {
             task: task(record),
             panel_origin: record.view.panel_origin.clone(),

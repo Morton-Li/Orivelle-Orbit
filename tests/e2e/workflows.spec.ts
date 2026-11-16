@@ -929,7 +929,9 @@ test("update timeout is readable and leaves download available", async ({
 test("access and settings show the supported controls and the installed version", async ({
   page,
 }) => {
-  await fixture(page);
+  const state = bootstrap();
+  state.settings.check_updates_on_start = false;
+  await fixture(page, { state });
   await page.goto("/#/access");
   await expect(
     page.getByRole("heading", { name: "模型映射", exact: true }),

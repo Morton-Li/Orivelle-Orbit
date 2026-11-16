@@ -1,5 +1,15 @@
 import type { UsageQuery, UsageSummary, UsagePage } from "./usage";
-/** Public IPC contract. Credentials, raw HTTP, SQL and arbitrary file access are intentionally absent. */
+import type {
+  ApiKeyQuery,
+  ApiKeyPage,
+  ApiKeyView,
+  ApiKeyMutation,
+  KeyMutationResult,
+  KeyReference,
+  KeyScope,
+  RevealedApiKey,
+} from "./api-keys";
+/** Ordinary IPC DTOs omit secrets. API Key reveal is a separate, explicit ephemeral reply. */
 export type ClientKind = "codex" | "claude";
 export type ClaudeModelMapping = {
   sonnet: string;
@@ -389,6 +399,7 @@ export type ConfigPreview = ConfigPreviewBase &
           connection_id: string;
           connection_revision: number;
           credential_revision: string;
+          api_key?: { id: string; name: string; prefix: string } | null;
           node_id: string;
           node_label: string;
           model_revision: string;
@@ -452,6 +463,13 @@ export type MenubarRequest =
   | { action: "resize"; height: number }
   | { action: "open"; destination: MenubarDestination };
 export interface IpcCommands {
+  list_api_keys: { args: ApiKeyQuery; result: ApiKeyPage };
+  get_api_key: { args: KeyReference; result: ApiKeyView };
+  mutate_api_key: { args: ApiKeyMutation; result: KeyMutationResult };
+  recover_api_key_operation: { args: KeyScope; result: KeyMutationResult };
+  select_api_key: { args: KeyReference; result: BootstrapView };
+  reveal_api_key: { args: KeyReference; result: RevealedApiKey };
+  copy_api_key: { args: KeyReference; result: null };
   menubar_control: { args: MenubarRequest; result: null };
   read_usage_summary: { args: UsageQuery; result: UsageSummary };
   list_usage_records: { args: UsageQuery; result: UsagePage };

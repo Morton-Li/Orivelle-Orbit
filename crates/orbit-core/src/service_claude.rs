@@ -197,6 +197,7 @@ impl Service {
             true,
             &policy,
             application_updated,
+            true,
         )?;
         self.validate_claude_mapping_selection(&expected.context)
     }
@@ -1632,6 +1633,7 @@ impl Service {
             compare_catalog,
             &observation.policy,
             application_updated,
+            false,
         )
     }
     fn validate_claude_authority_state(
@@ -1641,6 +1643,7 @@ impl Service {
         compare_catalog: bool,
         policy: &crate::policy::Snapshot,
         application_updated: bool,
+        running_binding: bool,
     ) -> Result<()> {
         policy.require_user_config_clear()?;
         if let Some(plan) = context.mapping.as_ref() {
@@ -1676,9 +1679,20 @@ impl Service {
         if Path::new(&context.helper_path) != self.paths.helper || !self.paths.helper_available() {
             return Err(fail("helper_unavailable"));
         }
-        let (record, cache) = self
-            .current_connection(&context.connection_id, context.connection_revision)
-            .map_err(|_| fail("claude_configuration_context_changed"))?;
+        let current = self.record(&context.connection_id)?;
+        let (record, cache) = if running_binding && self.has_key_access(&current, "api-keys:read") {
+            let mut record = self.frozen_api_key_record(
+                &current,
+                &context.credential_reference,
+                &context.credential_revision,
+            )?;
+            record.view.revision = context.connection_revision;
+            let cache = self.account_cache(&record)?;
+            (record, cache)
+        } else {
+            self.current_connection(&context.connection_id, context.connection_revision)
+                .map_err(|_| fail("claude_configuration_context_changed"))?
+        };
         let epoch = self
             .store
             .meta(&authorization_epoch_reference(

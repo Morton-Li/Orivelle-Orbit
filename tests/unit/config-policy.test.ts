@@ -381,7 +381,9 @@ describe("Codex catalog confirmation", () => {
       expect(
         bridge.call.mock.calls.filter(
           ([command]) =>
-            !["probe_nodes", "cancel_node_probes"].includes(command),
+            !["probe_nodes", "cancel_node_probes", "list_api_keys"].includes(
+              command,
+            ),
         ),
       ).toEqual([]);
       client.configuration_access = "allowed";
