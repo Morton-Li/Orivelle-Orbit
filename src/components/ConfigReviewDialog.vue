@@ -217,28 +217,12 @@ async function confirm() {
     "
   >
     <template v-if="preview">
-      <dl class="preview-context">
+      <dl v-if="preview.operation === 'apply'" class="preview-context">
         <div>
-          <dt>{{ t("access.application") }}</dt>
-          <dd>
-            {{ t(preview.client === "codex" ? "home.codex" : "home.claude") }}
-          </dd>
-        </div>
-        <div>
-          <dt>{{ t("common.account") }}</dt>
-          <dd>
-            {{
-              preview.operation === "apply"
-                ? preview.context.account_label
-                : preview.restore_owner.account_label
-            }}
-          </dd>
-        </div>
-        <div v-if="preview.operation === 'apply'">
           <dt>{{ t("access.node") }}</dt>
           <dd>{{ previewNodeName }}</dd>
         </div>
-        <div v-if="preview.operation === 'apply' && preview.context.api_key">
+        <div v-if="preview.context.api_key">
           <dt>API Key</dt>
           <dd>
             {{ preview.context.api_key.name

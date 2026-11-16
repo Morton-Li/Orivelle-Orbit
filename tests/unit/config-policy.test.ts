@@ -489,10 +489,15 @@ describe("Codex catalog confirmation", () => {
     };
     value.codex_runtime = syntheticCodexRuntime();
     const view = show(value);
-    expect(view.text()).toContain("Codex");
-    expect(view.text()).toContain("Synthetic account");
+    expect(view.text()).not.toContain("应用");
+    expect(view.text()).not.toContain("账户");
+    expect(view.text()).not.toContain("Synthetic account");
     expect(view.text()).toContain("Chosen key");
     expect(view.findAll("dl")).toHaveLength(1);
+    expect(view.findAll("dt").map((item) => item.text())).toEqual([
+      "节点",
+      "API Key",
+    ]);
     expect(view.findAll("h3, pre, .path-list, .impact-list")).toHaveLength(0);
     expect(view.text()).not.toContain("/fixture/config");
     expect(view.text()).not.toContain(value.codex_catalog!.sha256);

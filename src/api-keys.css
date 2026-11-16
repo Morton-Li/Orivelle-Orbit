@@ -172,8 +172,8 @@
   color: var(--muted);
   pointer-events: none;
 }
-.key-search input {
-  padding-left: 34px;
+.key-search > input[type="search"] {
+  padding-left: 36px;
   font-size: 11px;
   min-height: 36px;
 }

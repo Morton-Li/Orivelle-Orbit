@@ -137,6 +137,20 @@ test("API Key layout stays inside the window at smaller widths and with dark the
   await pushState(page, dark);
   for (const width of [1280, 800, 460]) {
     await page.setViewportSize({ width, height: 900 });
+    const search = await page.locator(".key-search").evaluate((container) => {
+      const icon = container.querySelector("svg")!.getBoundingClientRect();
+      const input = container.querySelector("input")!;
+      const bounds = input.getBoundingClientRect();
+      const style = getComputedStyle(input);
+      return {
+        iconRight: icon.right,
+        textLeft:
+          bounds.left +
+          parseFloat(style.borderLeftWidth) +
+          parseFloat(style.paddingLeft),
+      };
+    });
+    expect(search.textLeft - search.iconRight).toBeGreaterThanOrEqual(8);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
@@ -167,7 +181,8 @@ test("access uses the API Key page default, shows a compact confirmation and aut
   const dialog = page.getByRole("dialog", { name: "确认接入", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(".preview-context")).toContainText("图片创作");
-  await expect(dialog.locator(".preview-context > div")).toHaveCount(4);
+  await expect(dialog.locator(".preview-context > div")).toHaveCount(2);
+  await expect(dialog.locator("dt")).toHaveText(["节点", "API Key"]);
   await expect(
     dialog.locator("h3, h4, pre, .path-list, .impact-list"),
   ).toHaveCount(0);
@@ -200,7 +215,8 @@ test("access uses the API Key page default, shows a compact confirmation and aut
     name: "确认取消接入",
     exact: true,
   });
-  await expect(cancel.locator(".preview-context > div")).toHaveCount(2);
+  await expect(cancel.locator(".preview-context")).toHaveCount(0);
+  await expect(cancel.locator("dt")).toHaveCount(0);
   await expect(cancel.locator("h3, pre, .path-list, .impact-list")).toHaveCount(
     0,
   );

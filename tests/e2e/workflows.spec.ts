@@ -346,7 +346,7 @@ for (const client of ["codex", "claude"] as const) {
         ).toHaveCount(0);
         await expect(
           page.getByRole("dialog").getByText("Fixture A", { exact: true }),
-        ).toBeVisible();
+        ).toHaveCount(0);
       }
       if (recoverable) {
         await expect(apply).toBeEnabled();
