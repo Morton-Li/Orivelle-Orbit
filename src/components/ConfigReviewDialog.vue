@@ -3,11 +3,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import type { ConfigPreview, ConfigResult } from "../shared/contracts";
 import { t } from "../shared/i18n";
-import {
-  configPolicyMessage,
-  nodeName,
-  redactServiceUrls,
-} from "../shared/format";
+import { configPolicyMessage, nodeName } from "../shared/format";
 import OrbitDialog from "./OrbitDialog.vue";
 import OrbitIcon from "./OrbitIcon.vue";
 const props = defineProps<{ preview: ConfigPreview | null }>();
@@ -131,23 +127,11 @@ const allowed = computed(
     (props.preview.operation === "restore" || store.ready) &&
     !configBusy.value,
 );
-const preservingClaudePreferences = computed(
-  () =>
-    props.preview?.operation === "restore" &&
-    props.preview.client === "claude" &&
-    props.preview.restore_coordination != null,
-);
 const codexReady = computed(() => {
   const preview = props.preview;
   if (preview?.client !== "codex" || preview.operation !== "apply") return true;
   return (
     !!preview.codex_catalog && !!preview.codex_configuration_target?.cli_version
-  );
-});
-const codexRuntimeVerified = computed(() => {
-  const runtime = props.preview?.codex_runtime;
-  return (
-    runtime?.state === "verified" && !!runtime.revision && !!runtime.cli_version
   );
 });
 const configBusy = computed(
@@ -179,10 +163,6 @@ async function exportImport() {
 async function confirm() {
   const preview = props.preview;
   if (!preview || !allowed.value) return;
-  const preservingPreferences =
-    preview.operation === "restore" &&
-    preview.client === "claude" &&
-    preview.restore_coordination != null;
   const result =
     preview.operation === "restore"
       ? await store.perform("config-apply", "restore_client_config", {
@@ -200,18 +180,14 @@ async function confirm() {
   if (result) {
     await store.refresh();
     store.notify(
-      result.state === "conflict"
-        ? t("client.conflict")
-        : t(
-            result.state === "restored"
-              ? preservingPreferences
-                ? preview.restore_coordination === "claude_main_settings_v2"
-                  ? "access.restoredPreservingSettings"
-                  : "access.restoredPreservingPreferences"
-                : "access.restored"
-              : "access.saved",
-          ),
-      result.state === "conflict" ? "error" : "neutral",
+      t(
+        result.state === "conflict"
+          ? "client.conflict"
+          : result.state === "restored"
+            ? "access.disconnectedNotice"
+            : "access.connectedNotice",
+      ),
+      result.state === "conflict" ? "error" : "success",
     );
     emit("applied", result);
   }
@@ -220,22 +196,32 @@ async function confirm() {
 <template>
   <OrbitDialog
     :open="preview !== null"
-    :title="t('access.previewTitle')"
-    :description="t('access.previewHint')"
-    wide
+    :title="
+      t(
+        preview?.operation === 'restore'
+          ? 'access.confirmDisconnect'
+          : 'access.confirmConnect',
+      )
+    "
+    :description="
+      t(
+        preview?.operation === 'restore'
+          ? 'access.confirmDisconnectHint'
+          : 'access.confirmConnectHint',
+      )
+    "
     @update:open="
       (value) => {
         if (!value && !configBusy) emit('close');
       }
     "
   >
-    <template v-if="preview"
-      ><dl class="preview-context">
-        <div v-if="preview.operation === 'apply' && preview.context.api_key">
-          <dt>API Key</dt>
+    <template v-if="preview">
+      <dl class="preview-context">
+        <div>
+          <dt>{{ t("access.application") }}</dt>
           <dd>
-            {{ preview.context.api_key.name }}
-            <small class="mono">{{ preview.context.api_key.prefix }}…</small>
+            {{ t(preview.client === "codex" ? "home.codex" : "home.claude") }}
           </dd>
         </div>
         <div>
@@ -252,130 +238,19 @@ async function confirm() {
           <dt>{{ t("access.node") }}</dt>
           <dd>{{ previewNodeName }}</dd>
         </div>
-        <div>
-          <dt>{{ t("common.version") }}</dt>
+        <div v-if="preview.operation === 'apply' && preview.context.api_key">
+          <dt>API Key</dt>
           <dd>
-            {{ preview.client }} ·
-            {{ preview.target_version ?? t("common.unknown") }}
+            {{ preview.context.api_key.name
+            }}<small class="mono">{{ preview.context.api_key.prefix }}…</small>
           </dd>
         </div>
       </dl>
-      <template v-if="preview.client === 'codex'">
-        <h3>{{ t("access.codexConfigurationTarget") }}</h3>
-        <p class="info-box">{{ t("access.codexDefaultScope") }}</p>
-        <dl class="preview-context">
-          <div>
-            <dt>{{ t("access.codexConfigurationCli") }}</dt>
-            <dd>
-              {{
-                preview.codex_configuration_target?.cli_version ??
-                t("common.unknown")
-              }}
-            </dd>
-          </div>
-        </dl>
-        <p
-          v-if="targetClient?.managed === 'unknown'"
-          class="info-box"
-          role="status"
-        >
-          {{ t("access.remotePolicyWarning") }}
-        </p>
-        <template v-if="preview.operation === 'apply'">
-          <h3>{{ t("access.codexCatalog") }}</h3>
-          <template v-if="preview.codex_catalog">
-            <dl class="preview-context">
-              <div>
-                <dt>{{ t("access.codexDefaultAlias") }}</dt>
-                <dd>
-                  <code>{{ preview.codex_catalog.default_alias }}</code>
-                </dd>
-              </div>
-              <div>
-                <dt>{{ t("access.codexDefaultEffort") }}</dt>
-                <dd>{{ preview.codex_catalog.default_reasoning_effort }}</dd>
-              </div>
-              <div>
-                <dt>{{ t("access.codexDeclaredCli") }}</dt>
-                <dd>{{ preview.codex_catalog.cli_version }}</dd>
-              </div>
-            </dl>
-            <h4>{{ t("access.codexMenuAliases") }}</h4>
-            <ul class="path-list" :aria-label="t('access.codexMenuAliases')">
-              <li v-for="alias in preview.codex_catalog.aliases" :key="alias">
-                <code>{{ alias }}</code>
-              </li>
-            </ul>
-          </template>
-          <p v-else class="info-box">
-            {{ t("access.codexCatalogUnavailable") }}
-          </p>
-        </template>
-        <dl class="preview-context">
-          <div>
-            <dt>{{ t("access.codexRuntime") }}</dt>
-            <dd>
-              {{
-                codexRuntimeVerified
-                  ? t("access.codexRuntimeVerified")
-                  : t("access.codexRuntimeUnverified")
-              }}
-            </dd>
-          </div>
-          <div>
-            <dt>{{ t("access.codexRuntimeCli") }}</dt>
-            <dd>
-              {{ preview.codex_runtime?.cli_version ?? t("common.unknown") }}
-            </dd>
-          </div>
-        </dl>
-        <p v-if="!codexRuntimeVerified" class="info-box">
-          {{ t("access.codexRuntimeBlocked") }}
-        </p>
-        <p class="info-box">{{ t("access.codexEvidenceBoundary") }}</p>
-        <p v-if="!codexReady" class="error-text" role="alert">
-          {{ t("access.codexConfigurationUnavailable") }}
-        </p>
-      </template>
-      <template v-if="preview.client === 'claude'">
-        <h3>{{ t("access.claudeConfigurationTarget") }}</h3>
-        <p class="info-box">{{ t("access.claudeDesktopScope") }}</p>
-        <dl class="preview-context">
-          <div>
-            <dt>{{ t("common.version") }}</dt>
-            <dd>
-              {{
-                preview.claude_configuration_target?.app_version ??
-                t("common.unknown")
-              }}
-            </dd>
-          </div>
-        </dl>
-        <p
-          v-if="targetClient?.managed === 'unknown'"
-          class="info-box"
-          role="status"
-        >
-          {{ t("access.remotePolicyWarning") }}
-        </p>
-      </template>
-      <h3>{{ t("access.paths") }}</h3>
-      <ul class="path-list">
-        <li v-for="path in preview.paths" :key="path">
-          <code>{{ path }}</code>
-        </li>
-      </ul>
-      <h3>{{ t("access.impact") }}</h3>
-      <ul class="impact-list">
-        <li v-for="impact in preview.impact" :key="impact">
-          {{ redactServiceUrls(impact) }}
-        </li>
-      </ul>
-      <h3>{{ t("access.changes") }}</h3>
-      <pre class="diff-preview">{{
-        redactServiceUrls(preview.redacted_diff)
-      }}</pre>
-      <p v-if="!current" class="error-text" role="alert">
+      <p
+        v-if="!current && !preview.blocking_reason"
+        class="error-text"
+        role="alert"
+      >
         {{
           t(
             preview.operation === "restore"
@@ -384,14 +259,11 @@ async function confirm() {
           )
         }}
       </p>
-      <p v-if="preview.blocking_reason" class="info-box">
+      <p v-else-if="preview.blocking_reason" class="error-text" role="alert">
         {{
           configPolicyMessage(preview.blocking_reason) ??
-          preview.blocking_reason
+          t("client.configurationBlocked")
         }}
-      </p>
-      <p v-if="preview.can_export_import" class="info-box">
-        {{ t("access.importHint") }}
       </p>
       <div class="dialog-actions">
         <button
@@ -399,8 +271,9 @@ async function confirm() {
           :disabled="configBusy"
           @click="emit('close')"
         >
-          {{ t("action.cancel") }}</button
-        ><button
+          {{ t("action.cancel") }}
+        </button>
+        <button
           v-if="preview.can_export_import"
           class="button secondary"
           :disabled="!exportAllowed"
@@ -412,16 +285,12 @@ async function confirm() {
           <OrbitIcon name="check" />{{
             t(
               preview.operation === "apply"
-                ? "access.saveLocalConfiguration"
-                : preservingClaudePreferences
-                  ? preview.restore_coordination === "claude_main_settings_v2"
-                    ? "access.restorePreservingSettings"
-                    : "access.restorePreservingPreferences"
-                  : "access.restoreLocalConfiguration",
+                ? "access.confirmApply"
+                : "access.confirmRestore",
             )
           }}
         </button>
-      </div></template
-    >
+      </div>
+    </template>
   </OrbitDialog>
 </template>

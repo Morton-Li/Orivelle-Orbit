@@ -3,6 +3,16 @@ import type { Locale } from "./contracts";
 
 export const locale = ref<Locale>("zh-CN");
 const zh = {
+  "access.confirmConnect": "确认接入",
+  "access.confirmDisconnect": "确认取消接入",
+  "access.confirmConnectHint": "接入后请重启应用。",
+  "access.confirmDisconnectHint": "将恢复接入前的配置，请在完成后重启应用。",
+  "access.application": "应用",
+  "access.confirmApply": "确认接入",
+  "access.confirmRestore": "确认取消接入",
+  "access.cancelAccess": "取消接入",
+  "access.connectedNotice": "接入配置已保存，请重启应用。",
+  "access.disconnectedNotice": "已取消接入，请重启应用。",
   "keys.unused": "尚未使用",
   "keys.active": "有效",
   "keys.exhausted": "额度用尽",
@@ -636,6 +646,17 @@ const zh = {
   "common.deleted": "本地历史已删除",
 };
 const en: Record<keyof typeof zh, string> = {
+  "access.confirmConnect": "Confirm connection",
+  "access.confirmDisconnect": "Confirm disconnection",
+  "access.confirmConnectHint": "Restart the app after connecting.",
+  "access.confirmDisconnectHint":
+    "Restore the original configuration, then restart the app.",
+  "access.application": "Application",
+  "access.confirmApply": "Connect",
+  "access.confirmRestore": "Disconnect",
+  "access.cancelAccess": "Disconnect",
+  "access.connectedNotice": "Connection saved. Restart the app.",
+  "access.disconnectedNotice": "Disconnected. Restart the app.",
   "keys.unused": "Never used",
   "keys.active": "Active",
   "keys.exhausted": "Limit reached",

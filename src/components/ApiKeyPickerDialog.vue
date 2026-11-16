@@ -59,14 +59,7 @@ async function load() {
 }
 async function choose() {
   const key = chosen.value;
-  if (
-    !key ||
-    !key.selectable ||
-    key.legacy_issued ||
-    !response.value?.can_write ||
-    api.busy
-  )
-    return;
+  if (!key || !key.selectable || !response.value?.can_write || api.busy) return;
   if (await api.choose(key)) {
     emit("selected", key);
     emit("update:open", false);
@@ -129,7 +122,7 @@ onUnmounted(() => {
         class="key-choice"
         :class="{
           selected: key.id === selected,
-          unavailable: !key.selectable || key.legacy_issued,
+          unavailable: !key.selectable,
         }"
       >
         <input
@@ -137,17 +130,14 @@ onUnmounted(() => {
           type="radio"
           name="orbit-key-choice"
           :value="key.id"
-          :disabled="!key.selectable || key.legacy_issued || api.busy"
+          :disabled="!key.selectable || api.busy"
         />
         <div>
           <strong>{{ key.name }}</strong
-          ><span class="key-prefix mono">{{ key.prefix }}…</span
-          ><small v-if="key.legacy_issued" class="field-hint">{{
-            t("keys.legacyCleanup")
-          }}</small>
+          ><span class="key-prefix mono">{{ key.prefix }}…</span>
         </div>
         <StatusBadge
-          :tone="key.selectable && !key.legacy_issued ? 'success' : 'neutral'"
+          :tone="key.selectable ? 'success' : 'neutral'"
           :text="labels[key.status] ?? key.status"
         />
       </label>
@@ -189,11 +179,7 @@ onUnmounted(() => {
       <button
         class="button primary"
         :disabled="
-          !chosen?.selectable ||
-          chosen.legacy_issued ||
-          !response?.can_write ||
-          loading ||
-          api.busy
+          !chosen?.selectable || !response?.can_write || loading || api.busy
         "
         @click="choose"
       >

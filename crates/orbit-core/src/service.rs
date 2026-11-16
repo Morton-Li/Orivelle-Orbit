@@ -1835,7 +1835,6 @@ impl Service {
                 }
             }
         }
-        let _ = self.cleanup_legacy_api_key(id).await;
         self.bootstrap()
     }
     #[cfg(test)]
@@ -3234,11 +3233,6 @@ impl Service {
                 .map_err(|_| fail("state_unavailable"))?
                 .remove(id);
         }
-        if result.is_ok() {
-            if let Some(context) = view.context.as_ref() {
-                let _ = self.cleanup_legacy_api_key(&context.connection_id).await;
-            }
-        }
         result
     }
     pub fn apply_client_config(
@@ -3805,9 +3799,6 @@ impl Service {
         }
         let _ = self.persist_task(&snapshot);
         let _ = self.reconcile_task(&mut snapshot).await;
-        let _ = self
-            .cleanup_legacy_api_key(&snapshot.task.connection_id)
-            .await;
         let _ = self.prune_api_key_credentials(&snapshot.task.connection_id);
     }
     async fn send_image_once(&self, snapshot: &mut TaskSnapshot) -> Result<()> {

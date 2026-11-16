@@ -2,7 +2,6 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useApiKeysStore } from "../stores/api-keys";
-import ApiKeyPickerDialog from "../components/ApiKeyPickerDialog.vue";
 import { useOrbitStore } from "../stores/orbit";
 import { t, type MessageKey } from "../shared/i18n";
 import { nodeName } from "../shared/format";
@@ -21,7 +20,6 @@ import OrbitIcon from "../components/OrbitIcon.vue";
 import { useNodeLatency } from "../composables/useNodeLatency";
 const store = useOrbitStore();
 const apiKeys = useApiKeysStore();
-const keyPickerOpen = ref(false);
 const route = useRoute();
 const updatingClient = ref<ClientKind | null>(null);
 const latency = useNodeLatency();
@@ -366,30 +364,6 @@ onMounted(async () => {
         @update:model-value="store.selectNode"
       />
     </div>
-    <div class="field">
-      <div class="field-heading">
-        <label class="field-label" for="access-api-key">API Key</label>
-        <RouterLink to="/api-keys" class="text-button">{{
-          t("access.manageKeys")
-        }}</RouterLink>
-      </div>
-      <button
-        id="access-api-key"
-        class="select-trigger"
-        :disabled="!apiKeys.page?.can_write || apiKeys.busy"
-        @click="keyPickerOpen = true"
-      >
-        <span class="select-choice"
-          ><span class="select-choice-label">{{
-            apiKeys.page?.selected?.name ?? t("access.selectKey")
-          }}</span
-          ><span v-if="apiKeys.page?.selected" class="select-detail mono"
-            >{{ apiKeys.page.selected.prefix }}…</span
-          ></span
-        >
-        <OrbitIcon name="chevron-down" :size="16" />
-      </button>
-    </div>
   </section>
   <p
     v-if="store.activeConnection?.permission_state === 'readonly'"
@@ -412,21 +386,8 @@ onMounted(async () => {
       />
       <div class="access-client-controls">
         <template v-if="switchSnapshot(client.client)">
-          <p class="muted">{{ t("access.switchHint") }}</p>
           <button
             class="button secondary"
-            :disabled="
-              switchSnapshot(client.client)?.state === 'unavailable' ||
-              !configurationAllowed(client.client) ||
-              store.busy.has('preview-restore')
-            "
-            @click="restore(switchSnapshot(client.client)!.id)"
-          >
-            <OrbitIcon name="history" />{{ t("access.switchBack") }}
-          </button>
-          <button
-            v-if="client.client === 'claude'"
-            class="text-button"
             :disabled="
               switchSnapshot(client.client)?.state === 'unavailable' ||
               !configurationAllowed(client.client) ||
@@ -435,11 +396,13 @@ onMounted(async () => {
             @click="
               restore(
                 switchSnapshot(client.client)!.id,
-                'claude_main_settings_v2',
+                client.client === 'claude'
+                  ? 'claude_main_settings_v2'
+                  : undefined,
               )
             "
           >
-            {{ t("access.switchBackPreservingSettings") }}
+            <OrbitIcon name="history" />{{ t("access.cancelAccess") }}
           </button>
         </template>
         <template v-else>
@@ -521,5 +484,4 @@ onMounted(async () => {
     @close="closePreview"
     @applied="configurationApplied"
   />
-  <ApiKeyPickerDialog v-model:open="keyPickerOpen" />
 </template>

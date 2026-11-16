@@ -197,8 +197,7 @@ const tone = (status: ApiKeyStatus) =>
       : "warning";
 const percent = (key: ApiKey) =>
   key.limit ? Math.min(100, (Number(key.used) / Number(key.limit)) * 100) : 0;
-const canSelect = (key: ApiKey) =>
-  key.info.selectable && !key.info.legacy_issued;
+const canSelect = (key: ApiKey) => key.info.selectable;
 const notify = (message: string) => store.notify(message, "neutral", 4500);
 async function inspect(key: ApiKey) {
   const fresh = await api.details(key.info);
@@ -586,9 +585,6 @@ onUnmounted(() => {
                     >{{ t("keys.default") }}</span
                   ></button
                 ><span class="key-prefix mono">{{ key.prefix }}</span>
-                <span v-if="key.info.legacy_issued" class="key-table-subtle">{{
-                  t("keys.legacy")
-                }}</span>
               </td>
               <td class="key-status-cell">
                 <StatusBadge

@@ -41,11 +41,6 @@ export function apiKeyPage(overrides: Partial<ApiKeyPage> = {}): ApiKeyPage {
     items: [
       first,
       apiKey("B", { spending_limit: null }),
-      apiKey("C", {
-        name: "旧版自动密钥",
-        legacy_issued: true,
-        selectable: false,
-      }),
       apiKey("D", {
         name: "临时测试",
         state: "expired",
@@ -76,7 +71,7 @@ export function apiKeyPage(overrides: Partial<ApiKeyPage> = {}): ApiKeyPage {
     ],
     page: 1,
     last_page: 1,
-    total: 4,
+    total: 3,
     currency: "USD",
     can_write: true,
     can_reveal: true,

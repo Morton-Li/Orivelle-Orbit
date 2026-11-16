@@ -314,19 +314,12 @@ impl Service {
             .store
             .get::<PendingKeyMutation>("api-key-pending", &record.view.id)?
             .is_some();
-        page.cleanup_status = self
-            .store
-            .get::<String>("api-key-cleanup", &record.view.id)?
-            .unwrap_or_else(|| {
-                if page.legacy_cleanup_completed {
-                    "completed"
-                } else if page.legacy_key.is_some() {
-                    "pending"
-                } else {
-                    "not_needed"
-                }
-                .into()
-            });
+        page.cleanup_status = if page.legacy_cleanup_completed {
+            "completed"
+        } else {
+            "not_needed"
+        }
+        .into();
         Ok(page)
     }
     pub async fn get_api_key(&self, request: &KeyReference) -> Result<ApiKeyView> {
@@ -709,7 +702,6 @@ impl Service {
             return Err(error);
         }
         let _ = self.refresh_account_cache(&record.view.id, false).await;
-        let _ = self.cleanup_legacy_api_key(&record.view.id).await;
         self.prune_api_key_credentials(&record.view.id)?;
         self.changed();
         self.bootstrap()
@@ -881,102 +873,6 @@ impl Service {
             });
         }
         Ok(bindings)
-    }
-    pub(super) async fn cleanup_legacy_api_key(&self, id: &str) -> Result<()> {
-        let serial = self.network_lock(&format!("api-key-cleanup/{id}"))?;
-        let _serial = serial.lock().await;
-        let record = self.record(id)?;
-        if !self.has_key_access(&record, "api-keys:write") || record.credential_state != "active" {
-            return Ok(());
-        }
-        let (record, installation, session) = self.fresh_session(id).await?;
-        let page: ApiKeyPage = self
-            .http
-            .panel(
-                &record.view.panel_origin,
-                "/api/v1/orbit/api-keys?page=1",
-                Method::GET,
-                vec![],
-                Some((&installation, &session, self.vault.as_ref())),
-                true,
-            )
-            .await?;
-        let Some(legacy) = page.legacy_key else {
-            self.store.put(
-                "api-key-cleanup",
-                id,
-                &record.view.account_id,
-                &if page.legacy_cleanup_completed {
-                    "completed"
-                } else {
-                    "not_needed"
-                },
-            )?;
-            return Ok(());
-        };
-        legacy.validate()?;
-        if record.api_key_id.as_deref() == Some(&legacy.id)
-            || self
-                .api_key_bindings(&record)?
-                .iter()
-                .any(|binding| binding.api_key_id.as_deref() == Some(&legacy.id))
-            || self
-                .store
-                .list::<HelperBinding>("binding", Some(&record.view.account_id))?
-                .iter()
-                .any(|binding| {
-                    binding.enabled
-                        && binding.origin == record.view.panel_origin
-                        && binding.installation_id == record.installation_id
-                        && binding.credential_revision == legacy.key_revision
-                })
-            || self
-                .store
-                .list::<TaskSnapshot>("task-snapshot", Some(&record.view.account_id))?
-                .iter()
-                .any(|task| {
-                    task.panel_origin == record.view.panel_origin
-                        && task.installation_id == record.installation_id
-                        && task.task.credential_revision == legacy.key_revision
-                        && (["queued", "sending", "waiting", "saving"]
-                            .contains(&task.task.state.as_str())
-                            || task.task.state == "unconfirmed"
-                                && task.task.request_id.is_some()
-                                && task.task.result_state == "unconfirmed")
-                })
-        {
-            self.store
-                .put("api-key-cleanup", id, &record.view.account_id, &"pending")?;
-            return Ok(());
-        }
-        let Some(replacement) = record.api_key_id.as_deref() else {
-            return Ok(());
-        };
-        let scope = KeyScope {
-            connection_id: id.into(),
-            expected_revision: record.view.revision,
-        };
-        self.key_scope(&scope, Some(&record))?;
-        let body = serde_json::to_vec(&json!({"legacy_key_id":legacy.id,"expected_key_revision":legacy.key_revision,
-            "replacement_key_id":replacement,"replacement_key_revision":record.view.credential_revision})).map_err(|_| fail("serialization_failed"))?;
-        let result: Value = self
-            .http
-            .panel(
-                &record.view.panel_origin,
-                "/api/v1/orbit/api-keys/legacy-cleanup",
-                Method::POST,
-                body,
-                Some((&installation, &session, self.vault.as_ref())),
-                true,
-            )
-            .await?;
-        self.key_scope(&scope, Some(&record))?;
-        if result["completed"] != true {
-            return Err(fail("invalid_panel_response"));
-        }
-        self.store
-            .put("api-key-cleanup", id, &record.view.account_id, &"completed")?;
-        self.refresh_account_cache(id, false).await
     }
 }
 

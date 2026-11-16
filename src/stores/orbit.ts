@@ -218,7 +218,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   function notify(
     text: string,
     tone: "success" | "error" | "neutral" = "neutral",
-    durationMs = 0,
+    durationMs = tone === "error" ? 6000 : 4000,
   ) {
     clearNotice();
     notice.value = { text, tone };

@@ -12,7 +12,7 @@ test("API Key list aligns its actions and creates and selects a key while preser
   await expect(
     page.getByRole("heading", { name: "API Key", exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".key-table tbody tr")).toHaveCount(4);
+  await expect(page.locator(".key-table tbody tr")).toHaveCount(3);
   await expect(
     page.getByText(
       "默认密钥用于新建图片任务与后续接入；已接入的工具分别保留当前绑定。",
@@ -66,14 +66,15 @@ test("API Key list aligns its actions and creates and selects a key while preser
   });
 });
 
-test("picker disables legacy and expired keys; reveal is temporary and native copy returns no secret state", async ({
+test("Panel-cleaned list has no legacy keys, expired keys cannot be selected and reveal stays temporary", async ({
   page,
 }) => {
   await fixture(page);
   await page.goto("/#/api-keys");
   await page.getByRole("button", { name: "切换密钥", exact: true }).click();
   await expect(page.getByRole("radio").nth(2)).toBeDisabled();
-  await expect(page.getByRole("radio").nth(3)).toBeDisabled();
+  await expect(page.getByRole("radio")).toHaveCount(3);
+  await expect(page.getByText("旧版自动密钥", { exact: true })).toHaveCount(0);
   await page.getByRole("radio").nth(1).check();
   await page.getByRole("button", { name: "使用此密钥", exact: true }).click();
   await expect(page.locator(".key-current-title")).toContainText("图片创作");
@@ -130,7 +131,7 @@ test("API Key layout stays inside the window at smaller widths and with dark the
 }) => {
   await fixture(page);
   await page.goto("/#/api-keys");
-  await expect(page.locator(".key-table tbody tr")).toHaveCount(4);
+  await expect(page.locator(".key-table tbody tr")).toHaveCount(3);
   const dark = bootstrap("synthetic-account-a", 2);
   dark.settings.theme = "dark";
   await pushState(page, dark);
@@ -144,6 +145,72 @@ test("API Key layout stays inside the window at smaller widths and with dark the
       fullPage: true,
     });
   }
+});
+
+test("access uses the API Key page default, shows a compact confirmation and automatically dismisses its notice", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/#/api-keys");
+  await page.getByRole("button", { name: "切换密钥", exact: true }).click();
+  await page.getByRole("radio").nth(1).check();
+  await page.getByRole("button", { name: "使用此密钥", exact: true }).click();
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "接入", exact: true })
+    .click();
+  await expect(page.locator("#access-api-key")).toHaveCount(0);
+  await page
+    .locator("#client-codex")
+    .getByRole("button", { name: "接入 Orbit", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "确认接入", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(".preview-context")).toContainText("图片创作");
+  await expect(dialog.locator(".preview-context > div")).toHaveCount(4);
+  await expect(
+    dialog.locator("h3, h4, pre, .path-list, .impact-list"),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "确认接入", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "确认接入", exact: true }).click();
+  await expect(page.locator(".toast")).toHaveText(
+    "接入配置已保存，请重启应用。",
+  );
+  await expect(page.locator(".toast")).toHaveCount(0, { timeout: 6000 });
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "API Key", exact: true })
+    .click();
+  await expect(page.locator(".key-current-title")).toContainText("图片创作");
+  const binding = page.locator(".key-binding").filter({ hasText: "Codex" });
+  await expect(binding.locator(".key-bound-name")).toHaveText("图片创作");
+  await expect(binding).toContainText("已绑定");
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "接入", exact: true })
+    .click();
+  const client = page.locator("#client-codex");
+  await expect(
+    client.getByRole("button", { name: "取消接入", exact: true }),
+  ).toHaveCount(1);
+  await client.getByRole("button", { name: "取消接入", exact: true }).click();
+  const cancel = page.getByRole("dialog", {
+    name: "确认取消接入",
+    exact: true,
+  });
+  await expect(cancel.locator(".preview-context > div")).toHaveCount(2);
+  await expect(cancel.locator("h3, pre, .path-list, .impact-list")).toHaveCount(
+    0,
+  );
+  await cancel
+    .getByRole("button", { name: "确认取消接入", exact: true })
+    .click();
+  await expect(cancel).toHaveCount(0);
+  await expect(
+    client.getByRole("button", { name: "接入 Orbit", exact: true }),
+  ).toBeVisible();
 });
 
 for (const client of ["codex", "claude"] as const) {
@@ -191,7 +258,7 @@ for (const client of ["codex", "claude"] as const) {
         .click();
       const dialog = page.getByRole("dialog");
       const restoreLabel =
-        client === "claude" ? "确认保留设置并恢复接入" : "确认恢复配置";
+        client === "claude" ? "确认取消接入" : "确认取消接入";
       await expect(
         dialog.getByRole("button", { name: restoreLabel, exact: true }),
       ).toBeEnabled();
@@ -200,7 +267,7 @@ for (const client of ["codex", "claude"] as const) {
         .getByRole("button", { name: restoreLabel, exact: true })
         .click();
       await expect(
-        dialog.getByRole("button", { name: "确认保存本地配置", exact: true }),
+        dialog.getByRole("button", { name: "确认接入", exact: true }),
       ).toBeEnabled();
       await expect(dialog.locator(".preview-context").first()).toContainText(
         selected.name,
@@ -208,7 +275,7 @@ for (const client of ["codex", "claude"] as const) {
       expect(await calls(page, "restore_client_config")).toBe(1);
       expect(await calls(page, "apply_client_config")).toBe(0);
       await dialog
-        .getByRole("button", { name: "确认保存本地配置", exact: true })
+        .getByRole("button", { name: "确认接入", exact: true })
         .click();
       await expect(dialog).toHaveCount(0);
       expect(await calls(page, "apply_client_config")).toBe(1);

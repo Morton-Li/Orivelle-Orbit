@@ -40,7 +40,7 @@ test("node latency updates in the selector without disturbing a configuration pr
     .click();
   const confirm = page
     .getByRole("dialog")
-    .getByRole("button", { name: "确认保存本地配置" });
+    .getByRole("button", { name: "确认接入" });
   await expect(confirm).toBeEnabled();
   const accountReads = await calls(page, "refresh_account");
   const modelReads = await calls(page, "list_models");

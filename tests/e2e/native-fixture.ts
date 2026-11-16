@@ -77,6 +77,7 @@ export async function fixture(
       testWindow.isTauri = true;
       let current = initial;
       const keyPage = initialApiKeys;
+      let previewKey: typeof keyPage.selected = null;
       const callbacks = new Map<number, (event: unknown) => void>();
       const listeners = new Map<string, Set<number>>();
       let next = 0;
@@ -363,7 +364,11 @@ export async function fixture(
               (item) => item.id === request.snapshot_id,
             )!;
             return {
-              id: "synthetic-restore-preview",
+              id:
+                control.counts.preview_restore === 1
+                  ? "synthetic-restore-preview"
+                  : "synthetic-restore-preview-" +
+                    control.counts.preview_restore,
               client: backup.client,
               operation: "restore",
               target_version: "synthetic-version",
@@ -412,6 +417,9 @@ export async function fixture(
                 item.id === control.lastRequests.preview_restore?.snapshot_id,
             )!;
             {
+              keyPage.bindings = keyPage.bindings.filter(
+                (binding) => binding.client !== backup.client,
+              );
               current.switch_snapshots = current.switch_snapshots.filter(
                 (item) => item.id !== backup.id,
               );
@@ -432,6 +440,21 @@ export async function fixture(
             const client = current.clients.find(
               (item) => item.client === kind,
             )!;
+            if (previewKey) {
+              keyPage.bindings = keyPage.bindings.filter(
+                (binding) => binding.client !== client.client,
+              );
+              keyPage.bindings.push({
+                client: client.client,
+                api_key_id: previewKey.id,
+                name: previewKey.name,
+                key_revision: previewKey.key_revision,
+                current: previewKey.id === keyPage.selected?.id,
+                claude_mapping: (control.lastRequests.preview_client_config
+                  ?.claude_mapping ??
+                  null) as (typeof keyPage.bindings)[number]["claude_mapping"],
+              });
+            }
             client.configuration_state = "saved";
             client.configuration_revision = "synthetic-saved-configuration";
             client.loaded_state = "restart_required";
@@ -459,11 +482,17 @@ export async function fixture(
             };
           }
           if (command === "preview_client_config") {
+            previewKey = keyPage.selected
+              ? structuredClone(keyPage.selected)
+              : null;
             const connection = current.connections.find(
               (item) => item.id === request.connection_id,
             )!;
             return {
-              id: "synthetic-preview",
+              id:
+                control.counts.preview_client_config === 1
+                  ? "synthetic-preview"
+                  : "synthetic-preview-" + control.counts.preview_client_config,
               client: request.client,
               operation: "apply",
               target_version: "synthetic-version",

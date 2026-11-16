@@ -40,6 +40,7 @@ function preview(source: SwitchSnapshot): ConfigPreview {
     id: "restore-preview",
     client: "claude",
     operation: "restore",
+    restore_coordination: "claude_main_settings_v2",
     target_version: "synthetic-version",
     paths: [
       "/fixture/main.json",
@@ -222,6 +223,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
       await flushPromises();
       expect(bridge.call).toHaveBeenCalledWith("preview_restore", {
         snapshot_id: selected.id,
+        coordination: "claude_main_settings_v2",
       });
       expect(
         view.findComponent(ConfigReviewDialog).props("preview"),
@@ -296,18 +298,21 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     await confirm.trigger("click");
     await flushPromises();
     expect(bridge.call.mock.calls).toEqual([
-      ["preview_restore", { snapshot_id: selected.id }],
+      [
+        "preview_restore",
+        { snapshot_id: selected.id, coordination: "claude_main_settings_v2" },
+      ],
       [
         "restore_client_config",
         { preview_id: "restore-preview", confirmed: true },
       ],
       ["bootstrap", {}],
     ]);
-    expect(store.notice?.text).toContain("原配置已恢复");
+    expect(store.notice?.text).toBe("已取消接入，请重启应用。");
     expect(view.find('[role="dialog"]').exists()).toBe(false);
   });
 
-  it("only previews settings coordination after its separate explicit action", async () => {
+  it("uses one cancel action that preserves current Claude settings", async () => {
     const selected = snapshot();
     useOrbitStore().state.switch_snapshots = [selected];
     const result = Object.assign(preview(selected), {
@@ -324,13 +329,9 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
         },
       },
     });
-    const action = view
-      .findAll("#client-claude button")
-      .find((button) => button.text() === "保留 Claude 设置后切回");
-    expect(
-      action,
-      "separate preference coordination preview action",
-    ).toBeDefined();
+    const action = view.get("#client-claude .button.secondary");
+    expect(action.text()).toBe("取消接入");
+    expect(view.find("#client-claude .text-button").exists()).toBe(false);
     await action!.trigger("click");
     await flushPromises();
     expect(bridge.call.mock.calls).toEqual([
@@ -348,12 +349,12 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
   });
 
   it.each([
-    ["coordinated request", true, undefined],
-    ["strict request", false, "claude_main_preferences_v1"],
-    ["unknown coordination", true, "unknown_coordination"],
+    ["missing coordination", undefined],
+    ["old coordination", "claude_main_preferences_v1"],
+    ["unknown coordination", "unknown_coordination"],
   ] as const)(
     "rejects a mismatched native mode for %s",
-    async (_description, coordinated, nativeMode) => {
+    async (_description, nativeMode) => {
       const selected = snapshot();
       useOrbitStore().state.switch_snapshots = [selected];
       bridge.call.mockResolvedValueOnce(
@@ -369,11 +370,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
           },
         },
       });
-      const action = coordinated
-        ? view
-            .findAll("#client-claude button")
-            .find((button) => button.text() === "保留 Claude 设置后切回")
-        : view.get("#client-claude .button.secondary");
+      const action = view.get("#client-claude .button.secondary");
       expect(action).toBeDefined();
       await action!.trigger("click");
       await flushPromises();
@@ -386,8 +383,8 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
   );
 
   it.each([
-    ["claude_main_preferences_v1", "确认保留偏好并恢复接入"],
-    ["claude_main_settings_v2", "确认保留设置并恢复接入"],
+    ["claude_main_preferences_v1", "确认取消接入"],
+    ["claude_main_settings_v2", "确认取消接入"],
   ] as const)(
     "requires explicit %s confirmation without sending file content",
     async (mode, title) => {
@@ -421,7 +418,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
         ["restore_client_config", { preview_id: value.id, confirmed: true }],
         ["bootstrap", {}],
       ]);
-      expect(store.notice?.text).toContain("接入配置已恢复");
+      expect(store.notice?.text).toBe("已取消接入，请重启应用。");
     },
   );
 
@@ -452,7 +449,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     });
     expect(view.find("#client-codex .text-button").exists()).toBe(false);
     expect(
-      view.get<HTMLButtonElement>("#client-claude .text-button").element
+      view.get<HTMLButtonElement>("#client-claude .button.secondary").element
         .disabled,
     ).toBe(true);
     expect(bridge.call).not.toHaveBeenCalled();
