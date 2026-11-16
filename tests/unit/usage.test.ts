@@ -38,10 +38,27 @@ afterEach(() => {
   wrapper = undefined;
 });
 function show() {
+  const content = document.createElement("div");
+  content.className = "main-shell";
   wrapper = mount(UsagePage, {
+    attachTo: content,
     global: { stubs: { OrbitSelect: orbitSelectStub } },
   });
   return wrapper;
+}
+function watchRecordsScroll() {
+  const scroll = vi.fn();
+  const section = wrapper!.get(".usage-history").element;
+  const content = section.closest<HTMLElement>(".main-shell")!;
+  Object.defineProperty(content, "scrollTo", { value: scroll });
+  vi.spyOn(content, "getBoundingClientRect").mockReturnValue({
+    top: 50,
+  } as DOMRect);
+  vi.spyOn(section, "getBoundingClientRect").mockReturnValue({
+    top: 900,
+  } as DOMRect);
+  content.scrollTop = 200;
+  return scroll;
 }
 describe("platform usage", () => {
   it("keeps large decimal amounts and different currencies separate", async () => {
@@ -112,6 +129,93 @@ describe("platform usage", () => {
     expect(wrapper!.get(".usage-table tbody").text()).toBe(before);
     expect(wrapper!.text()).toContain("加载未完成");
     expect(wrapper!.text()).not.toContain("private native body");
+  });
+  it("paginates only records, preserves content while loading and scrolls to their section after success", async () => {
+    show();
+    await flushPromises();
+    const scroll = watchRecordsScroll();
+    await wrapper!.get(".usage-table .icon-button").trigger("click");
+    const statistics = wrapper!.get(".usage-stat-grid").text();
+    const trend = wrapper!.get(".usage-trend").text();
+    const firstPage = wrapper!.get(".usage-table tbody").text();
+    let complete!: (value: ReturnType<typeof usagePage>) => void;
+    bridge.call.mockClear().mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const buttons = wrapper!.findAll(".usage-pagination button");
+    await buttons[1]!.trigger("click");
+    expect(bridge.call).toHaveBeenCalledTimes(1);
+    expect(bridge.call).toHaveBeenCalledWith(
+      "list_usage_records",
+      expect.objectContaining({ cursor: "demo-next" }),
+    );
+    expect(wrapper!.get(".usage-history").attributes("aria-busy")).toBe("true");
+    expect(wrapper!.get(".usage-stat-grid").attributes("aria-busy")).toBe(
+      "false",
+    );
+    expect(wrapper!.get(".usage-trend").attributes("aria-busy")).toBe("false");
+    expect(wrapper!.get(".usage-table tbody").text()).toBe(firstPage);
+    expect(buttons[1]!.attributes("disabled")).toBeDefined();
+    expect(scroll).not.toHaveBeenCalled();
+    complete(usagePage({ cursor: "demo-next" }));
+    await flushPromises();
+    expect(wrapper!.get(".usage-table tbody").text()).not.toBe(firstPage);
+    expect(wrapper!.find(".usage-detail-row").exists()).toBe(false);
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ top: 1034 });
+    await buttons[0]!.trigger("click");
+    await flushPromises();
+    expect(bridge.call).toHaveBeenCalledTimes(2);
+    expect(bridge.call).toHaveBeenLastCalledWith(
+      "list_usage_records",
+      expect.objectContaining({ cursor: "demo-prev" }),
+    );
+    expect(wrapper!.findAll(".usage-table tbody tr")).toHaveLength(8);
+    expect(wrapper!.get(".usage-stat-grid").text()).toBe(statistics);
+    expect(wrapper!.get(".usage-trend").text()).toBe(trend);
+    expect(scroll).toHaveBeenCalledTimes(2);
+  });
+  it("keeps the current records and scroll position when pagination fails", async () => {
+    show();
+    await flushPromises();
+    const scroll = watchRecordsScroll();
+    const before = wrapper!.get(".usage-table tbody").html();
+    bridge.call
+      .mockClear()
+      .mockRejectedValueOnce(new Error("private native body"));
+    await wrapper!.findAll(".usage-pagination button")[1]!.trigger("click");
+    await flushPromises();
+    expect(bridge.call).toHaveBeenCalledTimes(1);
+    expect(wrapper!.get(".usage-table tbody").html()).toBe(before);
+    expect(wrapper!.get(".usage-history").attributes("aria-busy")).toBe(
+      "false",
+    );
+    expect(wrapper!.get(".usage-history .usage-error").text()).toContain(
+      "加载未完成",
+    );
+    expect(scroll).not.toHaveBeenCalled();
+  });
+  it("does not scroll for a late pagination response after switching accounts", async () => {
+    show();
+    await flushPromises();
+    const scroll = watchRecordsScroll();
+    let complete!: (value: ReturnType<typeof usagePage>) => void;
+    bridge.call.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    await wrapper!.findAll(".usage-pagination button")[1]!.trigger("click");
+    useOrbitStore().acceptState(bootstrap("synthetic-account-b", 2));
+    await flushPromises();
+    const current = wrapper!.get(".usage-table tbody").html();
+    complete(usagePage({ cursor: "demo-next" }));
+    await flushPromises();
+    expect(wrapper!.get(".usage-table tbody").html()).toBe(current);
+    expect(scroll).not.toHaveBeenCalled();
   });
   it("discards late data from an account that has been switched away from", async () => {
     let done!: (value: ReturnType<typeof usageSummary>) => void;
