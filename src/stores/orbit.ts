@@ -108,7 +108,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   );
   const notice = ref<{
     text: string;
-    tone: "success" | "error" | "neutral";
+    tone: "success" | "error" | "warning" | "neutral";
   } | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const loginOpen = ref(false);
@@ -217,7 +217,7 @@ export const useOrbitStore = defineStore("orbit", () => {
 
   function notify(
     text: string,
-    tone: "success" | "error" | "neutral" = "neutral",
+    tone: "success" | "error" | "warning" | "neutral" = "neutral",
     durationMs = tone === "error" ? 6000 : 4000,
   ) {
     clearNotice();

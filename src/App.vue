@@ -152,7 +152,11 @@ onUnmounted(() => {
       v-if="store.notice"
       class="toast"
       :class="`toast-${store.notice.tone}`"
-      :role="store.notice.tone === 'error' ? 'alert' : 'status'"
+      :role="
+        store.notice.tone === 'error' || store.notice.tone === 'warning'
+          ? 'alert'
+          : 'status'
+      "
     >
       <span>{{ store.notice.text }}</span
       ><button

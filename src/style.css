@@ -1439,6 +1439,11 @@ textarea::placeholder {
 .toast-success {
   border-color: var(--success);
 }
+.toast-warning {
+  border-color: var(--warning);
+  color: var(--warning);
+  font-size: 14px;
+}
 .context-banner {
   padding: 9px 30px;
   background: var(--soft);
