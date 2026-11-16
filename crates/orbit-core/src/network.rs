@@ -334,6 +334,108 @@ impl Http {
         self.request_observed(method, url, body, headers, limit, timeout, None)
             .await
     }
+    /// A single image POST with bounded streaming reads. Redirects and network
+    /// ambiguity never cause the request to be replayed.
+    pub async fn request_images_stream<F: FnMut(&[u8]) -> Result<()> + Send>(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        headers: Vec<(String, String)>,
+        limit: u64,
+        timeout: Duration,
+        observation: std::sync::Arc<std::sync::Mutex<Option<(u16, Option<String>)>>>,
+        mut consume: F,
+    ) -> Result<RemoteResponse> {
+        let url = self.validate_url(url)?;
+        #[cfg(test)]
+        {
+            let fixture = self.fixture.lock().unwrap().clone();
+            if self.local_acceptance_origin.is_some() && fixture.is_some() {
+                return Err(fail("local_tls_scripted_transport_forbidden"));
+            }
+            if let Some(handler) = fixture {
+                let response = handler(FixtureRequest {
+                    method: Method::POST,
+                    url: url.to_string(),
+                    body,
+                    headers,
+                })
+                .await?;
+                if response.bytes.len() as u64 > limit {
+                    return Err(fail("response_too_large"));
+                }
+                *observation.lock().map_err(|_| fail("state_unavailable"))? =
+                    Some((response.status, response.request_id.clone()));
+                if (200..300).contains(&response.status) {
+                    for chunk in response.bytes.chunks(127) {
+                        consume(chunk)?;
+                    }
+                    return Ok(RemoteResponse {
+                        bytes: vec![],
+                        ..response
+                    });
+                }
+                return Ok(response);
+            }
+        }
+        let mut request = self.client.post(url).body(body).timeout(timeout);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| fail("result_unconfirmed"))?;
+        let status = response.status().as_u16();
+        let request_id = response
+            .headers()
+            .get("x-orivelle-request-id")
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| {
+                v.len() <= 255
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            })
+            .map(str::to_owned);
+        *observation.lock().map_err(|_| fail("state_unavailable"))? =
+            Some((status, request_id.clone()));
+        if !(200..300).contains(&status) {
+            return Ok(RemoteResponse {
+                status,
+                request_id,
+                bytes: bounded_response_body(response, limit.min(65536)).await?,
+            });
+        }
+        let media = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim();
+        if !media.eq_ignore_ascii_case("text/event-stream") {
+            return Err(fail("invalid_image_response"));
+        }
+        let mut stream = response.bytes_stream();
+        let mut total = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| fail("result_unconfirmed"))?;
+            total = total
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| fail("response_too_large"))?;
+            if total > limit {
+                return Err(fail("response_too_large"));
+            }
+            consume(&chunk)?;
+        }
+        Ok(RemoteResponse {
+            status,
+            request_id,
+            bytes: vec![],
+        })
+    }
     pub async fn request_observed(
         &self,
         method: Method,
@@ -926,6 +1028,111 @@ mod tests {
             ]
         );
     }
+    #[tokio::test]
+    async fn image_stream_delivers_before_eof_and_keeps_status_media_and_size_guards() {
+        for case in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (received, observed) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![];
+                let mut bytes = [0; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                    assert!(request.len() < 4096);
+                }
+                assert!(request.starts_with(b"POST /images/generations HTTP/1.1\r\n"));
+                let (status, media, body) = match case {
+                    0 => ("200 OK", "text/event-stream; charset=utf-8", "first"),
+                    1 => (
+                        "422 Unprocessable Entity",
+                        "application/json",
+                        "{\"error\":{}}",
+                    ),
+                    2 => ("200 OK", "application/json", "{}"),
+                    3 => ("200 OK", "text/event-stream", "oversized"),
+                    _ => ("307 Temporary Redirect", "text/event-stream", ""),
+                };
+                let headers = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {media}\r\nX-Orivelle-Request-Id: synthetic-request\r\nLocation: /must-not-follow\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                if !body.is_empty() {
+                    let chunk = format!("{:x}\r\n{body}\r\n", body.len());
+                    socket.write_all(chunk.as_bytes()).await.unwrap();
+                }
+                if case == 0 {
+                    // The server cannot finish until a real transport callback
+                    // has exposed the first part to the application.
+                    tokio::time::timeout(Duration::from_secs(3), observed)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    socket.write_all(b"4\r\nlast\r\n").await.unwrap();
+                }
+                let _ = socket.write_all(b"0\r\n\r\n").await;
+                drop(socket);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(30), listener.accept())
+                        .await
+                        .is_err()
+                );
+            });
+            let observation = Arc::new(std::sync::Mutex::new(None));
+            let mut bytes = vec![];
+            let mut received = Some(received);
+            let result = Http::fixture()
+                .request_images_stream(
+                    &format!("http://{addr}/images/generations"),
+                    b"{}".to_vec(),
+                    vec![],
+                    if case == 3 { 4 } else { 1024 },
+                    Duration::from_secs(5),
+                    observation.clone(),
+                    |chunk| {
+                        bytes.extend_from_slice(chunk);
+                        if case == 0 && bytes == b"first" {
+                            received.take().unwrap().send(()).unwrap();
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
+            assert_eq!(
+                observation.lock().unwrap().as_ref().unwrap().1.as_deref(),
+                Some("synthetic-request")
+            );
+            match case {
+                0 => {
+                    assert_eq!(result.unwrap().status, 200);
+                    assert_eq!(bytes, b"firstlast");
+                }
+                1 => {
+                    let response = result.unwrap();
+                    assert_eq!(response.status, 422);
+                    assert_eq!(response.bytes, b"{\"error\":{}}");
+                    assert!(bytes.is_empty());
+                }
+                2 => {
+                    assert_eq!(result.err().unwrap().code, "invalid_image_response");
+                    assert!(bytes.is_empty());
+                }
+                3 => {
+                    assert_eq!(result.err().unwrap().code, "response_too_large");
+                    assert!(bytes.is_empty());
+                }
+                _ => {
+                    assert_eq!(result.unwrap().status, 307);
+                    assert!(bytes.is_empty());
+                }
+            }
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn update_get_follows_only_allowed_redirects_and_keeps_the_body_bound() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

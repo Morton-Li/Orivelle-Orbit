@@ -2151,3 +2151,43 @@ textarea::placeholder {
     display: none;
   }
 }
+
+.image-route-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0;
+}
+.image-route-api {
+  color: var(--text);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.image-stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.image-stream-toggle input {
+  width: 16px;
+  height: 16px;
+}
+.image-materials .field-heading {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.partial-image-preview {
+  margin: 16px 0;
+  display: grid;
+  gap: 10px;
+}
+.partial-image-preview img {
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+  border-radius: 8px;
+}

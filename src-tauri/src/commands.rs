@@ -157,6 +157,19 @@ fn restore_coordination_selection<'de, D: serde::Deserializer<'de>>(
     }
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageMaterialRole {
+    Mask,
+    Markup,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSelection {
+    connection_id: String,
+    #[serde(default)]
+    purpose: Option<ImageMaterialRole>,
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTask {
     connection_id: String,
@@ -165,6 +178,10 @@ pub struct CreateTask {
     prompt: String,
     parameters: ImageParameters,
     input_ids: Vec<String>,
+    #[serde(default)]
+    mask_input_id: Option<String>,
+    #[serde(default)]
+    markup_input_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -423,15 +440,23 @@ pub async fn restore_client_config(
 pub async fn select_image_inputs(
     app: AppHandle,
     native: State<'_, Native>,
-    request: Connection,
+    request: ImageSelection,
 ) -> Result<Vec<ImageInput>> {
     let service = native.service.clone();
     let frozen = service.connection_view(&request.connection_id)?;
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
-            .file()
-            .add_filter("PNG / JPEG / WebP", &["png", "jpg", "jpeg", "webp"])
-            .blocking_pick_files()
+        if request.purpose.is_some() {
+            app.dialog()
+                .file()
+                .add_filter("PNG", &["png"])
+                .blocking_pick_file()
+                .map(|file| vec![file])
+        } else {
+            app.dialog()
+                .file()
+                .add_filter("PNG / JPEG / WebP", &["png", "jpg", "jpeg", "webp"])
+                .blocking_pick_files()
+        }
     })
     .await
     .map_err(|_| fail("file_dialog_unavailable"))?;
@@ -472,13 +497,15 @@ pub async fn use_history_as_input(
 pub async fn create_image_task(native: State<'_, Native>, request: CreateTask) -> Result<TaskView> {
     let service = native.service.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.create_image_task(
+        service.create_image_task_with_materials(
             &request.connection_id,
             request.expected_revision,
             &request.model_id,
             request.prompt,
             request.parameters,
             request.input_ids,
+            request.mask_input_id,
+            request.markup_input_id,
         )
     })
     .await
@@ -507,11 +534,7 @@ pub async fn save_image_as(
     let name = format!(
         "orbit-{}.{}",
         &image.id[..8],
-        match image.mime.as_str() {
-            "image/jpeg" => "jpg",
-            "image/webp" => "webp",
-            _ => "png",
-        }
+        orbit_core::images::extension_for_mime(&image.mime)?
     );
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog().file().set_file_name(name).blocking_save_file()

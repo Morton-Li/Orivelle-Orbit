@@ -401,6 +401,7 @@ mod tests {
     }
     fn model(alias: &str, template: &str) -> ModelView {
         ModelView {
+            image_api_parameters: None,
             id: alias.into(),
             label: alias.into(),
             provider_id: "openai".into(),
