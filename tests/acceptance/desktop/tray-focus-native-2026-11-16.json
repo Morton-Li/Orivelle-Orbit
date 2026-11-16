@@ -1,0 +1,163 @@
+{
+  "date": "2026-11-16",
+  "base": "afc1265",
+  "branch": "fix/tray-panel-initial-focus",
+  "scope": "Isolated AppKit nonactivating NSPanel and nonpersistent WKWebView; production frontend and synthetic logged-out IPC. Not a full Tauri build or physical tray-icon test.",
+  "files": [
+    {
+      "path": "src/MenubarApp.vue",
+      "sha256": "5e9de764d023bb72ac058086dba3e2d331ef37dc9eb4336c3f1514f7031a9998"
+    },
+    {
+      "path": "src/composables/useMenubar.ts",
+      "sha256": "59569e5309118516b6b5769f0d18f742d34d654666818e57ee22ccd5e6e85f18"
+    },
+    {
+      "path": "src/menubar.css",
+      "sha256": "58e6406beca605166552611fae7eed73942cdd419ed241a2b73003f04cd2d387"
+    }
+  ],
+  "observations": [
+    {
+      "actions": [
+        {
+          "action": "ready"
+        },
+        {
+          "action": "resize",
+          "height": 411
+        }
+      ],
+      "active_outline": "none",
+      "button_styles": [
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "设置",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "连接账户",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "管理接入",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "当前节点尚无可用节点",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "随时开始新的创作打开图片工作台，生成或编辑图片",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "打开 Orbit",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "更多操作",
+          "outline": "none"
+        }
+      ],
+      "buttons_focused": 0,
+      "className": "menubar-panel",
+      "label": "Orbit 快捷面板",
+      "native_key": true,
+      "panel_focused": true,
+      "panel_outline": "none",
+      "stage": "first-open",
+      "tag": "MAIN"
+    },
+    {
+      "actions": [
+        {
+          "action": "ready"
+        },
+        {
+          "action": "resize",
+          "height": 411
+        }
+      ],
+      "active_outline": "none",
+      "button_styles": [
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "设置",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "连接账户",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "管理接入",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "当前节点尚无可用节点",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "随时开始新的创作打开图片工作台，生成或编辑图片",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "打开 Orbit",
+          "outline": "none"
+        },
+        {
+          "focus": false,
+          "focusVisible": false,
+          "label": "更多操作",
+          "outline": "none"
+        }
+      ],
+      "buttons_focused": 0,
+      "className": "menubar-panel",
+      "label": "Orbit 快捷面板",
+      "native_key": true,
+      "panel_focused": true,
+      "panel_outline": "none",
+      "stage": "reopen-1",
+      "tag": "MAIN"
+    }
+  ],
+  "visual_checks": {
+    "provider": "CUA native app accessibility and screenshots",
+    "initial_open_has_no_button_outline": true,
+    "option_tab_focuses_settings_and_shows_outline": true,
+    "reopen_focuses_panel_and_clears_settings_outline": true,
+    "acceptance_app_exited": true
+  },
+  "windows": {
+    "shared_frontend_path_covered": true,
+    "browser_ua_focus_regression_passed": true,
+    "native_script_assertions_added": true,
+    "native_execution": "not_run"
+  }
+}

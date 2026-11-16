@@ -225,6 +225,7 @@ export function useMenubar() {
   return {
     state,
     initialized,
+    visible,
     account,
     connection,
     tasks,

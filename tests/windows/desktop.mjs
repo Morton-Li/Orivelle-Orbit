@@ -624,6 +624,8 @@ async function exerciseTrayPanel() {
       })
       .toBe(true);
     await expect(panel.getByRole("main")).toBeVisible();
+    await expect(panel.getByRole("main")).toBeFocused();
+    await expect(panel.getByRole("main")).toHaveCSS("outline-style", "none");
     await expect(panel.locator("html")).toHaveClass(/windows-tray-window/);
     if (theme === "dark")
       await expect(panel.locator("html")).toHaveClass(/dark/);
@@ -647,6 +649,13 @@ async function exerciseTrayPanel() {
         .evaluate((element) => getComputedStyle(element, "::before").display),
       "none",
     );
+    await panel.keyboard.press("Tab");
+    const settingsButton = panel.getByRole("button", {
+      name: "设置",
+      exact: true,
+    });
+    await expect(settingsButton).toBeFocused();
+    await expect(settingsButton).toHaveCSS("outline-style", "solid");
     if (theme === "light") {
       await assert.rejects(
         invoke(panel, "create_image_task", {}),
