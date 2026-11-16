@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 import type {
   AuthorizationEvent,
   BootstrapView,
+  ImageInput,
   ModelView,
   UpdateProgress,
   UpdateView,
@@ -32,6 +33,8 @@ export async function fixture(
   options: {
     state?: BootstrapView;
     models?: ModelView[];
+    imageInputs?: ImageInput[];
+    imageMaterials?: Partial<Record<"mask" | "markup", ImageInput>>;
     paidFailure?: boolean;
     claudeImport?: boolean;
     restoreMode?: "blocked" | "recoverable";
@@ -48,6 +51,8 @@ export async function fixture(
       sampleUsagePage,
       initialApiKeys,
       models,
+      imageInputs,
+      imageMaterials,
       initialTask,
       paidFailure,
       claudeImport,
@@ -294,6 +299,13 @@ export async function fixture(
             };
           }
           if (command === "list_models") return models;
+          if (command === "select_image_inputs") {
+            const material =
+              imageMaterials[request.purpose as "mask" | "markup"];
+            return structuredClone(
+              request.purpose ? (material ? [material] : []) : imageInputs,
+            );
+          }
           if (command === "probe_nodes")
             return current.nodes
               .filter((node) =>
@@ -557,6 +569,8 @@ export async function fixture(
       sampleUsagePage: options.usageRecords ?? usagePage(),
       initialApiKeys: options.apiKeys ?? apiKeyPage(),
       models: options.models ?? [imageModel(), syntheticCodexModel()],
+      imageInputs: options.imageInputs ?? [],
+      imageMaterials: options.imageMaterials ?? {},
       initialTask: task("queued"),
       paidFailure: options.paidFailure ?? false,
       claudeImport: options.claudeImport ?? false,

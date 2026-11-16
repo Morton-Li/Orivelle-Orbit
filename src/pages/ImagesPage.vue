@@ -24,18 +24,23 @@ import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import {
   imageParameterFields,
-  availableImageConstraints,
   imageParameterLabel,
-  imageParameterError,
   supportedImageParameters,
   imageFailureMessage,
   type ImageSelectParameter,
 } from "../shared/image-parameters";
+import {
+  workbenchConstraints,
+  workbenchParameterError,
+  adjustedImageParameters,
+} from "../shared/image-api";
 const store = useOrbitStore();
 const tab = ref("create");
 const prompt = ref("");
 const modelId = ref("");
 const inputs = ref<ImageInput[]>([]);
+const mask = ref<ImageInput | null>(null);
+const markup = ref<ImageInput | null>(null);
 const parameters = ref<ImageParameters>({});
 const advanced = ref(false);
 const enlarged = ref<HistoryImage | null>(null);
@@ -48,7 +53,10 @@ const model = computed(
   () => store.imageModels.find((item) => item.id === modelId.value) ?? null,
 );
 const constraints = computed(() =>
-  availableImageConstraints(model.value?.image_parameters ?? null),
+  workbenchConstraints(
+    model.value?.image_parameters ?? null,
+    model.value?.image_api_parameters,
+  ),
 );
 const currentNode = computed(() => {
   const index = store.state.nodes.findIndex(
@@ -59,7 +67,110 @@ const currentNode = computed(() => {
     ? nodeName(node, index)
     : t(store.account ? "access.noNode" : "access.noConnection");
 });
-const parameterFields = computed(() => imageParameterFields(constraints.value));
+const apiCaps = computed(() => model.value?.image_api_parameters ?? null);
+const parameterFields = computed(() => {
+  const fields = imageParameterFields(constraints.value);
+  if (apiCaps.value?.moderations.length)
+    fields.push({
+      key: "moderation",
+      label: "images.moderation",
+      values: apiCaps.value.moderations,
+    });
+  if (inputs.value.length && apiCaps.value?.input_fidelities.length)
+    fields.push({
+      key: "input_fidelity",
+      label: "images.inputFidelity",
+      values: apiCaps.value.input_fidelities,
+    });
+  return fields;
+});
+const usesApi = computed(
+  () =>
+    adjustedImageParameters(
+      parameters.value,
+      inputs.value.length,
+      prompt.value,
+      !!mask.value,
+      !!markup.value,
+    ).length > 0,
+);
+const customSize = computed(
+  () =>
+    !!parameters.value.size &&
+    parameters.value.size !== "auto" &&
+    !constraints.value?.sizes.includes(parameters.value.size),
+);
+function fieldValue(key: ImageSelectParameter): string {
+  const value = parameters.value[key];
+  if (key === "size" && customSize.value) return "__custom__";
+  return value === undefined
+    ? key === "n"
+      ? "1"
+      : key === "output_format"
+        ? "png"
+        : key === "input_fidelity"
+          ? "low"
+          : key === "complexity"
+            ? "__default__"
+            : "auto"
+    : String(value);
+}
+function fieldOptions(field: ReturnType<typeof imageParameterFields>[number]) {
+  const values = field.values.map((value) => ({
+    value,
+    label: imageParameterLabel(value),
+  }));
+  if (field.key === "size" && constraints.value?.custom_size)
+    values.push({ value: "__custom__", label: t("images.customSize") });
+  if (field.key === "complexity")
+    values.unshift({ value: "__default__", label: t("images.serviceDefault") });
+  return values;
+}
+function setDimension(axis: number, event: Event) {
+  const size = (parameters.value.size ?? "1536x864").split("x");
+  size[axis] = (event.target as HTMLInputElement).value;
+  parameters.value = { ...parameters.value, size: size.join("x") };
+}
+function setNumeric(
+  key:
+    | "output_compression"
+    | "partial_images"
+    | "frame_count"
+    | "frame_duration_ms",
+  event: Event,
+) {
+  const value = (event.target as HTMLInputElement).value;
+  if (!value) {
+    const next = { ...parameters.value };
+    delete next[key];
+    parameters.value = next;
+    return;
+  }
+  parameters.value = { ...parameters.value, [key]: Number(value) };
+}
+function setStream(event: Event) {
+  const stream = (event.target as HTMLInputElement).checked;
+  parameters.value = {
+    ...parameters.value,
+    stream,
+    partial_images: stream ? (parameters.value.partial_images ?? 1) : 0,
+  };
+}
+function setSvgModel(event: Event) {
+  const value = (event.target as HTMLInputElement).value;
+  const next = { ...parameters.value };
+  if (!value) delete next.svg;
+  else next.svg = { ...next.svg, model: value };
+  parameters.value = next;
+}
+function setSvgEffort(value: string) {
+  const next = { ...parameters.value };
+  if (value === "__default__") {
+    if (next.svg) next.svg = { model: next.svg.model };
+  } else
+    next.svg = { model: next.svg?.model ?? "", reasoning: { effort: value } };
+  parameters.value = next;
+}
 function supportedParameters(values: ImageParameters): ImageParameters {
   const supported = supportedImageParameters(values, constraints.value);
   const backgrounds = constraints.value?.backgrounds ?? [];
@@ -70,11 +181,24 @@ function supportedParameters(values: ImageParameters): ImageParameters {
 }
 const currentParameters = computed(() => parameters.value);
 const parameterError = computed(() =>
-  model.value ? imageParameterError(parameters.value, constraints.value) : null,
+  model.value
+    ? workbenchParameterError(
+        parameters.value,
+        constraints.value,
+        apiCaps.value,
+        inputs.value.length,
+        !!mask.value,
+        !!markup.value,
+      )
+    : null,
 );
-const promptBytes = computed(() => utf8Bytes(prompt.value));
+const promptBytes = computed(() =>
+  apiCaps.value ? [...prompt.value].length : utf8Bytes(prompt.value),
+);
 const promptLimit = computed(() =>
-  Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
+  apiCaps.value
+    ? Math.min(32000, apiCaps.value.prompt_maximum_characters)
+    : Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
 );
 const activeTask = computed(() => store.imagePreviewTask);
 const requestedModelLabel = computed(
@@ -153,6 +277,8 @@ watch(
   () => {
     prompt.value = "";
     inputs.value = [];
+    mask.value = null;
+    markup.value = null;
     modelId.value = "";
     parameters.value = {};
     advanced.value = false;
@@ -161,9 +287,23 @@ watch(
   },
 );
 watch(modelId, () => {
+  mask.value = null;
+  markup.value = null;
   parameters.value = supportedParameters({});
   advanced.value = false;
 });
+watch(
+  () => inputs.value[0]?.id,
+  () => {
+    mask.value = null;
+    markup.value = null;
+    if (!inputs.value.length) {
+      const next = { ...parameters.value };
+      delete next.input_fidelity;
+      parameters.value = next;
+    }
+  },
+);
 watch(constraints, () => {
   parameters.value = supportedParameters(parameters.value);
 });
@@ -207,6 +347,35 @@ function addInputs(values: ImageInput[]) {
   }
   inputs.value.push(...added);
 }
+async function chooseMaterial(kind: "mask" | "markup") {
+  const connection = store.activeConnection;
+  const captured = store.scope;
+  if (!connection) return;
+  const result = await store.perform(`image-${kind}`, "select_image_inputs", {
+    connection_id: connection.id,
+    purpose: kind,
+  });
+  if (!result?.length || captured !== store.scope) return;
+  const item = result[0]!;
+  const first = inputs.value[0];
+  if (
+    result.length !== 1 ||
+    item.mime !== "image/png" ||
+    !first ||
+    item.width !== first.width ||
+    item.height !== first.height
+  ) {
+    store.notify(t("images.invalidMaterial"), "error");
+    return;
+  }
+  if (kind === "mask") {
+    mask.value = item;
+    markup.value = null;
+  } else {
+    markup.value = item;
+    mask.value = null;
+  }
+}
 async function chooseInputs() {
   const connection = store.activeConnection;
   const captured = store.scope;
@@ -227,6 +396,8 @@ async function submit() {
     prompt: prompt.value,
     parameters: { ...currentParameters.value },
     input_ids: inputs.value.map((input) => input.id),
+    ...(mask.value ? { mask_input_id: mask.value.id } : {}),
+    ...(markup.value ? { markup_input_id: markup.value.id } : {}),
   });
   if (result && captured === store.scope) {
     store.acceptTask(result);
@@ -301,10 +472,29 @@ async function deleteHistory() {
   }
 }
 function setParameter(key: ImageSelectParameter, value: string) {
-  parameters.value = {
-    ...parameters.value,
-    [key]: key === "n" ? Number(value) : value,
-  };
+  const next = { ...parameters.value };
+  if (value === "__default__") {
+    delete next[key];
+    parameters.value = next;
+    return;
+  }
+  if (key === "size" && value === "__custom__") {
+    parameters.value = { ...next, size: "1536x864" };
+    return;
+  }
+  if (key === "output_format") {
+    if (!["jpeg", "webp"].includes(value)) delete next.output_compression;
+    if (value !== "svg") delete next.svg;
+    if (value !== "gif") {
+      delete next.frame_count;
+      delete next.frame_duration_ms;
+    }
+    if (["svg", "gif"].includes(value)) {
+      delete next.stream;
+      delete next.partial_images;
+    }
+  }
+  parameters.value = { ...next, [key]: key === "n" ? Number(value) : value };
 }
 function imageDescription(image: HistoryImage) {
   return (
@@ -379,7 +569,8 @@ function imageDescription(image: HistoryImage) {
             :class="{ 'error-text': promptBytes > promptLimit }"
           >
             {{ promptBytes.toLocaleString() }} /
-            {{ promptLimit.toLocaleString() }} UTF-8 B
+            {{ promptLimit.toLocaleString() }}
+            {{ apiCaps ? t("images.characters") : "UTF-8 B" }}
           </div>
           <p v-if="promptBytes > promptLimit" class="error-text" role="alert">
             {{ t("images.promptLimit") }}
@@ -457,19 +648,217 @@ function imageDescription(image: HistoryImage) {
                 }}</label>
                 <OrbitSelect
                   :id="`image-${field.key}`"
-                  :model-value="String(currentParameters[field.key] ?? '')"
+                  :model-value="fieldValue(field.key)"
                   :disabled="active"
-                  :options="[
-                    ...field.values.map((value) => ({
-                      value,
-                      label: imageParameterLabel(value),
-                    })),
-                  ]"
+                  :options="fieldOptions(field)"
                   @update:model-value="setParameter(field.key, $event)"
                 />
               </div>
             </div>
             <p v-else class="field-hint">{{ t("images.noAdvancedOptions") }}</p>
+            <p v-if="!apiCaps" class="field-hint">
+              {{ t("images.apiUpgradeHint") }}
+            </p>
+            <div v-if="customSize" class="parameter-grid">
+              <div class="field">
+                <label for="image-custom-width" class="field-label">{{
+                  t("images.width")
+                }}</label
+                ><input
+                  id="image-custom-width"
+                  type="number"
+                  min="16"
+                  max="3840"
+                  step="16"
+                  :value="parameters.size?.split('x')[0]"
+                  :disabled="active"
+                  @input="setDimension(0, $event)"
+                />
+              </div>
+              <div class="field">
+                <label for="image-custom-height" class="field-label">{{
+                  t("images.height")
+                }}</label
+                ><input
+                  id="image-custom-height"
+                  type="number"
+                  min="16"
+                  max="3840"
+                  step="16"
+                  :value="parameters.size?.split('x')[1]"
+                  :disabled="active"
+                  @input="setDimension(1, $event)"
+                />
+              </div>
+            </div>
+            <div
+              v-if="
+                apiCaps &&
+                ['jpeg', 'webp'].includes(parameters.output_format ?? '')
+              "
+              class="field"
+            >
+              <label for="image-compression" class="field-label">{{
+                t("images.compression")
+              }}</label
+              ><input
+                id="image-compression"
+                type="number"
+                min="0"
+                max="100"
+                :value="parameters.output_compression ?? 100"
+                :disabled="active"
+                @input="setNumeric('output_compression', $event)"
+              />
+            </div>
+            <div
+              v-if="apiCaps && parameters.output_format === 'gif'"
+              class="parameter-grid"
+            >
+              <div class="field">
+                <label for="image-frame-count" class="field-label">{{
+                  t("images.frameCount")
+                }}</label
+                ><input
+                  id="image-frame-count"
+                  type="number"
+                  min="2"
+                  max="16"
+                  :value="parameters.frame_count ?? 9"
+                  :disabled="active"
+                  @input="setNumeric('frame_count', $event)"
+                />
+              </div>
+              <div class="field">
+                <label for="image-frame-duration" class="field-label">{{
+                  t("images.frameDuration")
+                }}</label
+                ><input
+                  id="image-frame-duration"
+                  type="number"
+                  min="20"
+                  max="655350"
+                  step="10"
+                  :value="parameters.frame_duration_ms ?? 200"
+                  :disabled="active"
+                  @input="setNumeric('frame_duration_ms', $event)"
+                />
+              </div>
+            </div>
+            <div
+              v-if="apiCaps && parameters.output_format === 'svg'"
+              class="field"
+            >
+              <label for="image-svg-model" class="field-label">{{
+                t("images.svgAuthor")
+              }}</label
+              ><input
+                id="image-svg-model"
+                :value="parameters.svg?.model ?? ''"
+                :placeholder="t('images.svgAuthorPlaceholder')"
+                :disabled="active"
+                @input="setSvgModel"
+              />
+              <label for="image-svg-reasoning" class="field-label">{{
+                t("images.svgReasoning")
+              }}</label
+              ><OrbitSelect
+                id="image-svg-reasoning"
+                :model-value="
+                  parameters.svg?.reasoning?.effort ?? '__default__'
+                "
+                :options="[
+                  { value: '__default__', label: t('images.serviceDefault') },
+                  ...apiCaps.svg_reasoning_efforts.map((value) => ({
+                    value,
+                    label: imageParameterLabel(value),
+                  })),
+                ]"
+                :disabled="active"
+                @update:model-value="setSvgEffort"
+              />
+            </div>
+            <div
+              v-if="
+                apiCaps?.stream &&
+                !['svg', 'gif'].includes(parameters.output_format ?? '')
+              "
+              class="field"
+            >
+              <label class="image-stream-toggle"
+                ><input
+                  id="image-stream"
+                  type="checkbox"
+                  :checked="parameters.stream ?? false"
+                  :disabled="active"
+                  @change="setStream"
+                />{{ t("images.stream") }}</label
+              >
+              <p class="field-hint">{{ t("images.streamHint") }}</p>
+              <template v-if="parameters.stream"
+                ><label for="image-partials" class="field-label">{{
+                  t("images.partialImages")
+                }}</label
+                ><input
+                  id="image-partials"
+                  type="number"
+                  min="0"
+                  max="3"
+                  :value="parameters.partial_images ?? 0"
+                  :disabled="active"
+                  @input="setNumeric('partial_images', $event)"
+              /></template>
+            </div>
+            <div
+              v-if="
+                apiCaps && inputs.length && (apiCaps.mask || apiCaps.markup)
+              "
+              class="field image-materials"
+            >
+              <div class="field-heading">
+                <button
+                  v-if="apiCaps.mask && parameters.output_format !== 'gif'"
+                  type="button"
+                  class="button secondary"
+                  :disabled="active || store.busy.has('image-mask')"
+                  @click="chooseMaterial('mask')"
+                >
+                  {{ t("images.addMask") }}</button
+                ><button
+                  v-if="apiCaps.markup"
+                  type="button"
+                  class="button secondary"
+                  :disabled="active || store.busy.has('image-markup')"
+                  @click="chooseMaterial('markup')"
+                >
+                  {{ t("images.addMarkup") }}
+                </button>
+              </div>
+              <p class="field-hint">{{ t("images.materialHint") }}</p>
+              <div
+                v-for="item in [mask, markup].filter(
+                  (entry): entry is ImageInput => !!entry,
+                )"
+                :key="item.id"
+                class="image-input-item"
+              >
+                <span class="truncate"
+                  >{{ mask ? t("images.mask") : t("images.markup") }} ·
+                  {{ item.name }}</span
+                ><button
+                  type="button"
+                  class="icon-button"
+                  :aria-label="t('action.delete')"
+                  :disabled="active"
+                  @click="
+                    mask = null;
+                    markup = null;
+                  "
+                >
+                  <OrbitIcon name="close" />
+                </button>
+              </div>
+            </div>
             <p
               v-if="parameterFields.some((field) => field.key === 'background')"
               class="field-hint"
@@ -481,6 +870,14 @@ function imageDescription(image: HistoryImage) {
             {{ t(parameterError) }}
           </p>
         </section>
+        <p
+          v-if="model"
+          class="image-route-hint"
+          :class="{ 'image-route-api': usesApi }"
+          role="status"
+        >
+          {{ t(usesApi ? "images.apiRoute" : "images.subscriptionRoute") }}
+        </p>
         <button
           type="submit"
           class="button primary generate-button"
@@ -502,7 +899,12 @@ function imageDescription(image: HistoryImage) {
             >
           </div>
           <p v-if="activeTask.error" class="error-text" role="alert">
-            {{ imageFailureMessage(activeTask.error.code) }}
+            {{
+              imageFailureMessage(
+                activeTask.error.code,
+                activeTask.error.unsupported_parameters,
+              )
+            }}
           </p>
           <div v-if="resultImages.length" class="result-grid">
             <article
@@ -558,6 +960,22 @@ function imageDescription(image: HistoryImage) {
               </div>
             </article>
           </div>
+          <figure
+            v-else-if="
+              active &&
+              activeTask.partial_preview &&
+              safePreviewUrl(activeTask.partial_preview.preview_url)
+            "
+            class="partial-image-preview"
+          >
+            <img
+              :src="safePreviewUrl(activeTask.partial_preview.preview_url)!"
+              :alt="t('images.partialPreview')"
+            />
+            <figcaption class="field-hint">
+              {{ t("images.partialPreview") }}
+            </figcaption>
+          </figure>
           <div v-else class="task-waiting">
             <OrbitIcon
               :name="active ? 'loader' : 'images'"

@@ -18,6 +18,7 @@ pub const MAX_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_PROMPT_BYTES: usize = 32768;
+pub const API_CONTRACT: &str = "openai-images-api-v1";
 pub const PARAMETER_CONTRACT: &str = "codex-images-static-parameters-v1";
 pub const REQUEST_TIMEOUT_SECONDS: u64 = 630;
 pub const MAX_PIXELS: u64 = 16_777_216;
@@ -45,6 +46,12 @@ pub struct TaskSnapshot {
     pub maximum_request_bytes: u64,
     pub maximum_results: u8,
     pub inputs: Vec<InputRecord>,
+    #[serde(default)]
+    pub mask: Option<InputRecord>,
+    #[serde(default)]
+    pub markup: Option<InputRecord>,
+    #[serde(default)]
+    pub api_contract: Option<String>,
 }
 #[derive(Clone)]
 pub struct ValidatedImage {
@@ -284,9 +291,23 @@ struct ImageRequest<'a> {
     parameters: &'a ImageParameters,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     images: Vec<ImageReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mask: Option<ImageReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    markup: Option<ImageReference>,
     response_format: &'static str,
 }
 pub fn validate_parameters(
+    model: &ModelView,
+    parameters: &ImageParameters,
+    prompt: &str,
+    inputs: usize,
+    node_limit: u64,
+) -> Result<(u64, u8)> {
+    crate::images_api::validate(model, parameters, prompt, inputs, node_limit, false, false)
+        .map(|(limit, n, _)| (limit, n))
+}
+pub fn validate_subscription_parameters(
     model: &ModelView,
     parameters: &ImageParameters,
     prompt: &str,
@@ -439,7 +460,22 @@ pub fn valid_size(size: &str, limits: &ImageSizeConstraints) -> bool {
 }
 pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> {
     let limit = snapshot.maximum_request_bytes.min(MAX_REQUEST_BYTES) as usize;
-    if snapshot.inputs.len() > 5 || snapshot.task.prompt.len() > MAX_PROMPT_BYTES {
+    let api = snapshot.api_contract.as_deref() == Some(API_CONTRACT);
+    if snapshot
+        .api_contract
+        .as_deref()
+        .is_some_and(|v| v != API_CONTRACT)
+        || !api && (snapshot.mask.is_some() || snapshot.markup.is_some())
+    {
+        return Err(fail("image_parameters_upgrade_required"));
+    }
+    if snapshot.inputs.len() > if api { 16 } else { 5 }
+        || if api {
+            snapshot.task.prompt.chars().count() > 32000
+        } else {
+            snapshot.task.prompt.len() > MAX_PROMPT_BYTES
+        }
+    {
         return Err(fail("image_limit_exceeded"));
     }
     // Serialize only empty URL placeholders first. This accounts for every JSON
@@ -455,12 +491,23 @@ pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> 
                 image_url: String::new(),
             })
             .collect(),
+        mask: snapshot.mask.as_ref().map(|_| ImageReference {
+            image_url: String::new(),
+        }),
+        markup: snapshot.markup.as_ref().map(|_| ImageReference {
+            image_url: String::new(),
+        }),
         response_format: "b64_json",
     };
     let mut estimated = serde_json::to_vec(&skeleton)
         .map_err(|_| fail("serialization_failed"))?
         .len();
-    for input in &snapshot.inputs {
+    for input in snapshot
+        .inputs
+        .iter()
+        .chain(snapshot.mask.iter())
+        .chain(snapshot.markup.iter())
+    {
         if input.file_name.contains('/')
             || input.file_name.contains('\\')
             || input.file_name.contains("..")
@@ -496,7 +543,12 @@ pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> 
         return Err(fail("image_limit_exceeded"));
     }
     let mut references = Vec::new();
-    for input in &snapshot.inputs {
+    for input in snapshot
+        .inputs
+        .iter()
+        .chain(snapshot.mask.iter())
+        .chain(snapshot.markup.iter())
+    {
         if input.account_id != snapshot.task.account_id
             || input.connection_id != snapshot.task.connection_id
             || input.connection_revision != snapshot.task.connection_revision
@@ -530,6 +582,18 @@ pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> 
             image_url: format!("data:{mime};base64,{}", STANDARD.encode(&bytes)),
         });
     }
+    let mut refs = references.into_iter();
+    let primary = refs.by_ref().take(snapshot.inputs.len()).collect();
+    let mask = if snapshot.mask.is_some() {
+        refs.next()
+    } else {
+        None
+    };
+    let markup = if snapshot.markup.is_some() {
+        refs.next()
+    } else {
+        None
+    };
     let mut writer = CappedRequestWriter {
         bytes: Vec::with_capacity(estimated),
         limit,
@@ -540,7 +604,9 @@ pub fn request_bytes(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<u8>> 
             model: &snapshot.task.requested_model,
             prompt: &snapshot.task.prompt,
             parameters: &snapshot.task.parameters,
-            images: references,
+            images: primary,
+            mask,
+            markup,
             response_format: "b64_json",
         },
     )
@@ -614,11 +680,28 @@ pub struct ImageResult {
     pub parameters: ImageResultParameters,
 }
 pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<ImageResult> {
+    parse_result(bytes, maximum_results, false)
+}
+pub fn parse_api_response(bytes: &[u8], expected_results: u8) -> Result<ImageResult> {
+    parse_result(bytes, expected_results, true)
+}
+fn parse_result(bytes: &[u8], maximum_results: u8, api: bool) -> Result<ImageResult> {
     if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err(fail("response_too_large"));
     }
-    let response: ImageResponse =
-        serde_json::from_slice(bytes).map_err(|_| fail("invalid_image_response"))?;
+    let response: ImageResponse = if api {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| fail("invalid_image_response"))?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| fail("invalid_image_response"))?;
+        for field in ["usage", "svg_usage", "safety_identifier"] {
+            object.remove(field);
+        }
+        serde_json::from_value(value).map_err(|_| fail("invalid_image_response"))?
+    } else {
+        serde_json::from_slice(bytes).map_err(|_| fail("invalid_image_response"))?
+    };
     if response
         .quality
         .as_deref()
@@ -627,10 +710,14 @@ pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<ImageResult> 
             .background
             .as_deref()
             .is_some_and(|value| !["auto", "opaque", "transparent"].contains(&value))
-        || response
-            .output_format
-            .as_deref()
-            .is_some_and(|value| !["png", "jpeg", "webp"].contains(&value))
+        || response.output_format.as_deref().is_some_and(|value| {
+            !(if api {
+                &["png", "jpeg", "webp", "svg", "gif"][..]
+            } else {
+                &["png", "jpeg", "webp"][..]
+            })
+            .contains(&value)
+        })
         || response.model.as_ref().is_some_and(|value| {
             value.is_empty()
                 || value.len() > 255
@@ -642,7 +729,10 @@ pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<ImageResult> 
     {
         return Err(fail("invalid_image_response"));
     }
-    if response.data.is_empty() || response.data.len() > maximum_results.min(5) as usize {
+    if response.data.is_empty()
+        || response.data.len() > maximum_results.min(if api { 10 } else { 5 }) as usize
+        || api && response.data.len() != maximum_results as usize
+    {
         return Err(fail("invalid_image_response"));
     }
     let mut images = Vec::new();
@@ -674,6 +764,30 @@ pub fn parse_response(bytes: &[u8], maximum_results: u8) -> Result<ImageResult> 
     })
 }
 
+pub fn request_failure(
+    status: u16,
+    bytes: &[u8],
+    snapshot: &TaskSnapshot,
+) -> crate::error::PublicError {
+    let mut error = generation_failure(status, bytes);
+    if error.code == "image_parameters_unavailable" {
+        error.unsupported_parameters = crate::images_api::adjusted(
+            &snapshot.task.parameters,
+            snapshot.inputs.len(),
+            &snapshot.task.prompt,
+            snapshot.mask.is_some(),
+            snapshot.markup.is_some(),
+        );
+        // Never trust the provider's text or parameter list.
+        if !error.unsupported_parameters.is_empty() {
+            error.message = format!(
+                "当前暂不支持调整：{}。",
+                error.unsupported_parameters.join("、")
+            );
+        }
+    }
+    error
+}
 pub fn generation_failure(status: u16, bytes: &[u8]) -> crate::error::PublicError {
     // Never surface arbitrary provider messages, credentials, URLs or field names.
     let code = serde_json::from_slice::<serde_json::Value>(bytes)
@@ -688,6 +802,9 @@ pub fn generation_failure(status: u16, bytes: &[u8]) -> crate::error::PublicErro
                 | "unsupported_image_parameter"
                 | "image_parameters_upgrade_required"
                 | "image_metering_upgrade_required"
+                | "image_routing_upgrade_required"
+                | "image_parameters_unavailable"
+                | "image_api_pricing_unavailable"
                 | "model_unavailable"
                 | "insufficient_balance"
                 | "api_key_spending_limit_exceeded"
@@ -918,7 +1035,11 @@ mod tests {
     }
     fn snapshot() -> TaskSnapshot {
         TaskSnapshot {
+            mask: None,
+            markup: None,
+            api_contract: None,
             task: TaskView {
+                partial_preview: None,
                 id: uuid(),
                 account_id: "a".into(),
                 connection_id: uuid(),
@@ -1144,9 +1265,7 @@ mod tests {
             serde_json::json!({"n":2}),
             serde_json::json!({"quality":"low"}),
             serde_json::json!({"quality":"high"}),
-            serde_json::json!({"size":"auto"}),
             serde_json::json!({"size":"1536x1024"}),
-            serde_json::json!({"output_format":"png"}),
             serde_json::json!({"output_format":"jpeg"}),
             serde_json::json!({"output_compression":0}),
             serde_json::json!({"complexity":"low"}),
@@ -1159,6 +1278,12 @@ mod tests {
                 "{raw}"
             );
         }
+        let defaults: ImageParameters = serde_json::from_value(serde_json::json!({
+            "n": 1, "quality": "auto", "size": "auto", "output_format": "png",
+            "stream": false, "partial_images": 0, "moderation": "auto"
+        }))
+        .unwrap();
+        assert!(validate_parameters(&model, &defaults, "synthetic", 0, MAX_REQUEST_BYTES).is_ok());
     }
     #[test]
     fn observed_parameters_are_separate_from_decoded_image_facts_and_private_errors_are_filtered() {
@@ -1213,6 +1338,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let task = TaskView {
+            partial_preview: None,
             id: uuid(),
             account_id: "a".into(),
             connection_id: connection.id.clone(),
@@ -1237,6 +1363,9 @@ mod tests {
             error: None,
         };
         let mut snap = TaskSnapshot {
+            mask: None,
+            markup: None,
+            api_contract: None,
             task,
             panel_origin: "https://panel.test".into(),
             edge_base_url: "https://edge.test/v1".into(),
@@ -1379,6 +1508,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         let task = TaskView {
+            partial_preview: None,
             id: uuid(),
             account_id: "a".into(),
             connection_id: uuid(),
@@ -1403,6 +1533,9 @@ mod tests {
             error: None,
         };
         let snap = TaskSnapshot {
+            mask: None,
+            markup: None,
+            api_contract: None,
             task,
             panel_origin: "https://panel.test".into(),
             edge_base_url: "https://edge.test/v1".into(),

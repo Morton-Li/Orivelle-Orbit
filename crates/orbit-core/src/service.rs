@@ -1899,7 +1899,20 @@ impl Service {
         } else {
             false
         };
-        if !input_owned && !history_owned {
+        let partial_owned = if !input_owned && !history_owned {
+            self.store
+                .list::<TaskSnapshot>("task-snapshot", Some(&scope.account_id))?
+                .iter()
+                .any(|s| {
+                    s.panel_origin == scope.origin
+                        && s.task.connection_id == scope.connection_id
+                        && s.task.connection_revision == scope.connection_revision
+                        && s.task.partial_preview.as_ref().is_some_and(|p| p.id == id)
+                })
+        } else {
+            false
+        };
+        if !input_owned && !history_owned && !partial_owned {
             return Err(fail("preview_scope_unavailable"));
         }
         let bytes = images::bounded_read(
@@ -3579,7 +3592,7 @@ impl Service {
         let _permit = self.image_memory_permit()?;
         let record = self.record(id)?;
         let _ = self.current_connection(id, record.view.revision)?;
-        if paths.is_empty() || paths.len() > 5 {
+        if paths.is_empty() || paths.len() > 16 {
             return Err(fail("image_limit_exceeded"));
         }
         paths
@@ -3618,6 +3631,21 @@ impl Service {
         parameters: ImageParameters,
         input_ids: Vec<String>,
     ) -> Result<TaskView> {
+        self.create_image_task_with_materials(
+            id, revision, model_id, prompt, parameters, input_ids, None, None,
+        )
+    }
+    pub fn create_image_task_with_materials(
+        self: &Arc<Self>,
+        id: &str,
+        revision: u64,
+        model_id: &str,
+        prompt: String,
+        parameters: ImageParameters,
+        input_ids: Vec<String>,
+        mask_id: Option<String>,
+        markup_id: Option<String>,
+    ) -> Result<TaskView> {
         let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate
@@ -3639,12 +3667,14 @@ impl Service {
             .iter()
             .find(|n| n.id == node_id && n.available)
             .ok_or_else(|| fail("node_unavailable"))?;
-        let (maximum_request_bytes, maximum_results) = images::validate_parameters(
+        let (maximum_request_bytes, maximum_results, api) = crate::images_api::validate(
             model,
             &parameters,
             &prompt,
             input_ids.len(),
             node.maximum_request_bytes,
+            mask_id.is_some(),
+            markup_id.is_some(),
         )?;
         let capability = if input_ids.is_empty() {
             "openai.images.generations"
@@ -3687,7 +3717,34 @@ impl Service {
             }
             inputs.push(input);
         }
+        let material = |id: Option<String>| -> Result<Option<InputRecord>> {
+            let Some(id) = id else { return Ok(None) };
+            validate_uuid(&id)?;
+            let input = self
+                .store
+                .get::<InputRecord>("input", &id)?
+                .ok_or_else(|| fail("local_image_missing"))?;
+            if input.account_id != record.view.account_id
+                || input.connection_id != record.view.id
+                || input.connection_revision != revision
+            {
+                return Err(fail("input_scope_mismatch"));
+            }
+            let first = inputs
+                .first()
+                .ok_or_else(|| fail("unsupported_image_parameter"))?;
+            if input.view.mime != "image/png"
+                || input.view.width != first.view.width
+                || input.view.height != first.view.height
+            {
+                return Err(fail("invalid_image_material"));
+            }
+            Ok(Some(input))
+        };
+        let mask = material(mask_id)?;
+        let markup = material(markup_id)?;
         let task = TaskView {
+            partial_preview: None,
             id: uuid(),
             account_id: record.view.account_id.clone(),
             connection_id: id.into(),
@@ -3721,6 +3778,9 @@ impl Service {
             error: None,
         };
         let snapshot = TaskSnapshot {
+            mask,
+            markup,
+            api_contract: api.then(|| crate::images_api::CONTRACT.to_owned()),
             task: task.clone(),
             panel_origin: record.view.panel_origin.clone(),
             edge_base_url: node.base_url.clone(),
@@ -3772,6 +3832,9 @@ impl Service {
                     "unsupported_image_parameter",
                     "image_parameters_upgrade_required",
                     "image_metering_upgrade_required",
+                    "image_routing_upgrade_required",
+                    "image_parameters_unavailable",
+                    "image_api_pricing_unavailable",
                     "model_unavailable",
                     "insufficient_balance",
                     "api_key_spending_limit_exceeded",
@@ -3797,9 +3860,56 @@ impl Service {
             snapshot.task.state = "unconfirmed".into();
             snapshot.task.error = Some(fail("result_unconfirmed"));
         }
+        snapshot.task.partial_preview = None;
         let _ = self.persist_task(&snapshot);
         let _ = self.reconcile_task(&mut snapshot).await;
         let _ = self.prune_api_key_credentials(&snapshot.task.connection_id);
+    }
+    fn publish_image_preview(
+        &self,
+        snapshot: &mut TaskSnapshot,
+        partial: crate::images_stream::Preview,
+    ) -> Result<()> {
+        if self
+            .cancelled
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .contains(&snapshot.task.id)
+        {
+            return Ok(());
+        }
+        let Ok(_permit) = self.image_memory_permit() else {
+            return Ok(());
+        };
+        let result = images::parse_api_response(&partial.payload, 1)?;
+        let image = result
+            .images
+            .first()
+            .ok_or_else(|| fail("invalid_image_response"))?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let Some(scope) = self.store.preview_scope()? else {
+            return Ok(());
+        };
+        if scope.account_id != snapshot.task.account_id
+            || scope.connection_id != snapshot.task.connection_id
+            || scope.connection_revision != snapshot.task.connection_revision
+            || scope.origin != snapshot.panel_origin
+        {
+            return Ok(());
+        }
+        if let Some(url) = images::save_preview(&self.store, &image.id, &image.info.preview)? {
+            snapshot.task.partial_preview = Some(ImagePartialPreview {
+                id: image.id.clone(),
+                preview_url: url,
+                index: partial.index,
+            });
+            snapshot.task.state = "waiting".into();
+            self.persist_task(snapshot)?;
+        }
+        Ok(())
     }
     async fn send_image_once(&self, snapshot: &mut TaskSnapshot) -> Result<()> {
         let record = self.image_key_record(snapshot)?;
@@ -3856,26 +3966,68 @@ impl Service {
         url.set_path(&format!("{base}/{target}"));
         self.claim_image_send(snapshot)?;
         let observation = Arc::new(Mutex::new(None));
-        let response = self
-            .http
-            .request_observed(
-                Method::POST,
-                url.as_str(),
-                body,
-                vec![
-                    ("Authorization".into(), format!("Bearer {}", &*token)),
-                    ("Content-Type".into(), "application/json".into()),
-                    ("Accept".into(), "application/json".into()),
-                    (
-                        "X-Orivelle-Images-Contract".into(),
-                        images::PARAMETER_CONTRACT.into(),
-                    ),
-                ],
-                images::MAX_RESPONSE_BYTES,
-                Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
-                Some(observation.clone()),
-            )
-            .await;
+        let stream = snapshot.task.parameters.stream == Some(true);
+        let mut reader = crate::images_stream::ImageStream::new(
+            &snapshot.task.parameters,
+            snapshot.task.kind == "edit",
+        );
+        let response = if stream {
+            self.http
+                .request_images_stream(
+                    url.as_str(),
+                    body,
+                    vec![
+                        ("Authorization".into(), format!("Bearer {}", &*token)),
+                        ("Content-Type".into(), "application/json".into()),
+                        ("Accept".into(), "text/event-stream".into()),
+                        (
+                            "X-Orivelle-Images-Contract".into(),
+                            images::API_CONTRACT.into(),
+                        ),
+                    ],
+                    images::MAX_RESPONSE_BYTES,
+                    Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
+                    observation.clone(),
+                    |chunk| {
+                        if let Some((_, id)) = observation
+                            .lock()
+                            .map_err(|_| fail("state_unavailable"))?
+                            .clone()
+                        {
+                            snapshot.task.request_id = id;
+                        }
+                        for partial in reader.push(chunk)? {
+                            self.publish_image_preview(snapshot, partial)?;
+                        }
+                        Ok(())
+                    },
+                )
+                .await
+        } else {
+            self.http
+                .request_observed(
+                    Method::POST,
+                    url.as_str(),
+                    body,
+                    vec![
+                        ("Authorization".into(), format!("Bearer {}", &*token)),
+                        ("Content-Type".into(), "application/json".into()),
+                        ("Accept".into(), "application/json".into()),
+                        (
+                            "X-Orivelle-Images-Contract".into(),
+                            if snapshot.api_contract.as_deref() == Some(images::API_CONTRACT) {
+                                images::API_CONTRACT.into()
+                            } else {
+                                images::PARAMETER_CONTRACT.into()
+                            },
+                        ),
+                    ],
+                    images::MAX_RESPONSE_BYTES,
+                    Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
+                    Some(observation.clone()),
+                )
+                .await
+        };
         if let Some((_, request_id)) = observation
             .lock()
             .map_err(|_| fail("state_unavailable"))?
@@ -3884,7 +4036,10 @@ impl Service {
             snapshot.task.request_id = request_id;
             self.persist_task(snapshot)?;
         }
-        let response = response?;
+        let mut response = response?;
+        if stream && (200..300).contains(&response.status) {
+            response.bytes = reader.finish()?;
+        }
         snapshot.task.request_id = response.request_id;
         snapshot.task.state = "waiting".into();
         self.persist_task(snapshot)?;
@@ -3892,7 +4047,7 @@ impl Service {
             return Err(if (300..400).contains(&response.status) {
                 fail("generation_redirect_rejected")
             } else {
-                images::generation_failure(response.status, &response.bytes)
+                images::request_failure(response.status, &response.bytes, snapshot)
             });
         }
         let _memory_permit = self
@@ -3901,7 +4056,11 @@ impl Service {
             .acquire_owned()
             .await
             .map_err(|_| fail("image_busy"))?;
-        let result = images::parse_response(&response.bytes, snapshot.maximum_results)?;
+        let result = if snapshot.api_contract.as_deref() == Some(images::API_CONTRACT) {
+            images::parse_api_response(&response.bytes, snapshot.maximum_results)?
+        } else {
+            images::parse_response(&response.bytes, snapshot.maximum_results)?
+        };
         snapshot.task.result_parameters = Some(result.parameters);
         let received = result.images;
         snapshot.task.state = "saving".into();
@@ -4555,6 +4714,11 @@ fn map_model(value: &Value, revision: &str) -> Result<ModelView> {
         None
     };
     Ok(ModelView {
+        image_api_parameters: serde_json::from_value::<ImageApiParameters>(
+            value["image_api_parameters"].clone(),
+        )
+        .ok()
+        .and_then(crate::images_api::normalize),
         codex_catalog_binding: crate::codex_binding::normalize_binding(
             value.get("codex_catalog_binding"),
             &id,
@@ -6462,6 +6626,7 @@ mod tests {
     }
     fn task(record: &ConnectionRecord) -> TaskView {
         TaskView {
+            partial_preview: None,
             id: uuid(),
             account_id: record.view.account_id.clone(),
             connection_id: record.view.id.clone(),
@@ -6492,6 +6657,9 @@ mod tests {
     }
     pub(super) fn task_snapshot(record: &ConnectionRecord) -> TaskSnapshot {
         TaskSnapshot {
+            mask: None,
+            markup: None,
+            api_contract: None,
             task: task(record),
             panel_origin: record.view.panel_origin.clone(),
             edge_base_url: record.view.edge_base_url.clone().unwrap(),
@@ -7923,7 +8091,7 @@ mod tests {
             })
         }));
         for (raw, code) in [
-            (json!({"n":2}), "image_limit_exceeded"),
+            (json!({"n":2}), "unsupported_image_parameter"),
             (json!({"quality":"high"}), "unsupported_image_parameter"),
             (
                 json!({"output_format":"webp"}),
@@ -9395,6 +9563,110 @@ mod tests {
                 "backup_invalid"
             );
             assert_eq!(read_file(&path).unwrap(), Some(b"model='old'\n".to_vec()));
+        }
+    }
+    #[tokio::test]
+    async fn missing_image_api_pool_reports_only_frozen_adjusted_parameters() {
+        let (_dir, _service, _vault, record, _install) = setup();
+        let mut snapshot = task_snapshot(&record);
+        snapshot.task.parameters = ImageParameters {
+            quality: Some("high".into()),
+            size: Some("1536x864".into()),
+            n: Some(1),
+            output_format: Some("png".into()),
+            background: Some("transparent".into()),
+            ..Default::default()
+        };
+        let error = images::request_failure(422, br#"{"error":{"code":"image_parameters_unavailable","message":"PRIVATE_PROVIDER_MESSAGE","unsupported_parameters":["everything","PRIVATE"]}}"#, &snapshot);
+        assert_eq!(error.unsupported_parameters, ["quality", "size"]);
+        assert!(!error.message.contains("PRIVATE"));
+        let wire = serde_json::to_string(&error).unwrap();
+        assert!(!wire.contains("everything"));
+        assert!(!wire.contains("background"));
+    }
+
+    #[tokio::test]
+    async fn image_api_stream_saves_only_complete_material_and_never_replays_a_post() {
+        for complete in [true, false] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let mut snapshot = task_snapshot(&record);
+            snapshot.task.state = "queued".into();
+            snapshot.task.parameters.stream = Some(true);
+            snapshot.task.parameters.partial_images = Some(1);
+            snapshot.api_contract = Some(images::API_CONTRACT.into());
+            service.persist_task(&snapshot).unwrap();
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = count.clone();
+            let bytes = export_png(16, 16, 0);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            service.http.scripted(Arc::new(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert!(
+                    request
+                        .headers
+                        .iter()
+                        .any(|(key, value)| { key == "Accept" && value == "text/event-stream" })
+                );
+                assert!(request.headers.iter().any(|(key, value)| {
+                    key == "X-Orivelle-Images-Contract" && value == images::API_CONTRACT
+                }));
+                let encoded = encoded.clone();
+                Box::pin(async move {
+                    let partial = json!({
+                        "type": "image_generation.partial_image",
+                        "b64_json": encoded, "created_at": 1, "partial_image_index": 0
+                    });
+                    let final_event = json!({
+                        "type": "image_generation.completed",
+                        "b64_json": encoded, "created_at": 1
+                    });
+                    let mut body =
+                        format!("event: image_generation.partial_image\ndata: {partial}\n\n");
+                    if complete {
+                        body +=
+                            &format!("event: image_generation.completed\ndata: {final_event}\n\n");
+                    }
+                    Ok(crate::network::RemoteResponse {
+                        status: 200,
+                        request_id: Some("33333333-3333-4333-8333-333333333333".into()),
+                        bytes: body.into_bytes(),
+                    })
+                })
+            }));
+            let result = service.send_image_once(&mut snapshot).await;
+            if complete {
+                result.unwrap();
+                assert_eq!(snapshot.task.state, "completed");
+                assert_eq!(snapshot.task.image_ids.len(), 1);
+                let filename = service
+                    .store
+                    .get::<String>("image-file", &snapshot.task.image_ids[0])
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read(service.store.root.join("images").join(filename)).unwrap(),
+                    bytes
+                );
+            } else {
+                assert_eq!(result.unwrap_err().code, "image_response_incomplete");
+                assert!(
+                    service
+                        .store
+                        .list::<HistoryImage>("image", None)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            service.persist_task(&snapshot).unwrap();
+            assert!(service.send_image_once(&mut snapshot).await.is_err());
+            assert_eq!(count.load(Ordering::SeqCst), 1);
         }
     }
 }

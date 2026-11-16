@@ -9,13 +9,14 @@ import type {
   UpdateProgress,
 } from "./contracts";
 import { t, type MessageKey } from "./i18n";
-import { imageFailureMessage } from "./image-parameters";
+import { imageFailureMessage, IMAGE_ADJUSTED_LABELS } from "./image-parameters";
 
 export class OrbitError extends Error {
   constructor(
     public code: string,
     message: string,
     public retryable = false,
+    public unsupportedParameters: string[] = [],
   ) {
     super(message);
   }
@@ -46,11 +47,25 @@ export function publicFailure(error: unknown): OrbitError {
     orbit_delivery_unusable: "keys.errorDelivery",
     orbit_credential_unavailable: "keys.errorUnavailable",
   };
+  const parameters = Array.isArray(value?.unsupported_parameters)
+    ? [
+        ...new Set(
+          value.unsupported_parameters.filter(
+            (key): key is string =>
+              typeof key === "string" &&
+              Object.hasOwn(IMAGE_ADJUSTED_LABELS, key),
+          ),
+        ),
+      ].slice(0, 20)
+    : [];
   // Native and network messages can contain paths, headers or secret material.
   return new OrbitError(
     code,
-    keyErrors[code] ? t(keyErrors[code]) : imageFailureMessage(code),
+    keyErrors[code]
+      ? t(keyErrors[code])
+      : imageFailureMessage(code, parameters),
     value?.retryable === true,
+    parameters,
   );
 }
 export async function call<K extends keyof IpcCommands>(

@@ -5,11 +5,17 @@ import type {
 } from "./contracts";
 import { t, type MessageKey } from "./i18n";
 
+export const IMAGE_API_CONTRACT = "openai-images-api-v1";
 export const IMAGE_PARAMETER_CONTRACT = "codex-images-static-parameters-v1";
-export type ImageSelectParameter = Exclude<
-  keyof ImageParameters,
-  "output_compression"
->;
+export type ImageSelectParameter =
+  | "n"
+  | "quality"
+  | "size"
+  | "background"
+  | "output_format"
+  | "complexity"
+  | "moderation"
+  | "input_fidelity";
 
 // A previous Panel or cached native catalog may still advertise the wider
 // legacy wire subset. Product controls must not infer upstream behavior from it.
@@ -45,8 +51,14 @@ export function imageParameterFields(caps: ImageParameterConstraints | null) {
       label: "images.count",
       values:
         caps.max_results > 1
-          ? Array.from({ length: Math.min(5, caps.max_results) }, (_, i) =>
-              String(i + 1),
+          ? Array.from(
+              {
+                length: Math.min(
+                  caps.contract === IMAGE_API_CONTRACT ? 10 : 5,
+                  caps.max_results,
+                ),
+              },
+              (_, i) => String(i + 1),
             )
           : [],
     },
@@ -96,10 +108,19 @@ export function imageParameterError(
   caps: ImageParameterConstraints | null,
 ): MessageKey | null {
   if (!caps) return "images.invalidParameters";
-  if (caps.contract && caps.contract !== IMAGE_PARAMETER_CONTRACT)
+  if (
+    caps.contract &&
+    caps.contract !== IMAGE_PARAMETER_CONTRACT &&
+    caps.contract !== IMAGE_API_CONTRACT
+  )
     return "images.invalidParameters";
   const n = values.n ?? 1;
-  if (!Number.isInteger(n) || n < 1 || n > Math.min(5, caps.max_results))
+  if (
+    !Number.isInteger(n) ||
+    n < 1 ||
+    n >
+      Math.min(caps.contract === IMAGE_API_CONTRACT ? 10 : 5, caps.max_results)
+  )
     return "images.invalidParameters";
   for (const key of [
     "quality",
@@ -135,7 +156,11 @@ export function imageParameterError(
     values.complexity !== undefined ||
     values.quality === "xhigh" ||
     values.quality === "max";
-  if (extended && caps.contract !== IMAGE_PARAMETER_CONTRACT)
+  if (
+    extended &&
+    caps.contract !== IMAGE_PARAMETER_CONTRACT &&
+    caps.contract !== IMAGE_API_CONTRACT
+  )
     return "images.invalidParameters";
   if (values.background === "transparent" && values.output_format === "jpeg")
     return "images.transparentFormat";
@@ -157,6 +182,15 @@ export function supportedImageParameters(
 ): ImageParameters {
   if (!caps) return {};
   const result = { ...values };
+  if (caps.contract !== IMAGE_API_CONTRACT) {
+    delete result.stream;
+    delete result.partial_images;
+    delete result.moderation;
+    delete result.input_fidelity;
+    delete result.frame_count;
+    delete result.frame_duration_ms;
+    delete result.svg;
+  }
   for (const key of [
     "n",
     "quality",
@@ -201,12 +235,24 @@ export function imageParameterLabel(value: string): string {
   const key = valueLabels[value];
   return key
     ? t(key)
-    : ["png", "jpeg", "webp"].includes(value)
+    : ["png", "jpeg", "webp", "svg", "gif"].includes(value)
       ? value.toUpperCase()
       : value;
 }
-export function imageFailureMessage(code: string): string {
+export function imageFailureMessage(
+  code: string,
+  parameters: string[] = [],
+): string {
+  if (code === "image_parameters_unavailable") {
+    const labels = imageAdjustedLabels(parameters);
+    return labels.length
+      ? `${t("images.unavailableParameters")} ${labels.join("、")}`
+      : t("images.apiUnavailable");
+  }
   const keys: Partial<Record<string, MessageKey>> = {
+    image_api_pricing_unavailable: "images.priceUnavailable",
+    image_routing_upgrade_required: "images.errorUpgrade",
+    invalid_image_material: "images.invalidMaterial",
     image_access_denied: "images.errorAccess",
     image_request_timeout: "images.errorTimeout",
     image_rate_limited: "images.errorRateLimit",
@@ -223,4 +269,30 @@ export function imageFailureMessage(code: string): string {
     result_unconfirmed: "images.cancelHint",
   };
   return t(keys[code] ?? "common.failed");
+}
+
+export const IMAGE_ADJUSTED_LABELS: Partial<Record<string, MessageKey>> = {
+  n: "images.count",
+  quality: "images.quality",
+  size: "images.size",
+  background: "images.background",
+  output_format: "images.outputFormat",
+  output_compression: "images.compression",
+  complexity: "images.complexity",
+  mask: "images.mask",
+  markup: "images.markup",
+  stream: "images.stream",
+  partial_images: "images.partialImages",
+  moderation: "images.moderation",
+  input_fidelity: "images.inputFidelity",
+  frame_count: "images.frameCount",
+  frame_duration_ms: "images.frameDuration",
+  svg: "images.svgAuthor",
+  images: "images.inputs",
+  prompt: "images.prompt",
+};
+export function imageAdjustedLabels(parameters: string[]) {
+  return [...new Set(parameters)].flatMap((key) =>
+    IMAGE_ADJUSTED_LABELS[key] ? [t(IMAGE_ADJUSTED_LABELS[key])] : [],
+  );
 }

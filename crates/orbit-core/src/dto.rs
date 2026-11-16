@@ -235,6 +235,39 @@ pub struct ReasoningPolicyView {
     pub revision: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageApiParameters {
+    pub contract: String,
+    pub parameters: ImageParameterConstraints,
+    pub prompt_maximum_characters: u32,
+    pub mask: bool,
+    pub markup: bool,
+    pub stream: bool,
+    pub partial_images_maximum: u8,
+    pub input_fidelities: Vec<String>,
+    pub moderations: Vec<String>,
+    pub svg_reasoning_efforts: Vec<String>,
+    pub gif_frame_count: ImageNumericRange,
+    pub gif_frame_duration_ms: ImageNumericRange,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageNumericRange {
+    pub min: u32,
+    pub max: u32,
+    pub default: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SvgReasoning {
+    pub effort: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SvgParameters {
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<SvgReasoning>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelView {
     pub id: String,
     pub label: String,
@@ -251,6 +284,8 @@ pub struct ModelView {
     pub codex_catalog_binding: Option<CodexCatalogBindingView>,
     pub support_status: String,
     pub image_parameters: Option<ImageParameterConstraints>,
+    #[serde(default)]
+    pub image_api_parameters: Option<ImageApiParameters>,
     pub sales_price: Option<PriceView>,
     pub official_price: Option<PriceView>,
 }
@@ -281,6 +316,20 @@ pub struct ImageParameters {
     pub output_compression: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_images: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moderation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_fidelity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_count: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_duration_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub svg: Option<SvgParameters>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImageResultParameters {
@@ -291,7 +340,15 @@ pub struct ImageResultParameters {
     pub observed_model: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagePartialPreview {
+    pub id: String,
+    pub preview_url: String,
+    pub index: u8,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_preview: Option<ImagePartialPreview>,
     pub id: String,
     pub account_id: String,
     pub connection_id: String,
