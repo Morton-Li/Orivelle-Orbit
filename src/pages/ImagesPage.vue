@@ -38,7 +38,6 @@ const modelId = ref("");
 const inputs = ref<ImageInput[]>([]);
 const parameters = ref<ImageParameters>({});
 const advanced = ref(false);
-const activeTaskId = ref<string | null>(null);
 const enlarged = ref<HistoryImage | null>(null);
 const deleteImageIds = ref<string[]>([]);
 const now = ref(Date.now());
@@ -77,16 +76,7 @@ const promptBytes = computed(() => utf8Bytes(prompt.value));
 const promptLimit = computed(() =>
   Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
 );
-const activeTask = computed(
-  () =>
-    store.tasks.find((task) => task.id === activeTaskId.value) ??
-    store.tasks.find(
-      (task) =>
-        task.connection_id === store.activeConnection?.id &&
-        task.connection_revision === store.activeConnection.revision,
-    ) ??
-    null,
-);
+const activeTask = computed(() => store.imagePreviewTask);
 const requestedModelLabel = computed(
   () =>
     activeTask.value?.requested_model_label ??
@@ -95,8 +85,10 @@ const requestedModelLabel = computed(
     null,
 );
 const resultImages = computed(() =>
-  store.history.filter((image) =>
-    activeTask.value?.image_ids.includes(image.id),
+  store.history.filter(
+    (image) =>
+      activeTask.value?.id === store.imagePreviewTaskId &&
+      activeTask.value?.image_ids.includes(image.id),
   ),
 );
 const active = computed(
@@ -164,7 +156,6 @@ watch(
     modelId.value = "";
     parameters.value = {};
     advanced.value = false;
-    activeTaskId.value = null;
     enlarged.value = null;
     deleteImageIds.value = [];
   },
@@ -239,7 +230,6 @@ async function submit() {
   });
   if (result && captured === store.scope) {
     store.acceptTask(result);
-    activeTaskId.value = result.id;
   }
   if (result) await store.refresh();
 }
@@ -293,7 +283,7 @@ async function edit(image: HistoryImage) {
     inputs.value = [result];
     if (store.imageModels.some((item) => item.id === image.requested_model))
       modelId.value = image.requested_model;
-    activeTaskId.value = null;
+    store.imagePreviewTaskId = null;
     tab.value = "create";
     enlarged.value = null;
   }
