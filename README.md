@@ -1,6 +1,20 @@
-# Orivelle Orbit
+<p align="center">
+  <img src="src/assets/orbit-app-icon.svg" width="96" height="96" alt="Orbit 应用图标">
+</p>
 
-Orbit 是 Orivelle 的桌面应用。用同一个账户连接 Codex 和 Claude Desktop，在图片工作台生成、编辑和保存图片，并查看账户预算、平台用量和实际消费。
+<h1 align="center">Orivelle Orbit</h1>
+
+<p align="center">Orbit 是 Orivelle 的桌面应用。用同一个账户连接 Codex 和 Claude Desktop，在图片工作台生成、编辑和保存图片，并查看账户预算、平台用量和实际消费。</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/showcase/desktop-macos-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/showcase/desktop-macos-light.png">
+    <img src="docs/assets/showcase/desktop-macos-light.png" width="920" alt="Orbit macOS 桌面全景效果图，展示主窗口、账户信息与桌面工具接入状态">
+  </picture>
+</p>
+
+<p align="center"><sub>界面预览 · 使用示例数据</sub></p>
 
 ## 📦 获取 Orbit
 
