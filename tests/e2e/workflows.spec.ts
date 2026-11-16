@@ -787,17 +787,67 @@ test("startup update checking runs once and its result survives page navigation"
   expect(await calls(page, "install_update")).toBe(0);
 });
 
-test("manual update checks announce the result in the bottom-right toast", async ({
-  page,
-}) => {
-  await fixture(page);
-  await page.goto("/#/settings");
-  await page.getByRole("button", { name: "检查更新", exact: true }).click();
-  await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
-  await expect(
-    page.getByRole("button", { name: "下载并更新", exact: true }),
-  ).toHaveCount(0);
-});
+for (const width of [1160, 640]) {
+  test(`${width}px manual update notice preserves the page position and dismisses automatically`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await page.clock.install();
+    await fixture(page);
+    await page.goto("/#/settings");
+    await page.evaluate(() => {
+      const bridge = (
+        window as unknown as {
+          __TAURI_INTERNALS__: {
+            invoke: (
+              command: string,
+              args?: Record<string, unknown>,
+            ) => Promise<unknown>;
+          };
+        }
+      ).__TAURI_INTERNALS__;
+      const invoke = bridge.invoke;
+      bridge.invoke = async (command, args) => {
+        if (command === "check_update")
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        return invoke(command, args);
+      };
+    });
+    const check = page.getByRole("button", { name: /检查更新/ });
+    await check.scrollIntoViewIfNeeded();
+    const layout = () =>
+      page.evaluate(() => {
+        const content = document.querySelector(".main-shell")!;
+        return {
+          scroll: content.scrollTop,
+          elements: [
+            ".sidebar",
+            ".main-shell",
+            ".page-heading",
+            ".settings-sections",
+            ".update-status",
+            ".update-status ~ .settings-actions button",
+          ].map((selector) =>
+            document.querySelector(selector)!.getBoundingClientRect().toJSON(),
+          ),
+        };
+      });
+    const before = await layout();
+    await check.click();
+    await expect(page.locator(".update-status")).toHaveText("正在检查更新…");
+    expect(await layout()).toEqual(before);
+    await page.clock.fastForward(1000);
+    await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
+    expect(await layout()).toEqual(before);
+    await expect(
+      page.getByRole("button", { name: "下载并更新", exact: true }),
+    ).toHaveCount(0);
+    await page.clock.fastForward(4000);
+    await expect(page.locator(".toast")).toHaveCount(0);
+    expect(await layout()).toEqual(before);
+    await expect(page.locator(".update-status")).toHaveText("当前已是最新版本");
+  });
+}
 
 test("update download shows progress, cancels, retries and asks before restarting", async ({
   page,

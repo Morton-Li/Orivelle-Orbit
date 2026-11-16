@@ -1246,6 +1246,15 @@ textarea::placeholder {
   gap: 21px;
   margin-top: 19px;
 }
+.update-check-button {
+  display: inline-grid;
+}
+.update-check-button > span {
+  grid-area: 1 / 1;
+}
+.update-check-button > [aria-hidden="true"] {
+  visibility: hidden;
+}
 .update-progress {
   max-width: 440px;
   margin-top: 12px;

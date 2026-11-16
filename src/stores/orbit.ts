@@ -108,6 +108,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     text: string;
     tone: "success" | "error" | "neutral";
   } | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const loginOpen = ref(false);
   const loginPending = ref(false);
   const loginExpiresAt = ref<string | null>(null);
@@ -200,10 +201,15 @@ export const useOrbitStore = defineStore("orbit", () => {
   function notify(
     text: string,
     tone: "success" | "error" | "neutral" = "neutral",
+    durationMs = 0,
   ) {
+    clearNotice();
     notice.value = { text, tone };
+    if (durationMs > 0) noticeTimer = setTimeout(clearNotice, durationMs);
   }
   function clearNotice() {
+    clearTimeout(noticeTimer);
+    noticeTimer = undefined;
     notice.value = null;
   }
   function report(error: unknown) {
@@ -398,6 +404,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     return initPromise;
   }
   function dispose() {
+    clearNotice();
     unsubscribe?.();
     unsubscribe = undefined;
     unsubscribeErrors?.();
@@ -496,7 +503,7 @@ export const useOrbitStore = defineStore("orbit", () => {
           "success",
         );
       else if (result?.status === "up_to_date" && !silent)
-        notify(t("settings.upToDate"), "success");
+        notify(t("settings.upToDate"), "success", 4000);
       return result;
     } finally {
       updateOperation.value = null;
