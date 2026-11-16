@@ -21,6 +21,7 @@ const navigation = [
   { path: "/", key: "nav.home", icon: "home" },
   { path: "/images", key: "nav.images", icon: "images" },
   { path: "/access", key: "nav.access", icon: "access" },
+  { path: "/api-keys", key: "nav.apiKeys", icon: "key" },
   { path: "/usage", key: "nav.usage", icon: "chart" },
   { path: "/settings", key: "nav.settings", icon: "settings" },
 ] as const;
@@ -38,7 +39,7 @@ function keyboard(event: KeyboardEvent) {
   )
     return;
   const route = navigation[Number(event.key) - 1];
-  if (route && /^[1-5]$/.test(event.key)) {
+  if (route && /^[1-6]$/.test(event.key)) {
     event.preventDefault();
     void router.push(route.path);
   }

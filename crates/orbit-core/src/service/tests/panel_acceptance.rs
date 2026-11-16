@@ -1,8 +1,12 @@
-//! Opt-in real Panel/MySQL protocol acceptance. Only the local TLS transport is
-//! injected: PKCE, signatures, session/key authority and account data are real.
+//! Opt-in real Panel/MySQL protocol acceptance. The local TLS proxy drops one
+//! successful mutation ACK; PKCE, signatures, session/key authority and data are real.
 //! Storage is project-only, Vault is memory, both client paths are fixtures.
 
 use super::*;
+use crate::api_keys::{
+    ApiKeyChanges, ApiKeyMutation, ApiKeyPage, ApiKeyQuery, ApiKeyView, KeyAction, KeyReference,
+    KeyScope,
+};
 use crate::vault::FakeVault as MemoryVault;
 use futures_util::FutureExt;
 use std::{
@@ -272,12 +276,17 @@ impl Harness {
                 && paths.fixture_configuration_target.is_none(),
             "fixture_path_scope_invalid",
         )?;
-        let mut service =
+        let service =
             Service::new(store, vault.clone(), paths).map_err(|_| "project_service_unavailable")?;
-        Arc::get_mut(&mut service)
-            .ok_or("project_service_not_exclusive")?
-            .http = Http::for_local_tls_acceptance(&ca, input.port)
+        // Service retains its own Weak reference. get_mut therefore rejects it
+        // even with one strong owner; rebuild that weak link after injecting TLS.
+        let mut native = Arc::try_unwrap(service).map_err(|_| "project_service_not_exclusive")?;
+        native.http = Http::for_local_tls_acceptance(&ca, input.port)
             .map_err(|_| "strict_tls_client_unavailable")?;
+        let service = Arc::new_cyclic(|reference| {
+            native.self_reference = reference.clone();
+            native
+        });
         let origin = canonical_origin(&format!("https://orbit-e2e.test:{}", input.port))
             .map_err(|_| "local_origin_invalid")?;
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
@@ -410,9 +419,8 @@ impl Harness {
                     .session
                     .account
                     .as_ref()
-                    .is_some_and(|account| account.id == self.input.expected_account_id)
-                && view.session.inference_credential_status == "ready",
-            "real_login_or_auto_key_incomplete",
+                    .is_some_and(|account| account.id == self.input.expected_account_id),
+            "real_login_incomplete",
         )?;
         let record = self
             .service
@@ -422,14 +430,281 @@ impl Harness {
                     .ok_or("real_active_connection_missing")?,
             )
             .map_err(|_| "real_connection_missing")?;
+        let session = self
+            .service
+            .session(&record)
+            .map_err(|_| "real_session_missing")?;
         checked(
-            record.credential_state == "active"
-                && record.credential_reference.is_some()
-                && record.api_key_id.is_some()
-                && record.view.credential_revision.is_some(),
-            "real_auto_key_not_available",
+            [
+                "api-keys:read",
+                "api-keys:write",
+                "api-keys:use",
+                "api-keys:reveal",
+            ]
+            .iter()
+            .all(|scope| session.scopes.iter().any(|granted| granted == scope)),
+            "real_key_profile_scopes_missing",
         )?;
         Ok(record)
+    }
+    fn key_changes(name: &str) -> ApiKeyChanges {
+        ApiKeyChanges {
+            name: name.into(),
+            expires_at: None,
+            service_tier: "follow_client".into(),
+            spending_limit: Some("7.50000000".into()),
+            spending_limit_mode: "cumulative".into(),
+            spending_window_minutes: None,
+        }
+    }
+    fn key_mutation(
+        record: &ConnectionRecord,
+        action: KeyAction,
+        key: Option<&ApiKeyView>,
+        changes: Option<ApiKeyChanges>,
+    ) -> ApiKeyMutation {
+        ApiKeyMutation {
+            connection_id: record.view.id.clone(),
+            expected_revision: record.view.revision,
+            action,
+            api_key_id: key.map(|key| key.id.clone()),
+            management_revision: key.map(|key| key.management_revision.clone()),
+            changes,
+        }
+    }
+    fn key_reference(record: &ConnectionRecord, key: &ApiKeyView) -> KeyReference {
+        KeyReference {
+            connection_id: record.view.id.clone(),
+            expected_revision: record.view.revision,
+            api_key_id: key.id.clone(),
+            key_revision: key.key_revision.clone(),
+        }
+    }
+    fn current(&self, id: &str) -> AcceptanceResult<ConnectionRecord> {
+        self.service
+            .record(id)
+            .map_err(|_| "real_connection_missing")
+    }
+    async fn key_page(&self, id: &str, search: &str) -> AcceptanceResult<ApiKeyPage> {
+        let record = self.current(id)?;
+        self.service
+            .list_api_keys(&ApiKeyQuery {
+                connection_id: record.view.id,
+                expected_revision: record.view.revision,
+                search: search.into(),
+                status: None,
+                page: 1,
+            })
+            .await
+            .map_err(|_| "real_key_list_failed")
+    }
+    async fn api_keys(&self, first: &ConnectionRecord) -> AcceptanceResult<ConnectionRecord> {
+        checked(
+            first.credential_reference.is_none() && first.api_key_id.is_none(),
+            "new_key_profile_issued_automatic_credential",
+        )?;
+        let page = self.key_page(&first.view.id, "").await?;
+        checked(
+            page.can_write && page.can_reveal && page.legacy_key.is_none() && page.total == 0,
+            "real_initial_key_projection_invalid",
+        )?;
+        let result = self
+            .service
+            .mutate_api_key(&Self::key_mutation(
+                first,
+                KeyAction::Create,
+                None,
+                Some(Self::key_changes("Synthetic Orbit default")),
+            ))
+            .await
+            .map_err(|_| "real_key_create_failed")?;
+        let key = result.api_key.ok_or("real_created_key_missing")?;
+        checked(
+            result.completed && key.selectable,
+            "real_created_key_not_selectable",
+        )?;
+        let current = self.current(&first.view.id)?;
+        self.service
+            .select_api_key(&Self::key_reference(&current, &key))
+            .await
+            .map_err(|_| "real_key_selection_delivery_failed")?;
+        let selected = self.current(&first.view.id)?;
+        let before = self
+            .service
+            .reveal_api_key(&Self::key_reference(&selected, &key))
+            .await
+            .map_err(|_| "real_key_reveal_failed")?;
+        checked(
+            before.api_key_id == key.id && before.plain_text_token.starts_with("orv_sk_"),
+            "real_key_reveal_invalid",
+        )?;
+        let rotated = self
+            .service
+            .mutate_api_key(&Self::key_mutation(
+                &selected,
+                KeyAction::Rotate,
+                Some(&key),
+                None,
+            ))
+            .await
+            .map_err(|_| "real_key_rotation_failed")?
+            .api_key
+            .ok_or("real_rotated_key_missing")?;
+        let current = self.current(&first.view.id)?;
+        let after = self
+            .service
+            .reveal_api_key(&Self::key_reference(&current, &rotated))
+            .await
+            .map_err(|_| "real_rotated_key_reveal_failed")?;
+        let old_reference = selected
+            .credential_reference
+            .as_deref()
+            .ok_or("real_selected_credential_missing")?;
+        checked(
+            rotated.id == key.id
+                && rotated.key_revision != key.key_revision
+                && before.plain_text_token != after.plain_text_token
+                && current.api_key_id.as_deref() == Some(rotated.id.as_str())
+                && current.view.credential_revision.as_deref()
+                    == Some(rotated.key_revision.as_str())
+                && current.credential_reference.as_deref() != Some(old_reference)
+                && self
+                    .service
+                    .store
+                    .meta(&crate::identity::credential_disabled_reference(
+                        old_reference,
+                    ))
+                    .map_err(|_| "real_credential_fence_unavailable")?
+                    .as_deref()
+                    == Some("1")
+                && self.vault.get(old_reference).is_err(),
+            "real_rotation_did_not_fence_old_credential",
+        )?;
+        let updated = self
+            .service
+            .mutate_api_key(&Self::key_mutation(
+                &current,
+                KeyAction::Update,
+                Some(&rotated),
+                Some(Self::key_changes("Synthetic Orbit selected")),
+            ))
+            .await
+            .map_err(|_| "real_key_update_failed")?
+            .api_key
+            .ok_or("real_updated_key_missing")?;
+        let current = self.current(&first.view.id)?;
+        let reset = self
+            .service
+            .mutate_api_key(&Self::key_mutation(
+                &current,
+                KeyAction::Reset,
+                Some(&updated),
+                None,
+            ))
+            .await
+            .map_err(|_| "real_key_counter_reset_failed")?
+            .api_key
+            .ok_or("real_reset_key_missing")?;
+        checked(
+            reset.key_revision == rotated.key_revision,
+            "metadata_change_rotated_inference_secret",
+        )?;
+        let metadata = serde_json::to_string(&self.key_page(&first.view.id, "").await?)
+            .map_err(|_| "real_key_metadata_encode_failed")?;
+        checked(
+            !metadata.contains(after.plain_text_token.as_str()),
+            "real_key_metadata_leaked_secret",
+        )?;
+
+        // The task-owned TLS proxy forwards this request once, then drops only
+        // its first successful Panel response. Both attempts use real Panel and
+        // production Service request persistence/recovery; no transport mock.
+        let current = self.current(&first.view.id)?;
+        let recovery = Self::key_mutation(
+            &current,
+            KeyAction::Create,
+            None,
+            Some(Self::key_changes("Synthetic Orbit recovery")),
+        );
+        match self.service.mutate_api_key(&recovery).await {
+            Err(error) if error.code == "api_key_operation_pending" => {}
+            _ => return Err("real_lost_ack_was_not_pending"),
+        }
+        let committed = self
+            .key_page(&first.view.id, "Synthetic Orbit recovery")
+            .await?;
+        checked(
+            committed.total == 1 && committed.items.len() == 1 && committed.pending_operation,
+            "real_lost_ack_did_not_commit_exactly_once",
+        )?;
+        match self.service.mutate_api_key(&recovery).await {
+            Err(error) if error.code == "api_key_operation_pending" => {}
+            _ => return Err("real_pending_operation_allowed_second_mutation"),
+        }
+        let current = self.current(&first.view.id)?;
+        let recovered = self
+            .service
+            .recover_api_key_operation(&KeyScope {
+                connection_id: current.view.id,
+                expected_revision: current.view.revision,
+            })
+            .await
+            .map_err(|_| "real_key_operation_recovery_failed")?;
+        let recovered_key = recovered.api_key.ok_or("real_recovered_key_missing")?;
+        let replayed = self
+            .key_page(&first.view.id, "Synthetic Orbit recovery")
+            .await?;
+        checked(
+            recovered.completed
+                && recovered_key.id == committed.items[0].id
+                && replayed.total == 1
+                && !replayed.pending_operation,
+            "real_key_operation_recovery_duplicated_mutation",
+        )?;
+        let current = self.current(&first.view.id)?;
+        let revoked = self
+            .service
+            .mutate_api_key(&Self::key_mutation(
+                &current,
+                KeyAction::Revoke,
+                Some(&recovered_key),
+                None,
+            ))
+            .await
+            .map_err(|_| "real_key_revoke_failed")?
+            .api_key
+            .ok_or("real_revoked_key_missing")?;
+        checked(
+            revoked.state == "revoked" && !revoked.selectable,
+            "real_revoked_key_remained_selectable",
+        )?;
+        let current = self.current(&first.view.id)?;
+        let deleted = self
+            .service
+            .mutate_api_key(&Self::key_mutation(
+                &current,
+                KeyAction::Delete,
+                Some(&revoked),
+                None,
+            ))
+            .await
+            .map_err(|_| "real_key_delete_failed")?;
+        checked(
+            deleted.completed
+                && deleted.api_key.is_none()
+                && self
+                    .key_page(&first.view.id, "Synthetic Orbit recovery")
+                    .await?
+                    .total
+                    == 0,
+            "real_deleted_key_still_listed",
+        )?;
+        let page = self.key_page(&first.view.id, "").await?;
+        checked(
+            page.selected_ready && page.selected.is_some_and(|key| key.id == reset.id),
+            "real_default_key_not_ready_after_management",
+        )?;
+        self.current(&first.view.id)
     }
     async fn models_and_offline_gate(&self, record: &ConnectionRecord) -> AcceptanceResult<()> {
         let cache = self
@@ -601,7 +876,8 @@ impl Harness {
     }
     async fn exercise(&mut self) -> AcceptanceResult<()> {
         self.tls_checks().await?;
-        let first = self.login().await?;
+        let first_login = self.login().await?;
+        let first = self.api_keys(&first_login).await?;
         self.models_and_offline_gate(&first).await?;
         let first_installation = self
             .service
@@ -618,6 +894,9 @@ impl Harness {
                 && first.view.id == second.view.id
                 && first.api_key_id == second.api_key_id
                 && first.view.credential_revision == second.view.credential_revision
+                && second.credential_state == "active"
+                && second.credential_reference.is_some()
+                && first.credential_reference != second.credential_reference
                 && self
                     .service
                     .store
@@ -631,7 +910,9 @@ impl Harness {
         let report = json!({ "state": "passed", "scope": "real_panel_mysql_protocol", "tlsChainAndHostname": true,
             "wrongCaRejected": true, "wrongSanRejected": true, "originConfined": true,
             "pkceAndProofExchange": true, "loginCsrfRejected": true, "consentCsrfRejected": true,
-            "autoKeyDelivered": true, "installationAndKeyReused": true, "modelPermissionsFiltered": true,
+            "automaticKeyNotIssued": true, "explicitKeyDelivered": true, "keyListCreateUpdateRotateResetRevokeDelete": true,
+            "rotationFencedOldCredential": true, "lostMutationAckRecoveredExactlyOnce": true,
+            "installationAndKeyReused": true, "modelPermissionsFiltered": true,
             "sessionRevocationVerified": true,
             "node": "offline", "clientConfiguration": "not_permitted", "vault": "memory",
             "edgeInference": "not_exercised", "candidateGuiAuth": "not_exercised", "desktopLoaded": "unconfirmed" });
@@ -657,7 +938,7 @@ impl Harness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires explicitly prepared local Docker Panel/MySQL/TLS and private project input; no system Vault or client writes"]
+#[ignore = "Requires local Panel/MySQL/TLS with a one-shot lost-ACK proxy and private project input; no system Vault or client writes"]
 async fn real_local_panel_pkce_key_permissions_and_revocation() {
     // Run only this selected ignored entry with --test-threads=1. A catch alone
     // does not stop the default hook printing an unexpected private payload.

@@ -93,7 +93,7 @@ export function usagePage(query?: Partial<UsageQuery>): UsagePage {
     max_days: 90,
     defaulted: false,
   };
-  const second = !!query?.cursor;
+  const second = query?.cursor === "demo-next";
   const data: UsageRecord[] = Array.from(
     { length: second ? 3 : 8 },
     (_, i): UsageRecord => {

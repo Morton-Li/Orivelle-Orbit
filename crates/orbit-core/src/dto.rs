@@ -393,6 +393,8 @@ pub struct BootstrapView {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreviewContext {
+    #[serde(default)]
+    pub api_key: Option<crate::api_keys::ApiKeyLabel>,
     pub account_id: String,
     pub account_label: String,
     pub connection_id: String,

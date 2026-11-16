@@ -977,7 +977,7 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
         preview
             .impact
             .iter()
-            .any(|line| line.contains("Sonnet、Opus、Haiku 均映射至"))
+            .any(|line| line.starts_with("Claude Desktop 中显示的模型名称："))
     );
     assert_eq!(f.service.claude_mappings.inflight(), 0);
     assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
@@ -1034,7 +1034,7 @@ async fn claude_mapping_activation_preview_is_reservation_only_commit_enables_ex
 }
 
 #[tokio::test]
-async fn role_switch_routes_each_alias_and_restores_original() {
+async fn role_switch_displays_model_names_routes_each_alias_and_restores_original() {
     let f = mapping_fixture();
     let mut cache = f.service.account_cache(&f.record).unwrap();
     let roles = ClaudeModelMapping {
@@ -1042,15 +1042,18 @@ async fn role_switch_routes_each_alias_and_restores_original() {
         opus: "synthetic-fallback".into(),
         haiku: "synthetic-auxiliary".into(),
     };
+    let names = ["主力模型名称", "Opus Display Name", "快速模型名称"];
     let original = cache
         .models
-        .iter()
+        .iter_mut()
         .find(|model| model.id == roles.sonnet)
-        .unwrap()
-        .clone();
-    for id in [&roles.opus, &roles.haiku] {
+        .unwrap();
+    original.label = names[0].into();
+    let original = original.clone();
+    for (id, name) in [&roles.opus, &roles.haiku].into_iter().zip(&names[1..]) {
         let mut model = original.clone();
         model.id = id.clone();
+        model.label = (*name).into();
         cache.models.push(model);
     }
     f.service
@@ -1090,6 +1093,23 @@ async fn role_switch_routes_each_alias_and_restores_original() {
         .unwrap();
     let context = mapping_context(&f.service, &preview);
     let plan = context.mapping.as_ref().unwrap();
+    assert_eq!(
+        plan.aliases
+            .iter()
+            .map(|alias| alias.label_override.as_str())
+            .collect::<Vec<_>>(),
+        names
+    );
+    let exported: Value = serde_json::from_str(&preview.redacted_diff).unwrap();
+    assert_eq!(
+        exported["profile"]["inferenceModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["labelOverride"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        names
+    );
     let before = preview
         .paths
         .iter()
@@ -1106,6 +1126,24 @@ async fn role_switch_routes_each_alias_and_restores_original() {
     )
     .unwrap();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let catalog: Value = client
+        .get(format!("{}/v1/models", plan.base_url()))
+        .bearer_auth(local.as_str())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        catalog["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["display_name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        names
+    );
     for alias in [
         "claude-sonnet-5",
         "claude-opus-5",
@@ -1948,7 +1986,13 @@ fn claude_mapping_helper_modes_and_late_epoch_never_expose_the_upstream_key() {
     let mut context = frozen(&f);
     let manager = MappingManager::default();
     let mapping = manager
-        .reserve(&context.binding_id, &context.profile_id, &f.model, None)
+        .reserve(
+            &context.binding_id,
+            &context.profile_id,
+            &f.model,
+            None,
+            ["Synthetic Model"; 3],
+        )
         .unwrap();
     let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
         app_version: &target.app_version,

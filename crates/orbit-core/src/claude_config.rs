@@ -1080,7 +1080,7 @@ mod tests {
         let fixture = Fixture::new();
         let manager = crate::claude_mapping::MappingManager::default();
         let mapping = manager
-            .reserve(BINDING, NEW_ID, "gpt-6-luna", None)
+            .reserve(BINDING, NEW_ID, "gpt-6-luna", None, ["GPT 6 Luna"; 3])
             .unwrap();
         let mut plan = fixture.plan();
         plan.model_id = "gpt-6-luna";
@@ -1103,10 +1103,7 @@ mod tests {
                 .iter()
                 .all(|model| {
                     model["name"].as_str().unwrap().starts_with("claude-")
-                        && model["labelOverride"]
-                            .as_str()
-                            .unwrap()
-                            .ends_with(" → gpt-6-luna")
+                        && model["labelOverride"] == "GPT 6 Luna"
                         && model.get("supports1m").is_none()
                 })
         );

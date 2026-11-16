@@ -81,6 +81,7 @@ mod tests {
             date_from: "2026-11-01".into(),
             date_to: "2026-11-13".into(),
             timezone: "Asia/Shanghai".into(),
+            api_key_id: None,
             outcome: None,
             cursor: None,
         }

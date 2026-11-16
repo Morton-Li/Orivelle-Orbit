@@ -103,16 +103,15 @@ test("real capability names populate client models and image edit options", asyn
   });
   await page.getByRole("button", { name: "接入 Orbit" }).first().click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("/fixture/config")).toBeVisible();
   await expect(
-    dialog.getByRole("button", { name: "确认保存本地配置" }),
-  ).toBeEnabled();
+    dialog.locator(".path-list, .impact-list, .diff-preview"),
+  ).toHaveCount(0);
+  await expect(dialog.getByText("/fixture/config")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "确认接入" })).toBeEnabled();
   const changed = bootstrap("synthetic-account-a", 2);
   changed.connections[0]!.revision = 2;
   await pushState(page, changed);
-  await expect(
-    dialog.getByRole("button", { name: "确认保存本地配置" }),
-  ).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "确认接入" })).toBeDisabled();
   expect(await calls(page, "apply_client_config")).toBe(0);
 });
 
@@ -336,18 +335,18 @@ for (const client of ["codex", "claude"] as const) {
       await page.goto("/#/access");
       await page
         .locator(`#client-${client}`)
-        .getByRole("button", { name: "切回原配置", exact: true })
+        .getByRole("button", { name: "取消接入", exact: true })
         .click();
       const apply = page
         .getByRole("dialog")
-        .getByRole("button", { name: "确认恢复配置", exact: true });
+        .getByRole("button", { name: "确认取消接入", exact: true });
       if (client === "claude") {
         await expect(
           page.getByRole("dialog").locator(".path-list li"),
-        ).toHaveCount(3);
+        ).toHaveCount(0);
         await expect(
           page.getByRole("dialog").getByText("Fixture A", { exact: true }),
-        ).toBeVisible();
+        ).toHaveCount(0);
       }
       if (recoverable) {
         await expect(apply).toBeEnabled();
@@ -355,10 +354,7 @@ for (const client of ["codex", "claude"] as const) {
         expect(await calls(page, "restore_client_config")).toBe(1);
         await expect(page.getByRole("dialog")).toHaveCount(0);
         await expect(
-          page.getByText(
-            "原配置已恢复。请完整退出目标应用并重新打开，载入和连接仍待确认。",
-            { exact: true },
-          ),
+          page.getByText("已取消接入，请重启应用。", { exact: true }),
         ).toBeVisible();
       } else {
         await expect(apply).toBeDisabled();
@@ -383,10 +379,8 @@ test("Claude diagnostic export requires confirmation and never claims configurat
   await chooseClaudeRoles(page);
   await page.getByRole("button", { name: "接入 Orbit" }).last().click();
   const dialog = page.getByRole("dialog");
-  await expect(
-    dialog.getByRole("button", { name: "确认保存本地配置" }),
-  ).toBeDisabled();
-  await expect(dialog.getByText(/不代表可直接导入/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "确认接入" })).toBeDisabled();
+  await expect(dialog.locator("h3, pre, .path-list")).toHaveCount(0);
   const exportButton = dialog.getByRole("button", {
     name: "确认导出 Claude 诊断候选",
   });
@@ -416,7 +410,7 @@ test("Claude diagnostic export requires confirmation and never claims configurat
   await expect(page.getByText("尚未配置", { exact: true })).toHaveCount(1);
 });
 
-test("Claude local configuration save shows the complete impact without claiming load or connection", async ({
+test("Claude local configuration save uses basic confirmation without claiming load or connection", async ({
   page,
 }) => {
   const state = bootstrap();
@@ -428,11 +422,11 @@ test("Claude local configuration save shows the complete impact without claiming
   await chooseClaudeRoles(page);
   await page.getByRole("button", { name: "接入 Orbit" }).last().click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.locator(".path-list li")).toHaveCount(3);
-  await expect(dialog.getByText(/包括 Chat、Code 与 Cowork/)).toBeVisible();
-  await expect(dialog.getByText(/远端组织策略尚未确认/)).toBeVisible();
+  await expect(dialog.locator(".path-list li")).toHaveCount(0);
+  await expect(dialog.getByText(/包括 Chat、Code 与 Cowork/)).toHaveCount(0);
+  await expect(dialog.getByText(/远端组织策略尚未确认/)).toHaveCount(0);
   expect(await calls(page, "apply_client_config")).toBe(0);
-  await dialog.getByRole("button", { name: "确认保存本地配置" }).click();
+  await dialog.getByRole("button", { name: "确认接入" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await calls(page, "apply_client_config")).toBe(1);
   expect(
@@ -465,11 +459,11 @@ test("Claude local configuration save shows the complete impact without claiming
     .getByRole("link", { name: "接入", exact: true })
     .click();
   await expect(page.locator(".backup-row")).toHaveCount(0);
-  await page.getByRole("button", { name: "切回原配置", exact: true }).click();
-  await dialog.getByRole("button", { name: "确认恢复配置" }).click();
+  await page.getByRole("button", { name: "取消接入", exact: true }).click();
+  await dialog.getByRole("button", { name: "确认取消接入" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "切回原配置", exact: true }),
+    page.getByRole("button", { name: "取消接入", exact: true }),
   ).toHaveCount(0);
   expect(await calls(page, "restore_client_config")).toBe(1);
 });
@@ -485,7 +479,7 @@ test("Claude qualification changes permanently retire the old confirmation", asy
   await page.getByRole("button", { name: "接入 Orbit" }).last().click();
   const button = page
     .getByRole("dialog")
-    .getByRole("button", { name: "确认保存本地配置" });
+    .getByRole("button", { name: "确认接入" });
   await expect(button).toBeEnabled();
   const changed = bootstrap("synthetic-account-a", 2);
   changed.clients[1]!.configuration_access_revision =
@@ -617,7 +611,8 @@ test("available image controls keep legacy parameters out of the workbench", asy
   await expect(page.locator(".parameter-details")).toContainText(
     "透明背景可能增加图片 token 用量",
   );
-  await expect(page.locator(".task-facts")).not.toContainText("1536x864");
+  await expect(page.locator(".task-facts")).toHaveCount(0);
+  await expect(page.locator(".image-result")).not.toContainText("1536x864");
   await page.locator(".parameter-details").screenshot({
     path: ".cache/evidence/images-background-explicit-choice.png",
   });
@@ -690,10 +685,8 @@ test("deleting one local image never deletes other results of the same task", as
   }));
   await fixture(page, { state });
   await page.goto("/#/images");
-  await expect(page.locator(".task-facts dt")).toHaveText([
-    "请求模型",
-    "Request ID",
-  ]);
+  await expect(page.locator(".task-header")).toHaveCount(0);
+  await expect(page.locator(".result-card")).toHaveCount(0);
   await page.getByRole("tab", { name: "本地历史" }).click();
   await expect(page.locator(".history-card")).toHaveCount(2);
   await expect(page.locator(".history-card strong").first()).toHaveText(
@@ -787,17 +780,67 @@ test("startup update checking runs once and its result survives page navigation"
   expect(await calls(page, "install_update")).toBe(0);
 });
 
-test("manual update checks announce the result in the bottom-right toast", async ({
-  page,
-}) => {
-  await fixture(page);
-  await page.goto("/#/settings");
-  await page.getByRole("button", { name: "检查更新", exact: true }).click();
-  await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
-  await expect(
-    page.getByRole("button", { name: "下载并更新", exact: true }),
-  ).toHaveCount(0);
-});
+for (const width of [1160, 640]) {
+  test(`${width}px manual update notice preserves the page position and dismisses automatically`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await page.clock.install();
+    await fixture(page);
+    await page.goto("/#/settings");
+    await page.evaluate(() => {
+      const bridge = (
+        window as unknown as {
+          __TAURI_INTERNALS__: {
+            invoke: (
+              command: string,
+              args?: Record<string, unknown>,
+            ) => Promise<unknown>;
+          };
+        }
+      ).__TAURI_INTERNALS__;
+      const invoke = bridge.invoke;
+      bridge.invoke = async (command, args) => {
+        if (command === "check_update")
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        return invoke(command, args);
+      };
+    });
+    const check = page.getByRole("button", { name: /检查更新/ });
+    await check.scrollIntoViewIfNeeded();
+    const layout = () =>
+      page.evaluate(() => {
+        const content = document.querySelector(".main-shell")!;
+        return {
+          scroll: content.scrollTop,
+          elements: [
+            ".sidebar",
+            ".main-shell",
+            ".page-heading",
+            ".settings-sections",
+            ".update-status",
+            ".update-status ~ .settings-actions button",
+          ].map((selector) =>
+            document.querySelector(selector)!.getBoundingClientRect().toJSON(),
+          ),
+        };
+      });
+    const before = await layout();
+    await check.click();
+    await expect(page.locator(".update-status")).toHaveText("正在检查更新…");
+    expect(await layout()).toEqual(before);
+    await page.clock.fastForward(1000);
+    await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
+    expect(await layout()).toEqual(before);
+    await expect(
+      page.getByRole("button", { name: "下载并更新", exact: true }),
+    ).toHaveCount(0);
+    await page.clock.fastForward(4000);
+    await expect(page.locator(".toast")).toHaveCount(0);
+    expect(await layout()).toEqual(before);
+    await expect(page.locator(".update-status")).toHaveText("当前已是最新版本");
+  });
+}
 
 test("update download shows progress, cancels, retries and asks before restarting", async ({
   page,
@@ -880,7 +923,9 @@ test("update timeout is readable and leaves download available", async ({
 test("access and settings show the supported controls and the installed version", async ({
   page,
 }) => {
-  await fixture(page);
+  const state = bootstrap();
+  state.settings.check_updates_on_start = false;
+  await fixture(page, { state });
   await page.goto("/#/access");
   await expect(
     page.getByRole("heading", { name: "模型映射", exact: true }),

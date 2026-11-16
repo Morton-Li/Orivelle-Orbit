@@ -10,6 +10,8 @@ pub struct UsageQuery {
     pub date_from: String,
     pub date_to: String,
     pub timezone: String,
+    #[serde(default)]
+    pub api_key_id: Option<String>,
     pub outcome: Option<String>,
     pub cursor: Option<String>,
 }
@@ -38,6 +40,10 @@ impl UsageQuery {
             return Err(fail("invalid_usage_query"));
         }
         let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(id) = &self.api_key_id {
+            crate::api_keys::validate_id(id).map_err(|_| fail("invalid_usage_query"))?;
+            query.append_pair("api_key_id", id);
+        }
         query
             .append_pair("date_from", &self.date_from)
             .append_pair("date_to", &self.date_to)
@@ -174,6 +180,7 @@ mod tests {
             date_from: "2026-11-01".into(),
             date_to: "2026-11-13".into(),
             timezone: "Asia/Shanghai".into(),
+            api_key_id: None,
             outcome: Some("failed".into()),
             cursor: Some("a+/=?&actor=other".into()),
         };

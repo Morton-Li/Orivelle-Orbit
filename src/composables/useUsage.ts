@@ -1,4 +1,4 @@
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch, type Ref } from "vue";
 import { useOrbitStore } from "../stores/orbit";
 import { call, OrbitError } from "../shared/bridge";
 import {
@@ -9,7 +9,7 @@ import {
   type UsageSummary,
 } from "../shared/usage";
 import { t } from "../shared/i18n";
-export function useUsage() {
+export function useUsage(apiKeyId?: Readonly<Ref<string | undefined>>) {
   const store = useOrbitStore();
   const range = ref(dateRange(30));
   const draft = ref({ ...range.value });
@@ -26,7 +26,7 @@ export function useUsage() {
     recordsGeneration = 0;
   const scope = computed(() =>
     store.account && store.activeConnection
-      ? `${store.account.id}/${store.activeConnection.panel_origin}/${store.activeConnection.id}/${store.activeConnection.revision}`
+      ? `${store.account.id}/${store.activeConnection.panel_origin}/${store.activeConnection.id}/${store.activeConnection.revision}/${apiKeyId?.value ?? ""}`
       : "none",
   );
   const available = computed(
@@ -42,6 +42,7 @@ export function useUsage() {
       expected_revision: store.activeConnection!.revision,
       ...range.value,
       timezone,
+      ...(apiKeyId?.value ? { api_key_id: apiKeyId.value } : {}),
       ...(outcome.value ? { outcome: outcome.value } : {}),
       ...(cursor ? { cursor } : {}),
     };
@@ -67,19 +68,22 @@ export function useUsage() {
       if (generation === summaryGeneration) summaryLoading.value = false;
     }
   }
-  async function loadRecords(cursor?: string) {
-    if (!available.value) return;
+  async function loadRecords(cursor?: string): Promise<boolean> {
+    if (!available.value) return false;
     const generation = ++recordsGeneration,
       before = scope.value;
     recordsLoading.value = true;
     recordsError.value = "";
     try {
       const value = await call("list_usage_records", request(cursor));
-      if (generation === recordsGeneration && before === scope.value)
-        records.value = value;
+      if (generation !== recordsGeneration || before !== scope.value)
+        return false;
+      records.value = value;
+      return true;
     } catch {
       if (generation === recordsGeneration && before === scope.value)
         recordsError.value = t("usage.loadFailed");
+      return false;
     } finally {
       if (generation === recordsGeneration) recordsLoading.value = false;
     }

@@ -51,6 +51,9 @@ html.menubar-window body {
 .menubar-panel::before {
   display: none;
 }
+.menubar-window .menubar-panel:focus {
+  outline: none;
+}
 .menubar-panel button {
   color: inherit;
   font: inherit;
@@ -60,6 +63,10 @@ html.menubar-window body {
 .menubar-panel button:focus-visible {
   outline: 2px solid var(--mb-accent);
   outline-offset: 3px;
+}
+/* WebKit can retain the old outline when a preloaded panel regains focus. */
+.menubar-panel button:not(:focus) {
+  outline: none;
 }
 .menubar-panel .icon {
   width: 15px;

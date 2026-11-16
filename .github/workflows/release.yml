@@ -100,6 +100,7 @@ jobs:
     needs: source
     runs-on: windows-2025
     timeout-minutes: 60
+    environment: codesign
     env:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: core.autocrlf
@@ -114,8 +115,12 @@ jobs:
         with:
           release-tag: ${{ needs.source.outputs.tag }}
 
-      - name: Build NSIS installer
-        run: node scripts/native-workflow.mjs github-bundle
+      - name: Build and sign the NSIS updater installer
+        env:
+          ORBIT_RELEASE_UPDATER_PUBLIC_KEY: ${{ vars.ORBIT_RELEASE_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/native-workflow.mjs github-release
 
       - name: Verify the Windows installer payload
         shell: pwsh

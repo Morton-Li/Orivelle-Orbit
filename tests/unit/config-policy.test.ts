@@ -111,9 +111,9 @@ describe("configuration confirmation follows current policy", () => {
       const apply = view.get<HTMLButtonElement>(".button.primary");
       expect(apply.element.disabled).toBe(false);
       if (kind === "claude") {
-        expect(view.findAll(".path-list li")).toHaveLength(3);
-        expect(view.text()).toContain("Chat、Code 与 Cowork");
-        expect(view.text()).toContain("远端组织策略尚未确认");
+        expect(view.findAll(".path-list li")).toHaveLength(0);
+        expect(view.text()).not.toContain("Chat、Code 与 Cowork");
+        expect(view.text()).not.toContain("远端组织策略尚未确认");
         expect(view.text()).not.toContain("客户端载入已确认");
       }
       const changed = bootstrap("synthetic-account-a", 2);
@@ -189,7 +189,6 @@ describe("configuration confirmation follows current policy", () => {
     expect(
       view.get<HTMLButtonElement>(".button.primary").element.disabled,
     ).toBe(true);
-    expect(view.text()).toContain("不代表可直接导入");
     expect(view.text()).not.toContain("官方导入文件");
     const changed = bootstrap("synthetic-account-a", 2);
     changed.clients[1]!.managed = "unknown";
@@ -381,7 +380,9 @@ describe("Codex catalog confirmation", () => {
       expect(
         bridge.call.mock.calls.filter(
           ([command]) =>
-            !["probe_nodes", "cancel_node_probes"].includes(command),
+            !["probe_nodes", "cancel_node_probes", "list_api_keys"].includes(
+              command,
+            ),
         ),
       ).toEqual([]);
       client.configuration_access = "allowed";
@@ -453,8 +454,8 @@ describe("Codex catalog confirmation", () => {
       const button = view.get<HTMLButtonElement>(".button.primary");
       expect(store.ready).toBe(false);
       expect(button.element.disabled).toBe(false);
-      expect(button.text()).toBe("确认恢复配置");
-      expect(view.text()).toContain("远端组织策略尚未确认");
+      expect(button.text()).toBe("确认取消接入");
+      expect(view.text()).not.toContain("远端组织策略尚未确认");
       expect(view.text()).not.toContain("本次预览的执行来源已核验");
       bridge.call.mockImplementation(async (command) =>
         command === "bootstrap"
@@ -473,41 +474,33 @@ describe("Codex catalog confirmation", () => {
         confirmed: true,
       });
       expect(store.notice).toEqual({
-        text:
-          state === "conflict"
-            ? "配置冲突"
-            : "原配置已恢复。请完整退出目标应用并重新打开，载入和连接仍待确认。",
-        tone: state === "conflict" ? "error" : "neutral",
+        text: state === "conflict" ? "配置冲突" : "已取消接入，请重启应用。",
+        tone: state === "conflict" ? "error" : "success",
       });
     },
   );
 
-  it("shows the compiled menu and explicit defaults separately from client loading and connection", () => {
+  it("shows only basic connection information while retaining catalog validation", () => {
     const value = preview();
+    value.context!.api_key = {
+      id: "A".repeat(26),
+      name: "Chosen key",
+      prefix: "orv_sk_public",
+    };
     value.codex_runtime = syntheticCodexRuntime();
-    value.codex_catalog!.aliases.push("synthetic-second");
-    value.codex_catalog!.default_alias = "synthetic-second";
-    useOrbitStore().models.push(syntheticCodexModel("synthetic-second"));
     const view = show(value);
-    expect(
-      view
-        .get('ul[aria-label="模型菜单调用名称（本次目录）"]')
-        .findAll("li")
-        .map((item) => item.text()),
-    ).toEqual(["synthetic-text", "synthetic-second"]);
-    const context = view.findAll("dl")[2]!;
-    expect(context.text()).toContain("默认模型调用名称synthetic-second");
-    expect(context.text()).toContain("默认推理档位high");
-    expect(context.text()).toContain("0.163.0-alpha.10.2");
-    expect(view.text()).toContain("本次预览的执行来源已核验");
-    expect(view.text()).toContain("不代表客户端已载入或连接通过");
-    expect(view.text()).toContain("/fixture/config");
-    expect(view.text()).toContain("/fixture/codex-model-catalog.json");
-    expect(view.text()).not.toContain(value.codex_catalog!.source_sha256);
+    expect(view.text()).not.toContain("应用");
+    expect(view.text()).not.toContain("账户");
+    expect(view.text()).not.toContain("Synthetic account");
+    expect(view.text()).toContain("Chosen key");
+    expect(view.findAll("dl")).toHaveLength(1);
+    expect(view.findAll("dt").map((item) => item.text())).toEqual([
+      "节点",
+      "API Key",
+    ]);
+    expect(view.findAll("h3, pre, .path-list, .impact-list")).toHaveLength(0);
+    expect(view.text()).not.toContain("/fixture/config");
     expect(view.text()).not.toContain(value.codex_catalog!.sha256);
-    expect(view.text()).not.toContain(
-      value.codex_configuration_target!.revision,
-    );
     expect(
       view.get<HTMLButtonElement>(".button.primary").element.disabled,
     ).toBe(false);
@@ -517,13 +510,11 @@ describe("Codex catalog confirmation", () => {
   const independentRuntimes: {
     name: string;
     runtime: ConfigPreview["codex_runtime"];
-    checked: boolean;
   }[] = [
-    { name: "absent", runtime: null, checked: false },
+    { name: "absent", runtime: null },
     {
       name: "unverified",
       runtime: { ...syntheticCodexRuntime(), state: "unverified" },
-      checked: false,
     },
     {
       name: "a different CLI version",
@@ -531,22 +522,19 @@ describe("Codex catalog confirmation", () => {
         ...syntheticCodexRuntime(),
         cli_version: "synthetic-other-version",
       },
-      checked: true,
     },
     {
       name: "missing its revision",
       runtime: { ...syntheticCodexRuntime(), revision: null },
-      checked: false,
     },
     {
       name: "missing its CLI version",
       runtime: { ...syntheticCodexRuntime(), cli_version: null },
-      checked: false,
     },
   ];
   it.each(independentRuntimes)(
-    "can save qualified local configuration while independently displaying runtime metadata that is $name",
-    async ({ runtime, checked }) => {
+    "keeps qualified configuration validation when hidden runtime metadata is $name",
+    async ({ runtime }) => {
       const value = preview();
       value.codex_runtime = runtime;
       useOrbitStore().state.clients[0]!.managed = "unknown";
@@ -554,13 +542,10 @@ describe("Codex catalog confirmation", () => {
       const apply = view.get<HTMLButtonElement>(".button.primary");
       expect(value.can_apply).toBe(true);
       expect(apply.element.disabled).toBe(false);
-      expect(apply.text()).toBe("确认保存本地配置");
-      expect(view.text()).toContain(
-        "远端组织策略尚未确认，可能影响本地配置生效",
-      );
-      expect(view.text()).toContain("默认用户配置文件");
-      expect(view.text()).toContain("不代表客户端已载入或连接通过");
-      expect(view.text().includes("本次预览的执行来源已核验")).toBe(checked);
+      expect(apply.text()).toBe("确认接入");
+      expect(view.text()).not.toContain("默认用户配置文件");
+      expect(view.text()).not.toContain("不代表客户端已载入或连接通过");
+      expect(view.text()).not.toContain("本次预览的执行来源已核验");
       bridge.call.mockRejectedValueOnce(
         new OrbitError(
           "codex_configuration_target_changed",
@@ -590,8 +575,8 @@ describe("Codex catalog confirmation", () => {
     const view = show(value);
     const apply = view.get<HTMLButtonElement>(".button.primary");
     expect(apply.element.disabled).toBe(true);
-    expect(view.text()).toContain("本次预览的执行来源已核验");
-    expect(view.text()).toContain("0.163.0-alpha.10.2");
+    expect(view.text()).not.toContain("本次预览的执行来源已核验");
+    expect(view.text()).not.toContain("0.163.0-alpha.10.2");
     await apply.trigger("click");
     expect(bridge.call).not.toHaveBeenCalled();
   });

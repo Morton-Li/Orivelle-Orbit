@@ -90,6 +90,8 @@ export const useOrbitStore = defineStore("orbit", () => {
   const native = ref(nativeAvailable());
   const models = ref<ModelView[]>([]);
   const modelsLoading = ref(false);
+  // Workbench selection lasts for this app session, independently of saved history.
+  const imagePreviewTaskId = ref<string | null>(null);
   const busy = ref(new Set<string>());
   const update = ref<UpdateView | null>(null);
   const updateOperation = ref<"check" | "download" | "install" | null>(null);
@@ -108,6 +110,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     text: string;
     tone: "success" | "error" | "neutral";
   } | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const loginOpen = ref(false);
   const loginPending = ref(false);
   const loginExpiresAt = ref<string | null>(null);
@@ -170,6 +173,21 @@ export const useOrbitStore = defineStore("orbit", () => {
         ),
     ),
   );
+  const connectionTasks = computed(() =>
+    tasks.value.filter(
+      (task) => task.connection_id === activeConnection.value?.id,
+    ),
+  );
+  const imagePreviewTask = computed(
+    () =>
+      connectionTasks.value.find(
+        (task) => task.id === imagePreviewTaskId.value,
+      ) ??
+      connectionTasks.value.find((task) =>
+        ["save_failed", "unconfirmed"].includes(task.state),
+      ) ??
+      null,
+  );
   const history = computed(() =>
     state.value.image_history.filter(
       (image) =>
@@ -200,10 +218,15 @@ export const useOrbitStore = defineStore("orbit", () => {
   function notify(
     text: string,
     tone: "success" | "error" | "neutral" = "neutral",
+    durationMs = tone === "error" ? 6000 : 4000,
   ) {
+    clearNotice();
     notice.value = { text, tone };
+    if (durationMs > 0) noticeTimer = setTimeout(clearNotice, durationMs);
   }
   function clearNotice() {
+    clearTimeout(noticeTimer);
+    noticeTimer = undefined;
     notice.value = null;
   }
   function report(error: unknown) {
@@ -279,9 +302,21 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       loginOpen.value = false;
     if (scope.value !== before) {
+      imagePreviewTaskId.value = null;
       modelGeneration++;
       models.value = [];
       void loadModels();
+    }
+    if (
+      !connectionTasks.value.some(
+        (task) => task.id === imagePreviewTaskId.value,
+      )
+    ) {
+      // Track live work across page changes without selecting persisted results.
+      imagePreviewTaskId.value =
+        connectionTasks.value.find((task) =>
+          ["queued", "sending", "waiting", "saving"].includes(task.state),
+        )?.id ?? null;
     }
     return true;
   }
@@ -398,6 +433,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     return initPromise;
   }
   function dispose() {
+    clearNotice();
     unsubscribe?.();
     unsubscribe = undefined;
     unsubscribeErrors?.();
@@ -496,7 +532,7 @@ export const useOrbitStore = defineStore("orbit", () => {
           "success",
         );
       else if (result?.status === "up_to_date" && !silent)
-        notify(t("settings.upToDate"), "success");
+        notify(t("settings.upToDate"), "success", 4000);
       return result;
     } finally {
       updateOperation.value = null;
@@ -605,6 +641,11 @@ export const useOrbitStore = defineStore("orbit", () => {
       )
     )
       return;
+    if (
+      task.connection_id === activeConnection.value?.id &&
+      task.connection_revision === activeConnection.value.revision
+    )
+      imagePreviewTaskId.value = task.id;
     const index = state.value.tasks.findIndex((item) => item.id === task.id);
     // Command acknowledgements may arrive after a newer authoritative state event.
     // Existing tasks are refreshed through monotonic bootstrap/events, never replaced by acknowledgements.
@@ -618,6 +659,8 @@ export const useOrbitStore = defineStore("orbit", () => {
     native,
     models,
     modelsLoading,
+    imagePreviewTaskId,
+    imagePreviewTask,
     busy,
     update,
     updateOperation,
@@ -641,6 +684,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     textModels,
     imageModels,
     notify,
+    report,
     clearNotice,
     acceptState,
     acceptError,

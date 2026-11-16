@@ -1,4 +1,8 @@
 use orbit_core::{
+    api_keys::{
+        ApiKeyMutation, ApiKeyPage, ApiKeyQuery, ApiKeyView, KeyMutationResult, KeyReference,
+        KeyScope, RevealedApiKey,
+    },
     clipboard::{ClipboardImage, ImageClipboardSink},
     dto::*,
     error::{Result, fail},
@@ -18,6 +22,55 @@ pub struct Native {
     pub service: Arc<Service>,
     pub downloads: orbit_core::update_download::Downloads,
     pub _instance: orbit_core::runtime_lock::RuntimeLock,
+}
+#[tauri::command]
+pub async fn list_api_keys(native: State<'_, Native>, request: ApiKeyQuery) -> Result<ApiKeyPage> {
+    native.service.list_api_keys(&request).await
+}
+#[tauri::command]
+pub async fn get_api_key(native: State<'_, Native>, request: KeyReference) -> Result<ApiKeyView> {
+    native.service.get_api_key(&request).await
+}
+#[tauri::command]
+pub async fn mutate_api_key(
+    native: State<'_, Native>,
+    request: ApiKeyMutation,
+) -> Result<KeyMutationResult> {
+    native.service.mutate_api_key(&request).await
+}
+#[tauri::command]
+pub async fn recover_api_key_operation(
+    native: State<'_, Native>,
+    request: KeyScope,
+) -> Result<KeyMutationResult> {
+    native.service.recover_api_key_operation(&request).await
+}
+#[tauri::command]
+pub async fn select_api_key(
+    native: State<'_, Native>,
+    request: KeyReference,
+) -> Result<BootstrapView> {
+    native.service.select_api_key(&request).await
+}
+#[tauri::command]
+pub async fn reveal_api_key(
+    native: State<'_, Native>,
+    request: KeyReference,
+) -> Result<RevealedApiKey> {
+    native.service.reveal_api_key(&request).await
+}
+#[tauri::command]
+pub async fn copy_api_key(native: State<'_, Native>, request: KeyReference) -> Result<()> {
+    let secret = native.service.reveal_api_key(&request).await?;
+    native
+        .service
+        .commit_api_key_copy(&request, &secret, |token| {
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|_| fail("clipboard_unavailable"))?;
+            clipboard
+                .set_text(token.to_owned())
+                .map_err(|_| fail("clipboard_unavailable"))
+        })
 }
 struct NativeImageClipboard;
 impl ImageClipboardSink for NativeImageClipboard {
@@ -589,25 +642,34 @@ pub async fn install_update(
     if native.service.paths.isolated {
         return Err(fail("integration_authorization_required"));
     }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = app;
-        Err(fail("windows_update_recovery_unverified"))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _maintenance = native.service.begin_maintenance()?;
-        let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
-        let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
-        install_verified_candidate(&app, &native.service, artifact).await
-    }
+    let _maintenance = native.service.begin_maintenance()?;
+    let _lock = updates::exclusive_helper_lock(&native.service.store.root)?;
+    let artifact = updates::verified_local_candidate(&native.service.store, &request.version)?;
+    install_verified_candidate(&app, &native.service, artifact).await
 }
-#[cfg(not(target_os = "windows"))]
 async fn install_verified_candidate(
     app: &AppHandle,
     service: &Service,
     artifact: updates::VerifiedArtifact,
 ) -> Result<UpdateView> {
+    #[cfg(target_os = "windows")]
+    {
+        // The NSIS package stamp is applied by the locked bundler. A standalone
+        // development executable must never update an unrelated registered install.
+        if !matches!(
+            tauri::utils::platform::bundle_type(),
+            Some(tauri::utils::config::BundleType::Nsis)
+        ) {
+            return Err(fail("update_installation_unsupported"));
+        }
+        let current = std::env::current_exe().map_err(|_| fail("update_install_failed"))?;
+        updates::windows::launch(&service.store.root, &current, &artifact)?;
+        service.stop_claude_mappings();
+        app.cleanup_before_exit();
+        // Like Tauri's Windows updater, exit only after CreateProcess succeeds.
+        // Keep the maintenance and helper locks until the process actually exits.
+        std::process::exit(0);
+    }
     #[cfg(target_os = "macos")]
     {
         let exe = std::env::current_exe().map_err(|_| fail("update_install_failed"))?;

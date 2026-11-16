@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import OrbitIcon from "./components/OrbitIcon.vue";
 import { useMenubar } from "./composables/useMenubar";
 import { nativeAvailable, subscribeMenubarLayout } from "./shared/bridge";
@@ -30,7 +30,20 @@ const {
   now,
 } = panel;
 const surface = ref<HTMLElement>();
+const panelRoot = ref<HTMLElement>();
 const arrow = ref(248);
+function focusPanel() {
+  // Native WebViews can select the first button or restore an old selection.
+  // Start each opening on the panel, preserving normal keyboard navigation.
+  panelRoot.value?.focus({ preventScroll: true });
+}
+watch(
+  panel.visible,
+  (visible) => {
+    if (visible) focusPanel();
+  },
+  { flush: "post" },
+);
 const balance = computed(
   () =>
     account.value?.budget?.available ??
@@ -108,6 +121,7 @@ let stopLayout: (() => void) | undefined;
 let disposed = false;
 let lastHeight = 0;
 onMounted(async () => {
+  focusPanel();
   window.addEventListener("keydown", keyboard);
   if (!nativeAvailable()) return;
   try {
@@ -148,7 +162,9 @@ onUnmounted(() => {
     @pointerdown.self="panel.control({ action: 'hide' })"
   >
     <main
+      ref="panelRoot"
       class="menubar-panel"
+      tabindex="-1"
       :style="{ '--menubar-arrow': `${arrow}px` }"
       :aria-label="t('menubar.label')"
     >

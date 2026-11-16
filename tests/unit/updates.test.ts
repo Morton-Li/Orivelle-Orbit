@@ -51,6 +51,7 @@ afterEach(() => {
   view?.unmount();
   view = undefined;
   useOrbitStore().dispose();
+  vi.useRealTimers();
 });
 
 describe("update capability and lifecycle", () => {
@@ -167,11 +168,81 @@ describe("update capability and lifecycle", () => {
   });
 });
 
+describe("latest-version notice lifecycle", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useOrbitStore().acceptState(state());
+    bridge.call.mockResolvedValue(latest());
+  });
+
+  it("automatically dismisses ordinary notifications without an explicit duration", () => {
+    const store = useOrbitStore();
+    store.notify("接入配置已保存，请重启应用。", "success");
+    vi.advanceTimersByTime(3999);
+    expect(store.notice?.text).toContain("接入配置已保存");
+    vi.advanceTimersByTime(1);
+    expect(store.notice).toBeNull();
+  });
+
+  it("dismisses the toast after four seconds while retaining the update result", async () => {
+    const store = useOrbitStore();
+    await store.checkUpdates();
+    vi.advanceTimersByTime(3999);
+    expect(store.notice?.text).toBe("当前已是最新版本");
+    vi.advanceTimersByTime(1);
+    expect(store.notice).toBeNull();
+    expect(show().get(".update-status").text()).toBe("当前已是最新版本");
+  });
+
+  it("starts a fresh countdown for each completed manual check", async () => {
+    const store = useOrbitStore();
+    await store.checkUpdates();
+    vi.advanceTimersByTime(3000);
+    await store.checkUpdates();
+    vi.advanceTimersByTime(1000);
+    expect(store.notice?.text).toBe("当前已是最新版本");
+    vi.advanceTimersByTime(3000);
+    expect(store.notice).toBeNull();
+  });
+
+  it("does not let an old countdown dismiss a replacement error notice", async () => {
+    const store = useOrbitStore();
+    await store.checkUpdates();
+    vi.advanceTimersByTime(3000);
+    store.notify("检查更新失败，请重试", "error");
+    vi.advanceTimersByTime(4000);
+    expect(store.notice).toEqual({
+      text: "检查更新失败，请重试",
+      tone: "error",
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(2000);
+    expect(store.notice).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["clearNotice", "dispose"] as const)(
+    "cancels the countdown on %s",
+    async (action) => {
+      const store = useOrbitStore();
+      await store.checkUpdates();
+      store[action]();
+      expect(store.notice).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+});
+
 function available(): UpdateView {
   return { ...latest(), status: "available", version: "0.2.0" };
 }
 function button(page: VueWrapper, label: string) {
-  return page.findAll("button").find((button) => button.text() === label)!;
+  return page.findAll("button").find((button) => {
+    const visibleLabel = button.find('[aria-hidden="false"]');
+    return (
+      (visibleLabel.exists() ? visibleLabel.text() : button.text()) === label
+    );
+  })!;
 }
 describe("update downloads", () => {
   it("announces a new version, shows native progress and opens install confirmation after download", async () => {

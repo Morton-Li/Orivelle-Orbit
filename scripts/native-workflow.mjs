@@ -62,8 +62,6 @@ const target =
       : null;
 if (!target)
   throw new Error("A native macOS arm64 or Windows x64 host is required.");
-if (githubRelease && process.platform !== "darwin")
-  throw new Error("The signed updater release build requires macOS arm64.");
 if (githubDmg && process.platform !== "darwin")
   throw new Error("The styled DMG candidate requires macOS arm64.");
 const expectedNode = (
@@ -286,28 +284,36 @@ if (mode === "preflight") {
   );
   const releaseInputs = {};
   if (githubRelease) {
-    for (const name of [
+    const required = [
       "ORBIT_RELEASE_UPDATER_PUBLIC_KEY",
       "TAURI_SIGNING_PRIVATE_KEY",
       "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-      "CODESIGN_CERTIFICATE_P12_BASE64",
-      "CODESIGN_CERTIFICATE_PASSWORD",
-    ]) {
+      ...(process.platform === "darwin"
+        ? ["CODESIGN_CERTIFICATE_P12_BASE64", "CODESIGN_CERTIFICATE_PASSWORD"]
+        : []),
+    ];
+    for (const name of required) {
       if (!process.env[name]?.trim())
         throw new Error("Missing release input " + name);
       releaseInputs[name] = process.env[name];
     }
     updaterPublicKey(releaseInputs.ORBIT_RELEASE_UPDATER_PUBLIC_KEY);
-    releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256 = (
-      await readFile(
-        path.join(root, "scripts/macos-signing-certificate.sha256"),
-        "utf8",
+    if (process.platform === "darwin") {
+      releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256 = (
+        await readFile(
+          path.join(root, "scripts/macos-signing-certificate.sha256"),
+          "utf8",
+        )
+      ).trim();
+      if (
+        !/^[A-F0-9]{64}$/.test(
+          releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256,
+        )
       )
-    ).trim();
-    if (
-      !/^[A-F0-9]{64}$/.test(releaseInputs.ORBIT_RELEASE_MAC_CERTIFICATE_SHA256)
-    )
-      throw new Error("Invalid pinned macOS signing certificate fingerprint.");
+        throw new Error(
+          "Invalid pinned macOS signing certificate fingerprint.",
+        );
+    }
     releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT = updateEndpoint(
       process.env.GITHUB_REPOSITORY,
     );
@@ -354,7 +360,7 @@ if (mode === "preflight") {
     }
     bundleConfig.bundle.windows = { webviewInstallMode: { type: "skip" } };
   }
-  if (process.platform === "win32" && githubBundle) {
+  if (process.platform === "win32" && (githubBundle || githubRelease)) {
     // The hosted runner can fetch the tools verified by the pinned Tauri bundler.
     bundleConfig.bundle.windows = {
       webviewInstallMode: { type: "downloadBootstrapper", silent: true },
@@ -407,20 +413,35 @@ if (mode === "preflight") {
         ORBIT_RELEASE_MAC_CERTIFICATE_SHA256,
       },
     );
-    await run(
-      "/bin/bash",
-      [
-        "scripts/package-self-signed-macos.sh",
+    if (process.platform === "darwin") {
+      await run(
+        "/bin/bash",
+        [
+          "scripts/package-self-signed-macos.sh",
+          process.execPath,
+          cli,
+          "bundle",
+          ...packageFlags,
+          "--bundles",
+          "app,dmg",
+          ...bundleOverride,
+        ],
+        { ...env, ...releaseInputs },
+      );
+    } else {
+      await run(
         process.execPath,
-        cli,
-        "bundle",
-        ...packageFlags,
-        "--bundles",
-        "app,dmg",
-        ...bundleOverride,
-      ],
-      { ...env, ...releaseInputs },
-    );
+        [
+          cli,
+          "bundle",
+          ...packageFlags,
+          "--bundles",
+          "nsis",
+          ...bundleOverride,
+        ],
+        { ...env, ...releaseInputs },
+      );
+    }
   } else {
     if (bundling)
       build.push(
@@ -556,7 +577,7 @@ if (mode === "preflight") {
     await prepareProjectDirectory(root, directory);
     const bundle = path.join(path.dirname(executable), "bundle");
     const names = releaseNames(config.version);
-    if (githubRelease) {
+    if (githubRelease && process.platform === "darwin") {
       const app = path.join(bundle, "macos", config.productName + ".app");
       await run("/usr/bin/codesign", [
         "--verify",
@@ -612,6 +633,16 @@ if (mode === "preflight") {
         config.productName + "_" + config.version + "_x64-setup.exe",
       );
       await copyFile(installer, path.join(directory, names.windows));
+      if (githubRelease) {
+        const signature = installer + ".sig";
+        await verifyUpdaterSignature(
+          installer,
+          (await readFile(signature, "ascii")).trim(),
+          config.version,
+          releaseInputs.ORBIT_RELEASE_UPDATER_PUBLIC_KEY,
+        );
+        await copyFile(signature, path.join(directory, names.windowsSignature));
+      }
     }
   }
   verifySource(source, inspect);

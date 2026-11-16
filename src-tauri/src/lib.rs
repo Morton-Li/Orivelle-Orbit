@@ -57,6 +57,8 @@ fn prepare_native(
     } else {
         SystemPaths::isolated(&root)?
     };
+    #[cfg(windows)]
+    orbit_core::updates::windows::cleanup(&root);
     #[cfg(feature = "system-integration")]
     let paths = {
         let mut paths = paths;
@@ -222,6 +224,13 @@ pub fn run() {
             cancel_login,
             logout,
             select_node,
+            list_api_keys,
+            get_api_key,
+            mutate_api_key,
+            recover_api_key_operation,
+            select_api_key,
+            reveal_api_key,
+            copy_api_key,
             list_models,
             read_usage_summary,
             list_usage_records,

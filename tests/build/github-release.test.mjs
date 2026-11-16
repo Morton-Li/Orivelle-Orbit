@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -88,7 +89,7 @@ test("a release tag prepares a clean, versioned build checkout", async (t) => {
   }
 });
 
-test("the release requires both installers and advertises the verified macOS updater", async (t) => {
+test("the release requires signed updates for both platforms without checksum files", async (t) => {
   const directory = await mkdtemp(path.resolve("runtime/tmp/github-release-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const wire = JSON.parse(
@@ -110,7 +111,15 @@ test("the release requires both installers and advertises the verified macOS upd
     assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
     /asset set is incomplete or unexpected/,
   );
-  await writeFile(path.join(directory, names.windows), "synthetic installer");
+  await writeFile(
+    path.join(directory, names.windows),
+    Buffer.from(wire.artifact_base64, "base64"),
+  );
+  await assert.rejects(
+    assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
+    /asset set is incomplete or unexpected/,
+  );
+  await writeFile(path.join(directory, names.windowsSignature), wire.signature);
   const assets = await assembleRelease(
     directory,
     "v0.2.0",
@@ -129,10 +138,28 @@ test("the release requires both installers and advertises the verified macOS upd
           names.update,
         signature: wire.signature,
       },
+      "windows-x86_64": {
+        url:
+          "https://github.com/Owner/Orbit/releases/download/v0.2.0/" +
+          names.windows,
+        signature: wire.signature,
+      },
     },
   });
-  assert.equal(assets.length, 6);
-  assert(assets.some(({ name }) => name === names.windows));
+  const expectedAssets = [...Object.values(names), "latest.json"].sort();
+  assert.deepEqual(
+    assets.map(({ name }) => name),
+    expectedAssets,
+  );
+  assert.deepEqual((await readdir(directory)).sort(), expectedAssets);
+  await writeFile(
+    path.join(directory, names.windows),
+    "changed Windows installer",
+  );
+  await assert.rejects(
+    assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
+    /package or trusted version signature/,
+  );
   await assert.rejects(
     verifyUpdaterSignature(
       update,

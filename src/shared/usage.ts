@@ -75,6 +75,7 @@ export type UsageQuery = {
   date_from: string;
   date_to: string;
   timezone: string;
+  api_key_id?: string;
   outcome?: string;
   cursor?: string;
 };

@@ -289,17 +289,17 @@ async function downloadUpdate() {
       </div>
       <div v-if="store.inAppUpdates" class="settings-actions">
         <button
-          class="button secondary"
+          class="button secondary update-check-button"
           :disabled="updateBusy || store.state.maintenance_active"
+          :aria-busy="store.updateOperation === 'check'"
           @click="store.checkUpdates()"
         >
-          {{
-            t(
-              store.updateOperation === "check"
-                ? "settings.checkingUpdate"
-                : "settings.check",
-            )
-          }}</button
+          <span :aria-hidden="store.updateOperation === 'check'">{{
+            t("settings.check")
+          }}</span>
+          <span :aria-hidden="store.updateOperation !== 'check'">{{
+            t("settings.checkingUpdate")
+          }}</span></button
         ><button
           v-if="
             update?.status === 'available' &&

@@ -197,6 +197,7 @@ impl Service {
             true,
             &policy,
             application_updated,
+            true,
         )?;
         self.validate_claude_mapping_selection(&expected.context)
     }
@@ -653,11 +654,29 @@ impl Service {
             let binding_id = uuid();
             let mapping =
                 if model_mapping.is_some() || crate::claude_mapping::requires_mapping(model_id) {
+                    let ids = model_mapping.map_or([model_id; 3], ClaudeModelMapping::ids);
+                    let display_name = |id: &str| {
+                        cache
+                            .models
+                            .iter()
+                            .find(|model| {
+                                model.id == id
+                                    && model.provider_id == record.view.provider_id
+                                    && model.category == "text"
+                            })
+                            .map(|model| model.label.as_str())
+                            .ok_or_else(|| fail("model_unavailable"))
+                    };
                     let plan = self.claude_mappings.reserve(
                         &binding_id,
                         &profile_id,
                         model_id,
                         model_mapping,
+                        [
+                            display_name(ids[0])?,
+                            display_name(ids[1])?,
+                            display_name(ids[2])?,
+                        ],
                     )?;
                     mapping_reservation = Some(self.claude_mappings.ticket(&plan));
                     Some(plan)
@@ -722,16 +741,18 @@ impl Service {
                 "main": {"deploymentMode": "3p"},
             }))
             .map_err(|_| fail("serialization_failed"))?;
-            if mapping.is_some() {
-                if let Some(model_mapping) = model_mapping {
-                    view.impact.push(format!(
-                        "Sonnet → {}，Opus → {}，Haiku → {}。",
-                        model_mapping.sonnet, model_mapping.opus, model_mapping.haiku
-                    ));
-                } else {
-                    view.impact
-                        .push(format!("Sonnet、Opus、Haiku 均映射至 {model_id}。"));
+            if let Some(mapping) = &mapping {
+                let mut names = Vec::new();
+                for alias in &mapping.aliases {
+                    let name = alias.label_override.as_str();
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
                 }
+                view.impact.push(format!(
+                    "Claude Desktop 中显示的模型名称：{}。",
+                    names.join("、")
+                ));
                 view.impact.push(
                     "Claude Desktop 通过本机 Orbit 转发请求，使用时请保持 Orbit 运行。".into(),
                 );
@@ -1612,6 +1633,7 @@ impl Service {
             compare_catalog,
             &observation.policy,
             application_updated,
+            false,
         )
     }
     fn validate_claude_authority_state(
@@ -1621,6 +1643,7 @@ impl Service {
         compare_catalog: bool,
         policy: &crate::policy::Snapshot,
         application_updated: bool,
+        running_binding: bool,
     ) -> Result<()> {
         policy.require_user_config_clear()?;
         if let Some(plan) = context.mapping.as_ref() {
@@ -1656,9 +1679,20 @@ impl Service {
         if Path::new(&context.helper_path) != self.paths.helper || !self.paths.helper_available() {
             return Err(fail("helper_unavailable"));
         }
-        let (record, cache) = self
-            .current_connection(&context.connection_id, context.connection_revision)
-            .map_err(|_| fail("claude_configuration_context_changed"))?;
+        let current = self.record(&context.connection_id)?;
+        let (record, cache) = if running_binding && self.has_key_access(&current, "api-keys:read") {
+            let mut record = self.frozen_api_key_record(
+                &current,
+                &context.credential_reference,
+                &context.credential_revision,
+            )?;
+            record.view.revision = context.connection_revision;
+            let cache = self.account_cache(&record)?;
+            (record, cache)
+        } else {
+            self.current_connection(&context.connection_id, context.connection_revision)
+                .map_err(|_| fail("claude_configuration_context_changed"))?
+        };
         let epoch = self
             .store
             .meta(&authorization_epoch_reference(
