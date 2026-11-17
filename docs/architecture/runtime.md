@@ -114,7 +114,7 @@ Codex 配置与模型目录通过同一事务发布：[catalog binding](../../cr
 Claude 的配置库、活动索引和必要主设置由[Claude 协调器](../../crates/orbit-core/src/service_claude.rs)
 一起处理。当前接入要求分别选择 Sonnet/Opus/Haiku 模型，显示文字直接使用所选模型名称，实际请求
 使用所选模型 ID；这三个入口不是失败时换模型的调度策略。新映射按 v4 冻结名称快照，旧 v1–v3
-配置保持原有校验与恢复语义；重新接入后更新显示名称。
+配置保持原有校验与恢复语义；重新接入后更新显示名称。接入页始终保留三个模型选择框，已接入时使用当前账户和 Panel 下的已确认绑定，只禁用编辑。绑定模型不在当前目录时仍显示其 ID，不替换成其他可用模型；未完成选择的说明紧邻接入按钮。
 
 [mapping manager](../../crates/orbit-core/src/claude_mapping.rs)为绑定保留固定 loopback
 端口及专属本地 token。helper 向 Claude 提供本地 token；[HTTP 映射](../../crates/orbit-core/src/claude_mapping_http.rs)

@@ -809,6 +809,25 @@ textarea::placeholder {
 .claude-connect {
   justify-self: end;
 }
+.access-connect-actions {
+  display: contents;
+}
+.claude-connect-actions {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 13px;
+}
+.claude-connect-actions .field-hint {
+  order: -1;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.claude-connect-actions .button {
+  flex-shrink: 0;
+}
 .section-block {
   margin-top: 30px;
 }
@@ -1526,6 +1545,9 @@ textarea::placeholder {
   }
   .access-client-controls .button {
     width: 100%;
+  }
+  .claude-connect-actions .button {
+    width: auto;
   }
   .claude-mapping {
     grid-template-columns: minmax(0, 1fr);
