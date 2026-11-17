@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rename-history-image"
+description = "Enables the rename_history_image command without any pre-configured scope."
+commands.allow = ["rename_history_image"]
+
+[[permission]]
+identifier = "deny-rename-history-image"
+description = "Denies the rename_history_image command without any pre-configured scope."
+commands.deny = ["rename_history_image"]

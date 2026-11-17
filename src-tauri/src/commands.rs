@@ -195,10 +195,23 @@ pub struct Image {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RenameImage {
+    image_id: String,
+    title: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryInput {
     image_id: String,
     connection_id: String,
     expected_revision: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshImageInputs {
+    connection_id: String,
+    expected_revision: u64,
+    input_ids: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -489,6 +502,34 @@ pub async fn use_history_as_input(
             &request.connection_id,
             request.expected_revision,
         )
+    })
+    .await
+    .map_err(|_| fail("image_worker_failed"))?
+}
+#[tauri::command]
+pub async fn refresh_image_inputs(
+    native: State<'_, Native>,
+    request: RefreshImageInputs,
+) -> Result<Vec<ImageInput>> {
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.refresh_image_inputs(
+            &request.connection_id,
+            request.expected_revision,
+            &request.input_ids,
+        )
+    })
+    .await
+    .map_err(|_| fail("image_worker_failed"))?
+}
+#[tauri::command]
+pub async fn rename_history_image(
+    native: State<'_, Native>,
+    request: RenameImage,
+) -> Result<HistoryImage> {
+    let service = native.service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.rename_history_image(&request.image_id, &request.title)
     })
     .await
     .map_err(|_| fail("image_worker_failed"))?

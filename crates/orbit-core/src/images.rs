@@ -1085,6 +1085,9 @@ pub fn finish_local_save(store: &Store, snapshot: &TaskSnapshot) -> Result<Vec<H
         }
         let view = HistoryImage {
             id: item.id.clone(),
+            title: store
+                .get::<HistoryImage>("image", &item.id)?
+                .and_then(|image| image.title),
             task_id: item.task_id.clone(),
             account_id: item.account_id.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),

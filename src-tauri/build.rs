@@ -27,6 +27,8 @@ fn main() {
         "restore_client_config",
         "select_image_inputs",
         "use_history_as_input",
+        "rename_history_image",
+        "refresh_image_inputs",
         "create_image_task",
         "cancel_image_task",
         "retry_local_save",

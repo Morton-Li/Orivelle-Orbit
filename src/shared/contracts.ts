@@ -331,6 +331,7 @@ export type TaskView = {
 };
 export type HistoryImage = {
   id: string;
+  title?: string | null;
   task_id: string;
   account_id: string;
   created_at: string;
@@ -591,6 +592,18 @@ export interface IpcCommands {
       expected_revision: number;
     };
     result: ImageInput;
+  };
+  rename_history_image: {
+    args: { image_id: string; title: string };
+    result: HistoryImage;
+  };
+  refresh_image_inputs: {
+    args: {
+      connection_id: string;
+      expected_revision: number;
+      input_ids: string[];
+    };
+    result: ImageInput[];
   };
   update_settings: {
     args: { patch: Partial<SettingsView> };

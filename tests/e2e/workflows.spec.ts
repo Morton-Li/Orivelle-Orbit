@@ -690,10 +690,10 @@ test("deleting one local image never deletes other results of the same task", as
   await page.getByRole("tab", { name: "本地历史" }).click();
   await expect(page.locator(".history-card")).toHaveCount(2);
   await expect(page.locator(".history-card strong").first()).toHaveText(
-    "16 × 16",
+    state.tasks[0]!.request_id!,
   );
   await expect(page.locator(".history-card").first()).toContainText(
-    "PNG · 0 KiB",
+    "PNG · 16 × 16 · 0 KiB",
   );
   await expect(page.locator(".history-card time").first()).toHaveAttribute(
     "datetime",

@@ -387,6 +387,8 @@ pub struct TaskView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryImage {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub task_id: String,
     pub account_id: String,
     pub created_at: String,
