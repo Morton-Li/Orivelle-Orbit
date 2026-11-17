@@ -5046,6 +5046,7 @@ mod tests {
     mod macos_config_roundtrip;
     #[cfg(target_os = "macos")]
     mod panel_acceptance;
+    mod release_check;
     use crate::{
         identity::{ProofInput, canonical_proof},
         vault::FakeVault,
