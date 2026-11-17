@@ -191,7 +191,7 @@ const zh = {
   "nav.images": "图片工作台",
   "nav.access": "接入",
   "nav.apiKeys": "API Key",
-  "access.chooseKeyFirst": "请先选择 API Key。",
+  "access.chooseKeyFirst": "请前往左侧「API Key」页面选择密钥后再接入。",
   "access.manageKeys": "管理密钥",
   "access.selectKey": "请选择 API Key",
   "access.updatingKey":
@@ -885,7 +885,8 @@ const en: Record<keyof typeof zh, string> = {
   "nav.images": "Images",
   "nav.access": "Access",
   "nav.apiKeys": "API Key",
-  "access.chooseKeyFirst": "Select an API key first.",
+  "access.chooseKeyFirst":
+    'Select a key on the "API Key" page in the left sidebar before connecting.',
   "access.manageKeys": "Manage keys",
   "access.selectKey": "Select an API key",
   "access.updatingKey":
