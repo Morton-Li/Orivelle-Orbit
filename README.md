@@ -18,7 +18,7 @@
 
 ## 📦 获取 Orbit
 
-从 [Releases](https://github.com/Morton-Li/Orivelle-Orbit/releases/latest) 下载适合你设备的安装包。
+从 [Releases](https://github.com/Orivelle-Labs/Orbit/releases/latest) 下载适合你设备的安装包。
 
 - **macOS**（Apple 芯片，macOS 15 或更高版本）下载 `.dmg`，打开后将 Orbit 拖到「应用程序」。
 - **Windows**（x64）下载以 `-setup.exe` 结尾的安装包，双击并按提示安装。
