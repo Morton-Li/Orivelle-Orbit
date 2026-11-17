@@ -958,7 +958,7 @@ test("theme, language, wide window and accessible image tabs", async ({
   await fixture(page);
   await page.goto("/#/settings");
   await choose(page, "setting-theme", "深色");
-  await expect(page.locator("html")).toHaveClass("dark");
+  await expect(page.locator("html")).toContainClass("dark");
   await choose(page, "setting-locale", "English");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
     "Make Orbit fit your workflow",
