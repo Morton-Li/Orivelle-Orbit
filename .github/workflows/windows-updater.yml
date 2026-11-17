@@ -3,15 +3,28 @@ name: Windows Updater Acceptance
 on:
   workflow_dispatch:
   push:
-    branches: [develop, feature/windows-in-app-updates]
+    branches: [develop]
     paths:
       - ".github/workflows/windows-updater.yml"
       - ".github/workflows/release.yml"
       - ".github/actions/prepare-native/action.yml"
+      - ".cargo/config.toml"
+      - ".node-version"
+      - "rust-toolchain.toml"
+      - "package*.json"
       - "crates/orbit-core/src/update*.rs"
+      - "scripts/candidate-evidence.mjs"
       - "scripts/github-release.mjs"
       - "scripts/native-workflow.mjs"
+      - "scripts/updater-signer-probe.mjs"
+      - "scripts/windows-package-evidence.mjs"
+      - "src-tauri/build.rs"
+      - "src-tauri/tauri.conf.json"
       - "src-tauri/src/**"
+      - "src/main.ts"
+      - "src/router.ts"
+      - "src/shared/updates.ts"
+      - "src/pages/SettingsPage.vue"
       - "tests/windows/*updater*"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -68,7 +81,7 @@ jobs:
 
       - uses: ./.github/actions/prepare-native
         with:
-          validate: ${{ steps.reuse.outputs.reused != 'true' }}
+          validate: "false"
 
       - name: Check the current updater assertions
         run: |

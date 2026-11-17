@@ -23,6 +23,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/prepare-native
+        with:
+          validate: "false"
 
       - name: Build macOS arm64 application
         run: node scripts/native-workflow.mjs github-bundle

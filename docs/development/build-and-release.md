@@ -75,16 +75,16 @@ Codex 原始 `NOTICE` 中的 Ratatui 归属行来自上游完整声明，不代�
 
 ## GitHub 工作流职责
 
-| 工作流                                                                       | 触发与结果                                                                                                                                               |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [build.yml](../../.github/workflows/build.yml)                               | main/develop 的 push/PR 及手动触发；先执行默认 prepare-native 检查，再构建未签名候选。默认 macOS，仓库变量 `ORBIT_WINDOWS_PACKAGING=true` 才加入 Windows |
-| [windows-integration.yml](../../.github/workflows/windows-integration.yml)   | develop 的相关路径变更或手动触发；`scope=all/windows-desktop/macos-dmg` 选择回归及原生验收。macOS DMG 作业另要求非空 `candidate-tag`                     |
-| [windows-runner-check.yml](../../.github/workflows/windows-runner-check.yml) | 手动或 main 上自身文件变化；仅核对 Windows x64/PowerShell 环境，不构建或验收 Orbit                                                                       |
-| [macos-self-signed.yml](../../.github/workflows/macos-self-signed.yml)       | 仅 main 上手动运行，使用 codesign 环境生成自签名 DMG artifact；不创建正式 Release 或 updater 频道                                                        |
-| [release.yml](../../.github/workflows/release.yml)                           | 稳定 tag push 或 main 上手动指定 tag。两平台产物通过后，只有 tag push 路径会发布；手动运行仅验证和上传 artifacts                                         |
-| [windows-updater.yml](../../.github/workflows/windows-updater.yml)           | 在 Windows hosted runner 构建两个使用临时 updater 密钥的版本，执行安装后的检查、下载、错误签名、取消、安装重启和数据保留验收；不创建正式 Release          |
+| 工作流                                                                       | 触发与结果                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [build.yml](../../.github/workflows/build.yml)                               | develop 的 push/PR 跑 macOS 与 Windows 常规回归；main 的 push/PR 只构建未签名候选。手动运行 main 时打包，其他 ref 跑回归。候选默认 macOS，`ORBIT_WINDOWS_PACKAGING=true` 才加入 Windows                         |
+| [windows-integration.yml](../../.github/workflows/windows-integration.yml)   | develop 的相关路径变更或手动触发，仅执行原生验收，不重复常规回归；`scope=all/windows-desktop/macos-dmg` 选择平台。macOS DMG 作业另要求非空 `candidate-tag`                                                      |
+| [windows-runner-check.yml](../../.github/workflows/windows-runner-check.yml) | 手动或 develop 上自身文件变化；仅核对 Windows x64/PowerShell 环境，不构建或验收 Orbit                                                                                                                           |
+| [macos-self-signed.yml](../../.github/workflows/macos-self-signed.yml)       | 仅 main 上手动运行，准备工具后直接生成自签名 DMG artifact，不重复常规回归；不创建正式 Release 或 updater 频道                                                                                                   |
+| [release.yml](../../.github/workflows/release.yml)                           | 稳定 tag push 或 main 上手动指定 tag；两平台先跑常规回归，再构建、签名和验证产物。两平台均成功后，只有 tag push 路径会发布；手动运行仅验证和上传 artifacts                                                      |
+| [windows-updater.yml](../../.github/workflows/windows-updater.yml)           | 仅 develop 的更新、签名、打包和生命周期相关路径变更时自动运行，也保留手动入口；构建两个临时密钥签名版本，验收检查、下载、错误签名、取消、安装重启和数据保留。main 与 tag 不自动重复此项验收，不创建正式 Release |
 
-prepare-native 在临时 hosted runner 准备锁定工具/依赖，默认执行前端、宿主构建脚本及原生检查。集成工作流的包作业可设置 `validate=false`，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
+prepare-native 在临时 hosted runner 准备锁定工具/依赖。`validate=true` 执行前端、宿主构建脚本及原生检查，Windows 另解析 PowerShell 脚本并运行浏览器流程测试；develop 和发布 tag 使用同一检查入口。普通候选、自签名打包和原生验收设置 `validate=false`，避免同一平台重复常规回归，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
 
 Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测试包；只有断言、fixture/reuse 脚本或文档变化时才允许复用，并再次核对包摘要及版本签名。生产源码、构建器、锁文件或 updater 工作流变化均重新构建。复用运行检查当前脚本与 PowerShell 语法，回执分别记录构建 source/run 和验收 source/run；[验收结果](../testing/validation.md#2026-11-15-windows-应用内更新)绑定具体产物。
 

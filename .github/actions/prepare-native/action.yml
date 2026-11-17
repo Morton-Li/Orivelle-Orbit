@@ -2,7 +2,7 @@ name: Prepare Orbit native build
 description: Install the locked toolchain and run native build checks on a hosted runner
 inputs:
   validate:
-    description: Run the front-end, build script and native checks after setup
+    description: Run regression checks, including Windows scripts and browser workflows
     default: "true"
   release-tag:
     description: Version tag to apply to the release checkout
@@ -45,6 +45,17 @@ runs:
       shell: bash
       run: npm ci
 
+    - name: Parse Windows acceptance scripts
+      if: inputs.validate == 'true' && runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        foreach ($file in Get-ChildItem tests/windows/*.ps1) {
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+        }
+
     - name: Check Orbit
       if: inputs.validate == 'true'
       shell: bash
@@ -58,3 +69,8 @@ runs:
           node --test tests/build/*.test.mjs
         fi
         node scripts/native-workflow.mjs check
+
+    - name: Run Windows browser workflow tests
+      if: inputs.validate == 'true' && runner.os == 'Windows'
+      shell: bash
+      run: npm run test:e2e -- --reporter=line --retries=1 --max-failures=3

@@ -1,4 +1,4 @@
-name: Build Orbit
+name: Orbit CI
 
 on:
   pull_request:
@@ -15,8 +15,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  regression:
+    name: Test ${{ matrix.runner == 'macos-15' && 'macOS arm64' || 'Windows x64' }}
+    if: github.ref != 'refs/heads/main' && github.base_ref != 'main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, windows-2025]
+    env:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            runtime/cargo-home/registry
+            runtime/target
+          key: orbit-${{ matrix.runner == 'windows-2025' && 'windows' || 'macos' }}-regression-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+
+      - uses: ./.github/actions/prepare-native
+        with:
+          validate: "true"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ failure() }}
+        with:
+          name: orbit-${{ matrix.runner }}-regression-failure
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   package:
     name: Package ${{ matrix.runner == 'macos-15' && 'macOS arm64' || 'Windows x64' }}
+    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -29,6 +70,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/prepare-native
+        with:
+          validate: "false"
 
       - name: Build unsigned candidate
         run: node scripts/native-workflow.mjs github-bundle
