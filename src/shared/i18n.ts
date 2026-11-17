@@ -475,9 +475,8 @@ const zh = {
     "模型调用 ID 超出 Codex 目录支持的格式或长度。请联系管理员检查模型调用名称。",
   "access.catalogSynced":
     "可用模型目录已同步；如客户端未显示更新，请重启 Codex。",
-  "access.catalogCurrent": "可用模型目录已是最新，Orbit 每 5 分钟自动同步。",
   "access.catalogSyncBlocked":
-    "模型目录同步已暂停，现有配置保留。请检查连接、模型权限或本地配置后刷新。",
+    "模型目录同步未完成。请检查连接、模型权限或本地配置后刷新。",
   "access.codexReasoningUnavailable":
     "当前推理档位策略不足以生成完整目录。请刷新模型权限后重新预览。",
   "access.codexCatalogChanged":
@@ -1200,10 +1199,8 @@ const en: Record<keyof typeof zh, string> = {
     "The model ID exceeds the format or length supported by the Codex catalog. Ask an administrator to check the model ID.",
   "access.catalogSynced":
     "The available model catalog was synchronized. Restart Codex if the updated models are not shown.",
-  "access.catalogCurrent":
-    "The available model catalog is current. Orbit synchronizes it every 5 minutes.",
   "access.catalogSyncBlocked":
-    "Model catalog synchronization is paused and the existing configuration is preserved. Check the connection, model permissions or local configuration, then refresh.",
+    "Model catalog synchronization did not finish. Check the connection, model permissions or local configuration, then refresh.",
   "access.codexReasoningUnavailable":
     "The current reasoning policy cannot produce a complete catalog. Refresh model permissions and preview again.",
   "access.codexCatalogChanged":

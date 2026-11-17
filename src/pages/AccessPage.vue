@@ -4,7 +4,7 @@ import { useRoute } from "vue-router";
 import { useApiKeysStore } from "../stores/api-keys";
 import { useOrbitStore } from "../stores/orbit";
 import { t, type MessageKey } from "../shared/i18n";
-import { configPolicyMessage, nodeName } from "../shared/format";
+import { nodeName } from "../shared/format";
 import type {
   ClaudeRestoreCoordination,
   ClaudeModelMapping,
@@ -392,32 +392,6 @@ onMounted(async () => {
         :detected="store.initialized"
         compact
       />
-      <p
-        v-if="
-          client.client === 'codex' &&
-          switchSnapshot('codex') &&
-          client.catalog_sync
-        "
-        class="muted"
-        role="status"
-      >
-        {{
-          t(
-            client.catalog_sync.state === "updated"
-              ? "access.catalogSynced"
-              : client.catalog_sync.state === "current"
-                ? "access.catalogCurrent"
-                : "access.catalogSyncBlocked",
-          )
-        }}
-        <template
-          v-if="
-            client.catalog_sync.state === 'blocked' && client.catalog_sync.error
-          "
-        >
-          {{ configPolicyMessage(client.catalog_sync.error) ?? "" }}
-        </template>
-      </p>
       <div class="access-client-controls">
         <template v-if="switchSnapshot(client.client)">
           <button

@@ -287,6 +287,10 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       return false;
     const before = scope.value;
+    const wasInitialized = initialized.value;
+    const previousSync = state.value.clients.find(
+      (client) => client.client === "codex",
+    )?.catalog_sync;
     const previousAccountId = account.value?.id;
     state.value = next;
     initialized.value = true;
@@ -317,6 +321,34 @@ export const useOrbitStore = defineStore("orbit", () => {
         connectionTasks.value.find((task) =>
           ["queued", "sending", "waiting", "saving"].includes(task.state),
         )?.id ?? null;
+    }
+    const sync = next.clients.find(
+      (client) => client.client === "codex",
+    )?.catalog_sync;
+    if (
+      wasInitialized &&
+      before === scope.value &&
+      sync &&
+      next.session.status === "authenticated" &&
+      switchSnapshots.value.some((snapshot) => snapshot.client === "codex")
+    ) {
+      if (
+        sync.state === "updated" &&
+        (previousSync?.state !== "updated" ||
+          sync.checked_at !== previousSync.checked_at)
+      ) {
+        notify(t("access.catalogSynced"), "success");
+      } else if (
+        sync.state === "blocked" &&
+        (previousSync?.state !== "blocked" || previousSync.error !== sync.error)
+      ) {
+        const reason = sync.error ? configPolicyMessage(sync.error) : null;
+        notify(
+          [t("access.catalogSyncBlocked"), reason].filter(Boolean).join(" "),
+          "warning",
+          6000,
+        );
+      }
     }
     return true;
   }

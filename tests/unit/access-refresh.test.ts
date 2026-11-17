@@ -145,11 +145,11 @@ function writes() {
 describe("Codex catalog synchronization status", () => {
   it.each([
     ["updated", null, "可用模型目录已同步"],
-    ["current", null, "每 5 分钟自动同步"],
+    ["current", null, null],
     ["blocked", "codex_reasoning_unavailable", "当前推理档位策略不足"],
-    ["blocked", "configuration_conflict", "模型目录同步已暂停"],
+    ["blocked", "configuration_conflict", "模型目录同步未完成"],
   ] as const)(
-    "shows %s without claiming client loading",
+    "notifies about %s without adding inline sync messages",
     async (status, error, message) => {
       const value = bootstrap();
       value.state_revision = state.state_revision + 1;
@@ -166,9 +166,9 @@ describe("Codex catalog synchronization status", () => {
         {
           id: "owned-codex-switch",
           client: "codex",
-          account_id: "synthetic-account-a",
+          account_id: value.session.account!.id,
           account_label: "Synthetic account",
-          panel_origin: "https://panel.invalid",
+          panel_origin: value.connections[0]!.panel_origin,
           installation_id: "synthetic-installation",
           created_at: new Date().toISOString(),
           expires_at: new Date().toISOString(),
@@ -191,11 +191,52 @@ describe("Codex catalog synchronization status", () => {
           stubs: { ClientRow: true, OrbitSelect: orbitSelectStub },
         },
       });
-      expect(wrapper.text()).toContain(message);
+      if (message) {
+        expect(useOrbitStore().notice?.text).toContain(message);
+        expect(wrapper.text()).not.toContain(message);
+        useOrbitStore().clearNotice();
+        const repeated = structuredClone(value);
+        repeated.state_revision++;
+        if (status === "blocked")
+          repeated.clients[0]!.catalog_sync!.checked_at = new Date(
+            Date.now() + 300000,
+          ).toISOString();
+        expect(useOrbitStore().acceptState(repeated)).toBe(true);
+        expect(useOrbitStore().notice).toBeNull();
+      } else {
+        expect(useOrbitStore().notice).toBeNull();
+      }
+      expect(wrapper.text()).not.toContain("每 5 分钟自动同步");
       expect(wrapper.text()).not.toContain("客户端已载入");
       expect(writes()).toHaveLength(0);
     },
   );
+  it("does not repeat a saved sync message on startup", () => {
+    setActivePinia(createPinia());
+    const value = bootstrap();
+    value.clients.find((client) => client.client === "codex")!.catalog_sync = {
+      state: "updated",
+      checked_at: new Date().toISOString(),
+      model_count: 8,
+      error: null,
+    };
+    value.switch_snapshots = [
+      {
+        id: "owned-codex-startup",
+        client: "codex",
+        account_id: value.session.account!.id,
+        account_label: "Synthetic account",
+        panel_origin: value.connections[0]!.panel_origin,
+        installation_id: "synthetic-installation",
+        created_at: new Date().toISOString(),
+        expires_at: new Date().toISOString(),
+        file_count: 2,
+        state: "available",
+      },
+    ];
+    expect(useOrbitStore().acceptState(value)).toBe(true);
+    expect(useOrbitStore().notice).toBeNull();
+  });
 });
 
 describe("Claude preview after a Panel model refresh", () => {
