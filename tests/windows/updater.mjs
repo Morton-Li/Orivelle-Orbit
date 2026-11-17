@@ -135,22 +135,30 @@ async function connect() {
       { timeout: 60_000 },
     )
     .toBe(true);
-  browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+  browser = await chromium.connectOverCDP("http://127.0.0.1:9222", {
+    noDefaults: true,
+  });
+  // Both windows load index.html; the preloaded tray panel uses #/menubar.
+  // Target ordering can change after the installer restarts the application.
   await expect
     .poll(
-      () =>
-        browser
+      () => {
+        page = browser
           .contexts()
           .flatMap((context) => context.pages())
-          .filter((candidate) => !candidate.url().includes("menubar.html"))
-          .length,
+          .find(
+            (candidate) =>
+              candidate.url().includes("tauri.localhost") &&
+              !candidate.url().includes("#/menubar"),
+          );
+        return Boolean(page);
+      },
+      { timeout: 30_000 },
     )
-    .toBeGreaterThan(0);
-  page = browser
-    .contexts()
-    .flatMap((context) => context.pages())
-    .find((candidate) => !candidate.url().includes("menubar.html"));
-  await page.waitForFunction(() => Boolean(window.__TAURI_INTERNALS__));
+    .toBe(true);
+  await page.waitForFunction(
+    () => window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === "main",
+  );
   await invoke("bootstrap");
 }
 async function reject(command, request, code) {
