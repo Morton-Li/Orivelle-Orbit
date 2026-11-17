@@ -43,6 +43,8 @@ const mask = ref<ImageInput | null>(null);
 const markup = ref<ImageInput | null>(null);
 const parameters = ref<ImageParameters>({});
 const advanced = ref(false);
+// Keep extended controls implemented while only background is open for now.
+const extendedOptionsEnabled = false;
 const enlarged = ref<HistoryImage | null>(null);
 const deleteImageIds = ref<string[]>([]);
 const now = ref(Date.now());
@@ -84,6 +86,11 @@ const parameterFields = computed(() => {
     });
   return fields;
 });
+const visibleParameterFields = computed(() =>
+  parameterFields.value.filter(
+    (field) => extendedOptionsEnabled || field.key === "background",
+  ),
+);
 const usesApi = computed(
   () =>
     adjustedImageParameters(
@@ -656,9 +663,9 @@ function copyLabel(image: HistoryImage) {
             <OrbitIcon name="chevron-down" :size="16" />
           </button>
           <div v-if="advanced" id="image-parameters">
-            <div v-if="parameterFields.length" class="parameter-grid">
+            <div v-if="visibleParameterFields.length" class="parameter-grid">
               <div
-                v-for="field in parameterFields"
+                v-for="field in visibleParameterFields"
                 :key="field.key"
                 class="field"
               >
@@ -675,10 +682,13 @@ function copyLabel(image: HistoryImage) {
               </div>
             </div>
             <p v-else class="field-hint">{{ t("images.noAdvancedOptions") }}</p>
-            <p v-if="!apiCaps" class="field-hint">
+            <p v-if="extendedOptionsEnabled && !apiCaps" class="field-hint">
               {{ t("images.apiUpgradeHint") }}
             </p>
-            <div v-if="customSize" class="parameter-grid">
+            <div
+              v-if="extendedOptionsEnabled && customSize"
+              class="parameter-grid"
+            >
               <div class="field">
                 <label for="image-custom-width" class="field-label">{{
                   t("images.width")
@@ -712,6 +722,7 @@ function copyLabel(image: HistoryImage) {
             </div>
             <div
               v-if="
+                extendedOptionsEnabled &&
                 apiCaps &&
                 ['jpeg', 'webp'].includes(parameters.output_format ?? '')
               "
@@ -731,7 +742,11 @@ function copyLabel(image: HistoryImage) {
               />
             </div>
             <div
-              v-if="apiCaps && parameters.output_format === 'gif'"
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps &&
+                parameters.output_format === 'gif'
+              "
               class="parameter-grid"
             >
               <div class="field">
@@ -765,7 +780,11 @@ function copyLabel(image: HistoryImage) {
               </div>
             </div>
             <div
-              v-if="apiCaps && parameters.output_format === 'svg'"
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps &&
+                parameters.output_format === 'svg'
+              "
               class="field"
             >
               <label for="image-svg-model" class="field-label">{{
@@ -799,6 +818,7 @@ function copyLabel(image: HistoryImage) {
             </div>
             <div
               v-if="
+                extendedOptionsEnabled &&
                 apiCaps?.stream &&
                 !['svg', 'gif'].includes(parameters.output_format ?? '')
               "
@@ -830,7 +850,10 @@ function copyLabel(image: HistoryImage) {
             </div>
             <div
               v-if="
-                apiCaps && inputs.length && (apiCaps.mask || apiCaps.markup)
+                extendedOptionsEnabled &&
+                apiCaps &&
+                inputs.length &&
+                (apiCaps.mask || apiCaps.markup)
               "
               class="field image-materials"
             >
@@ -879,7 +902,11 @@ function copyLabel(image: HistoryImage) {
               </div>
             </div>
             <p
-              v-if="parameterFields.some((field) => field.key === 'background')"
+              v-if="
+                visibleParameterFields.some(
+                  (field) => field.key === 'background',
+                )
+              "
               class="field-hint"
             >
               {{ t("images.backgroundUsageHint") }}
