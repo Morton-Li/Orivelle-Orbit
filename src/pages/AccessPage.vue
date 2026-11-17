@@ -125,6 +125,10 @@ function connectReason(kind: ClientKind): MessageKey | null {
     return "access.preparingPreview";
   return null;
 }
+function connectHint(kind: ClientKind): MessageKey | null {
+  const reason = connectReason(kind);
+  return reason === "access.chooseKeyFirst" ? null : reason;
+}
 watch(
   () => store.scope,
   () => {
@@ -150,6 +154,10 @@ watch(
   { immediate: true },
 );
 async function requestPreview(client: ClientKind) {
+  if (connectReason(client) === "access.chooseKeyFirst") {
+    store.notify(t("access.chooseKeyFirst"), "warning");
+    return;
+  }
   const connection = store.activeConnection;
   if (
     !connection ||
@@ -449,31 +457,22 @@ onMounted(async () => {
             class="button primary"
             :class="{ 'claude-connect': client.client === 'claude' }"
             :aria-describedby="
-              connectReason(client.client)
+              connectHint(client.client)
                 ? `connect-reason-${client.client}`
                 : undefined
             "
-            :disabled="
-              !store.ready ||
-              !previewAllowed(client.client) ||
-              (client.client === 'claude'
-                ? !mappingReady
-                : !codexModelsAvailable) ||
-              store.modelsLoading ||
-              previewing[client.client] ||
-              store.busy.has(`preview-${client.client}`)
-            "
+            :disabled="!!connectHint(client.client)"
             @click="requestPreview(client.client)"
           >
             <OrbitIcon name="access" />{{ t("access.connectOrbit") }}
           </button>
           <p
-            v-if="connectReason(client.client)"
+            v-if="connectHint(client.client)"
             :id="`connect-reason-${client.client}`"
             class="field-hint"
             role="status"
           >
-            {{ t(connectReason(client.client)!) }}
+            {{ t(connectHint(client.client)!) }}
           </p>
         </template>
       </div>
