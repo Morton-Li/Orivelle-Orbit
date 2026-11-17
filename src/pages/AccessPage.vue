@@ -471,8 +471,7 @@ onMounted(async () => {
         </section>
         <template v-if="switchSnapshot(client.client)">
           <button
-            class="button secondary"
-            :class="{ 'claude-connect': client.client === 'claude' }"
+            class="button secondary access-client-action"
             :disabled="
               switchSnapshot(client.client)?.state === 'unavailable' ||
               !configurationAllowed(client.client) ||
@@ -499,8 +498,7 @@ onMounted(async () => {
             :class="{ 'claude-connect-actions': client.client === 'claude' }"
           >
             <button
-              class="button primary"
-              :class="{ 'claude-connect': client.client === 'claude' }"
+              class="button primary access-client-action"
               :aria-describedby="
                 connectHint(client.client)
                   ? `connect-reason-${client.client}`

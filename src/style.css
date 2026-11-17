@@ -806,8 +806,10 @@ textarea::placeholder {
   font-size: 14px;
   font-weight: 600;
 }
-.claude-connect {
+.access-client-action {
   justify-self: end;
+  width: 140px;
+  flex-shrink: 0;
 }
 .access-connect-actions {
   display: contents;
@@ -824,9 +826,6 @@ textarea::placeholder {
   flex: 0 1 auto;
   min-width: 0;
   margin: 0;
-}
-.claude-connect-actions .button {
-  flex-shrink: 0;
 }
 .section-block {
   margin-top: 30px;
@@ -1542,12 +1541,6 @@ textarea::placeholder {
   .access-client-controls {
     gap: 14px;
     padding-right: 20px;
-  }
-  .access-client-controls .button {
-    width: 100%;
-  }
-  .claude-connect-actions .button {
-    width: auto;
   }
   .claude-mapping {
     grid-template-columns: minmax(0, 1fr);
