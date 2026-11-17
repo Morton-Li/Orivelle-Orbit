@@ -144,10 +144,12 @@ function writes() {
 
 describe("Codex catalog synchronization status", () => {
   it.each([
-    ["updated", null, "可用模型目录已同步"],
+    ["updated", null, null],
     ["current", null, null],
     ["blocked", "codex_reasoning_unavailable", "当前推理档位策略不足"],
-    ["blocked", "configuration_conflict", "模型目录同步未完成"],
+    ["blocked", "configuration_conflict", null],
+    ["blocked", "network_unavailable", null],
+    ["blocked", "request_timeout", null],
   ] as const)(
     "notifies about %s without adding inline sync messages",
     async (status, error, message) => {
@@ -236,6 +238,106 @@ describe("Codex catalog synchronization status", () => {
     ];
     expect(useOrbitStore().acceptState(value)).toBe(true);
     expect(useOrbitStore().notice).toBeNull();
+  });
+});
+
+describe("Explicit data refresh feedback", () => {
+  it.each(["updated", "blocked"] as const)(
+    "reports only refresh success when the catalog is %s",
+    async (syncState) => {
+      const store = useOrbitStore();
+      bridge.call.mockImplementation((command) => {
+        if (command === "bootstrap") return state;
+        if (command === "list_models") return nextModels();
+        if (command === "refresh_account") {
+          state = structuredClone(state);
+          state.state_revision++;
+          state.clients[0]!.client = "codex";
+          state.clients[0]!.catalog_sync = {
+            state: syncState,
+            checked_at: new Date().toISOString(),
+            model_count: 8,
+            error:
+              syncState === "blocked" ? "codex_reasoning_unavailable" : null,
+          };
+          state.switch_snapshots = [
+            {
+              id: "owned-codex-refresh",
+              client: "codex",
+              account_id: state.session.account!.id,
+              account_label: "Synthetic account",
+              panel_origin: state.connections[0]!.panel_origin,
+              installation_id: "synthetic-installation",
+              created_at: new Date().toISOString(),
+              expires_at: new Date().toISOString(),
+              file_count: 2,
+              state: "available",
+            },
+          ];
+          store.acceptState(state);
+          expect(store.notice).toBeNull();
+          return state;
+        }
+        throw new Error("Unexpected synthetic IPC");
+      });
+      await store.refreshData();
+      expect(store.notice).toEqual({ text: "刷新成功。", tone: "success" });
+      expect(writes()).toHaveLength(0);
+      if (syncState === "blocked") {
+        store.clearNotice();
+        const background = structuredClone(state);
+        background.state_revision++;
+        background.clients[0]!.catalog_sync!.checked_at = new Date(
+          Date.now() + 300000,
+        ).toISOString();
+        store.acceptState(background);
+        expect(store.notice?.text).toContain("当前推理档位策略不足");
+      }
+    },
+  );
+
+  it.each(["bootstrap", "refresh_account", "list_models"])(
+    "reports one refresh failure when %s fails",
+    async (failure) => {
+      const store = useOrbitStore();
+      bridge.call.mockImplementation((command) => {
+        if (command === failure)
+          throw publicFailure({ code: "network_unavailable" });
+        if (command === "bootstrap" || command === "refresh_account")
+          return state;
+        if (command === "list_models") return nextModels();
+        throw new Error("Unexpected synthetic IPC");
+      });
+      await store.refreshData();
+      expect(store.notice).toEqual({
+        text: "刷新失败，请稍后重试。",
+        tone: "error",
+      });
+    },
+  );
+
+  it("keeps a successful automatic refresh silent", async () => {
+    bridge.call.mockImplementation((command) =>
+      command === "list_models" ? nextModels() : state,
+    );
+    const store = useOrbitStore();
+    await store.refresh(true);
+    expect(store.notice).toBeNull();
+  });
+
+  it("refreshes available account data without requiring a selected node", async () => {
+    const store = useOrbitStore();
+    state = structuredClone(state);
+    state.state_revision++;
+    state.connections[0]!.node_id = null;
+    store.acceptState(state);
+    await flushPromises();
+    bridge.call.mockReset().mockResolvedValue(state);
+    await store.refreshData();
+    expect(store.notice?.text).toBe("刷新成功。");
+    expect(
+      bridge.call.mock.calls.some(([command]) => command === "list_models"),
+    ).toBe(false);
   });
 });
 

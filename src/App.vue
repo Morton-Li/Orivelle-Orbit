@@ -89,7 +89,7 @@ onUnmounted(() => {
       :title="t('app.refreshHint')"
       :disabled="!store.native || store.busy.has('refresh')"
       :aria-busy="store.busy.has('refresh')"
-      @click="store.refresh(true)"
+      @click="store.refreshData()"
     >
       <OrbitIcon name="refresh" />{{ t("action.refresh") }}
     </button>

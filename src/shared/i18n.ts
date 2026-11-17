@@ -473,10 +473,8 @@ const zh = {
     "当前可用模型缺少兼容的 Codex 模板声明。请联系管理员检查模型模板后重新预览。",
   "access.codexModelIdUnsupported":
     "模型调用 ID 超出 Codex 目录支持的格式或长度。请联系管理员检查模型调用名称。",
-  "access.catalogSynced":
-    "可用模型目录已同步；如客户端未显示更新，请重启 Codex。",
-  "access.catalogSyncBlocked":
-    "模型目录同步未完成。请检查连接、模型权限或本地配置后刷新。",
+  "app.refreshSucceeded": "刷新成功。",
+  "app.refreshFailed": "刷新失败，请稍后重试。",
   "access.codexReasoningUnavailable":
     "当前推理档位策略不足以生成完整目录。请刷新模型权限后重新预览。",
   "access.codexCatalogChanged":
@@ -1197,10 +1195,8 @@ const en: Record<keyof typeof zh, string> = {
     "The available models have no compatible Codex template declarations. Ask an administrator to check the model templates, then preview again.",
   "access.codexModelIdUnsupported":
     "The model ID exceeds the format or length supported by the Codex catalog. Ask an administrator to check the model ID.",
-  "access.catalogSynced":
-    "The available model catalog was synchronized. Restart Codex if the updated models are not shown.",
-  "access.catalogSyncBlocked":
-    "Model catalog synchronization did not finish. Check the connection, model permissions or local configuration, then refresh.",
+  "app.refreshSucceeded": "Data refreshed.",
+  "app.refreshFailed": "Could not refresh data. Please try again later.",
   "access.codexReasoningUnavailable":
     "The current reasoning policy cannot produce a complete catalog. Refresh model permissions and preview again.",
   "access.codexCatalogChanged":
