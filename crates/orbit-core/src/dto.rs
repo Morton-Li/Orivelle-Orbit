@@ -116,6 +116,13 @@ pub struct ClientEvidence {
     pub model_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSyncView {
+    pub state: String,
+    pub checked_at: String,
+    pub model_count: usize,
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientView {
     pub client: ClientKind,
     pub installed: bool,
@@ -137,6 +144,8 @@ pub struct ClientView {
     pub loaded_evidence: Option<ClientEvidence>,
     pub connection_evidence: Option<ClientEvidence>,
     pub manual_steps: Vec<String>,
+    #[serde(default)]
+    pub catalog_sync: Option<CatalogSyncView>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

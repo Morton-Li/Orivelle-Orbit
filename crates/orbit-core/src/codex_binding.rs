@@ -31,9 +31,7 @@ const MAIN_TEMPLATES: [&str; 8] = [
 fn alias_valid(alias: &str) -> bool {
     !alias.is_empty()
         && alias.len() <= codex_catalog::MAX_ALIAS_BYTES
-        && alias
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+        && alias.bytes().all(|c| c.is_ascii_graphic())
 }
 
 fn binding_template(binding: &CodexCatalogBindingView) -> Option<&str> {
@@ -188,10 +186,7 @@ impl PlannedCatalog {
 }
 
 fn effective_efforts(policy: &ReasoningPolicyView) -> Option<Vec<&str>> {
-    if !policy_valid(policy)
-        || policy.capability_status != "supported"
-        || policy.default_effort.is_none()
-    {
+    if !policy_valid(policy) || policy.capability_status != "supported" {
         return None;
     }
     Some(
@@ -211,12 +206,14 @@ fn effective_efforts(policy: &ReasoningPolicyView) -> Option<Vec<&str>> {
 
 fn mapping<'a>(
     alias: &'a str,
+    label: &'a str,
     template: &'a str,
     efforts: &'a [&'a str],
     default: Option<&'a str>,
 ) -> ModelMapping<'a> {
     ModelMapping {
         alias,
+        display_name: Some(label),
         template_slug: template,
         purpose: ModelPurpose::Main,
         auxiliary_aliases: &[],
@@ -270,7 +267,11 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
     let mut unique = BTreeSet::new();
     let mut authorized = Vec::new();
     let mut prepared = Vec::new();
-    let mut selected_error = "codex_binding_unavailable";
+    let mut selected_error = if scoped.is_empty() {
+        "codex_models_unavailable"
+    } else {
+        "codex_binding_unavailable"
+    };
     let mut selected_default = None;
     let mut default_alias = selected;
     for model in &scoped {
@@ -278,6 +279,9 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
             return Err(fail("codex_catalog_scope_invalid"));
         }
         if !alias_valid(&model.id) {
+            if model.id == selected || selected.is_empty() {
+                selected_error = "codex_model_id_unsupported";
+            }
             continue;
         }
         authorized.push(model.id.as_str());
@@ -293,18 +297,33 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
             .as_ref()
             .and_then(|policy| effective_efforts(policy).map(|efforts| (policy, efforts)))
         else {
-            if model.id == selected {
+            if model.id == selected || selected.is_empty() {
                 selected_error = "codex_reasoning_unavailable";
             }
             continue;
         };
-        // Use the compiler's exact default/multi-agent rules rather than
-        // approximating compatibility or silently choosing another effort.
-        let entry = [mapping(
-            &model.id,
+        // This is an explicit local setting constrained by both declarations;
+        // a missing upstream default does not imply missing model support.
+        let default = match codex_catalog::configured_default(
             template,
             &efforts,
             policy.default_effort.as_deref(),
+        ) {
+            Ok(default) => default,
+            Err(error)
+                if error.code == "codex_catalog_reasoning_invalid" && model.id != selected =>
+            {
+                selected_error = "codex_catalog_reasoning_invalid";
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let entry = [mapping(
+            &model.id,
+            &model.label,
+            template,
+            &efforts,
+            Some(&default),
         )];
         let one = codex_catalog::compile(&CatalogPlan {
             runtime_cli_version: codex_catalog::SUPPORTED_CLI_VERSION,
@@ -339,7 +358,8 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
             model.id.as_str(),
             template,
             efforts,
-            policy.default_effort.as_deref(),
+            default,
+            model.label.as_str(),
         ));
         if prepared.len() > codex_catalog::MAX_MODELS {
             return Err(fail("codex_catalog_limit_exceeded"));
@@ -348,7 +368,9 @@ pub fn compile_scope(scope: &CatalogScope<'_>, selected: &str) -> Result<Planned
     let default_reasoning_effort = selected_default.ok_or_else(|| fail(selected_error))?;
     let mappings: Vec<_> = prepared
         .iter()
-        .map(|(alias, template, efforts, default)| mapping(alias, template, efforts, *default))
+        .map(|(alias, template, efforts, default, label)| {
+            mapping(alias, label, template, efforts, Some(default))
+        })
         .collect();
     let catalog = codex_catalog::compile(&CatalogPlan {
         runtime_cli_version: codex_catalog::SUPPORTED_CLI_VERSION,
@@ -575,36 +597,56 @@ mod tests {
     }
 
     #[test]
-    fn unknown_default_never_inherits_an_otherwise_allowed_template_default() {
-        let mut unknown = model("unknown", "gpt-5.5");
-        unknown.reasoning.as_mut().unwrap().default_effort = None;
-        // medium is still supported and unrestricted, but Panel has not
-        // declared a default. The compiler's general fallback is not evidence.
-        let models = [model("good", "gpt-5.5"), unknown];
-        assert_eq!(code(&models, "unknown"), "codex_reasoning_unavailable");
-        assert_eq!(
-            compile_scope(&scope(&models), "good")
-                .unwrap()
-                .catalog()
-                .main_aliases(),
-            ["good"]
-        );
+    fn every_main_template_gets_an_explicit_allowed_default_and_preserves_public_aliases() {
+        let models: Vec<_> = MAIN_TEMPLATES
+            .iter()
+            .enumerate()
+            .map(|(index, template)| {
+                let mut model = model(&format!("platform/group:model-{index}@v2"), template);
+                model.label = format!("平台模型 {index}");
+                model.reasoning.as_mut().unwrap().default_effort = None;
+                model
+            })
+            .collect();
+        let planned = compile_scope(&scope(&models), "").unwrap();
+        let output: Value = serde_json::from_slice(planned.catalog().bytes()).unwrap();
+        assert_eq!(planned.catalog().main_aliases().len(), MAIN_TEMPLATES.len());
+        for (index, model) in models.iter().enumerate() {
+            assert_eq!(output["models"][index]["slug"], model.id);
+            assert_eq!(output["models"][index]["display_name"], model.label);
+            let default = output["models"][index]["default_reasoning_level"]
+                .as_str()
+                .unwrap();
+            assert!(
+                model
+                    .reasoning
+                    .as_ref()
+                    .unwrap()
+                    .supported_efforts
+                    .iter()
+                    .any(|effort| effort == default)
+            );
+        }
     }
 
     #[test]
-    fn incompatible_defaults_and_multi_agent_efforts_are_excluded_without_fallback() {
+    fn configured_defaults_and_multi_agent_efforts_remain_within_current_permissions() {
         let mut invalid = model("invalid", "gpt-5.5");
         let policy = invalid.reasoning.as_mut().unwrap();
         policy.state = "restricted".into();
         policy.allowed_efforts = Some(vec!["high".into()]);
         assert_eq!(
-            code(&[invalid.clone()], "invalid"),
-            "codex_catalog_reasoning_invalid"
+            compile_scope(&scope(&[invalid.clone()]), "")
+                .unwrap()
+                .default_reasoning_effort(),
+            "high"
         );
         invalid.reasoning.as_mut().unwrap().default_effort = None;
         assert_eq!(
-            code(&[invalid.clone()], "invalid"),
-            "codex_reasoning_unavailable"
+            compile_scope(&scope(&[invalid.clone()]), "")
+                .unwrap()
+                .default_reasoning_effort(),
+            "high"
         );
         invalid.reasoning.as_mut().unwrap().default_effort = Some("high".into());
         assert_eq!(
@@ -624,9 +666,28 @@ mod tests {
                 .unwrap()
                 .catalog()
                 .main_aliases(),
-            ["good"]
+            ["good", "lost"]
         );
-        assert_eq!(code(&models, "lost"), "codex_catalog_reasoning_invalid");
+        let planned = compile_scope(&scope(&models), "lost").unwrap();
+        let output: Value = serde_json::from_slice(planned.catalog().bytes()).unwrap();
+        assert_eq!(output["models"][1]["default_reasoning_level"], "low");
+        assert_eq!(output["models"][1]["multi_agent_reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn automatic_selection_reports_the_actual_missing_requirement() {
+        let mut unknown = model("unknown", "gpt-5.5");
+        unknown.reasoning = None;
+        assert_eq!(code(&[unknown.clone()], ""), "codex_reasoning_unavailable");
+        unknown.codex_catalog_binding = None;
+        assert_eq!(code(&[unknown.clone()], ""), "codex_binding_unavailable");
+        unknown.id = "invalid id".into();
+        assert_eq!(code(&[unknown], ""), "codex_model_id_unsupported");
+        assert_eq!(code(&[], ""), "codex_models_unavailable");
+        let mut denied = model("denied", "gpt-5.5");
+        denied.reasoning.as_mut().unwrap().state = "restricted".into();
+        denied.reasoning.as_mut().unwrap().allowed_efforts = Some(vec![]);
+        assert_eq!(code(&[denied], ""), "codex_catalog_reasoning_invalid");
     }
 
     #[test]

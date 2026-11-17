@@ -633,7 +633,9 @@ describe("Codex catalog confirmation", () => {
       "claude_configuration_source_unsupported",
       "现有 Claude 配置来源无法安全迁移",
     ],
-    ["codex_binding_unavailable", "当前模型缺少可用的 Codex 模板声明"],
+    ["codex_binding_unavailable", "当前可用模型缺少兼容的 Codex 模板声明"],
+    ["codex_catalog_reasoning_invalid", "当前推理档位策略不足"],
+    ["codex_model_id_unsupported", "模型调用 ID 超出"],
     [
       "codex_configuration_target_unverified",
       "尚未确认已安装 Codex 的配置合同",

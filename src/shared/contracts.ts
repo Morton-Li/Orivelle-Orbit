@@ -179,6 +179,12 @@ export type ClientView = {
   loaded_evidence: ClientEvidence | null;
   connection_evidence: ClientEvidence | null;
   manual_steps: string[];
+  catalog_sync?: {
+    state: "updated" | "current" | "blocked";
+    checked_at: string;
+    model_count: number;
+    error: string | null;
+  } | null;
 };
 export type ClientEvidence = {
   kind:

@@ -45,6 +45,8 @@ mod claude;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 #[path = "service_claude_tests.rs"]
 mod claude_authority_tests;
+#[path = "service_codex_sync.rs"]
+mod codex_sync;
 #[path = "service_node_latency.rs"]
 mod node_latency;
 
@@ -314,6 +316,7 @@ impl Service {
             if let Some(old) = store.get::<ClientView>("client-state", client.client.as_str())? {
                 client.configuration_state = old.configuration_state;
                 client.configuration_revision = old.configuration_revision;
+                client.catalog_sync = old.catalog_sync;
                 client.loaded_state = if client.configuration_state == "saved" {
                     "restart_required"
                 } else {
@@ -2050,6 +2053,7 @@ impl Service {
             self.store
                 .put("account-cache", id, &record.view.account_id, &cache)?;
         }
+        self.sync_codex_models_if_bound(id);
         self.changed();
         Ok(models)
     }
@@ -2503,6 +2507,19 @@ impl Service {
         let (record, cache) = self
             .current_connection(&context.connection_id, context.connection_revision)
             .map_err(|_| fail("codex_catalog_scope_changed"))?;
+        let record = if self
+            .store
+            .get::<api_keys::KeyCredential>("api-key-credential", &context.credential_reference)?
+            .is_some()
+        {
+            self.frozen_api_key_record(
+                &record,
+                &context.credential_reference,
+                &context.credential_revision,
+            )?
+        } else {
+            record
+        };
         let node = cache
             .nodes
             .iter()
@@ -6157,16 +6174,496 @@ mod tests {
     }
     #[cfg(not(windows))]
     #[test]
-    fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
-        for mode in ["old-null", "null-default", "profile", "profile-table"] {
+    fn codex_catalog_sync_updates_all_aliases_and_restores_the_original_external_platform() {
+        let f = policy_fixture(ClientKind::Codex);
+        let original = b"model='external/model'\nmodel_provider='external'\n[model_providers.external]\nbase_url='https://other.example/v1'\nwire_api='responses'\n";
+        std::fs::write(&f.service.paths.codex_config, original).unwrap();
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let before_noop = f.service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            f.service.sync_codex_models(&f.record.view.id).unwrap(),
+            Some((false, 1))
+        );
+        assert_eq!(f.service.store.snapshot().unwrap().revision, before_noop);
+        let mut cache = f.service.account_cache(&f.record).unwrap();
+        cache.models[0].reasoning.as_mut().unwrap().default_effort = None;
+        let mut alias = cache.models[0].clone();
+        alias.id = "gateway/custom:model@v2".into();
+        alias.label = "另一个平台的模型名".into();
+        alias.revision = "new-alias".into();
+        cache.models.push(alias.clone());
+        cache.catalog_revision = "catalog-after-add".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.sync_codex_models(&f.record.view.id).unwrap(),
+            Some((true, 2))
+        );
+        let catalog: Value =
+            serde_json::from_slice(&std::fs::read(f.service.paths.codex_catalog()).unwrap())
+                .unwrap();
+        assert_eq!(catalog["models"][1]["slug"], alias.id);
+        assert_eq!(catalog["models"][1]["display_name"], alias.label);
+        let saved = std::fs::read_to_string(&f.service.paths.codex_config).unwrap();
+        assert!(saved.contains("[model_providers.external]"));
+        cache.models = vec![alias.clone()];
+        cache.catalog_revision = "catalog-after-removal".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.sync_codex_models(&f.record.view.id).unwrap(),
+            Some((true, 1))
+        );
+        let saved: toml_edit::DocumentMut = std::fs::read_to_string(&f.service.paths.codex_config)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(saved["model"].as_str(), Some(alias.id.as_str()));
+        let snapshots = f.service.bootstrap().unwrap().switch_snapshots;
+        assert_eq!(snapshots.len(), 1);
+        let restore = f.service.preview_restore(&snapshots[0].id).unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&f.service.paths.codex_config).unwrap(),
+            original
+        );
+        assert!(!f.service.paths.codex_catalog().exists());
+        assert!(
+            f.service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|binding| !binding.enabled)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_catalog_sync_preserves_external_edits_and_refuses_unavailable_models_or_changed_scope()
+    {
+        for mode in ["external-edit", "no-models", "node", "policy", "binding"] {
             let f = policy_fixture(ClientKind::Codex);
-            if ["old-null", "null-default"].contains(&mode) {
+            let preview = f
+                .service
+                .preview_client_config_legacy(
+                    &f.record.view.id,
+                    f.record.view.revision,
+                    ClientKind::Codex,
+                    "",
+                )
+                .unwrap();
+            f.service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap();
+            let mut cache = f.service.account_cache(&f.record).unwrap();
+            let mut extra = cache.models[0].clone();
+            extra.id = "new-model".into();
+            cache.models.push(extra);
+            cache.catalog_revision = "changed-catalog".into();
+            if mode == "no-models" {
+                cache.models.clear();
+            }
+            if mode == "external-edit" {
+                std::fs::write(
+                    &f.service.paths.codex_config,
+                    "model_provider='another-platform'\n",
+                )
+                .unwrap();
+            }
+            if mode == "node" {
+                let mut record = f.service.record(&f.record.view.id).unwrap();
+                record.view.node_id = Some("other-node".into());
+                f.service
+                    .store
+                    .put(
+                        "connection",
+                        &record.view.id,
+                        &record.view.account_id,
+                        &record,
+                    )
+                    .unwrap();
+            }
+            if mode == "policy" {
+                f.epoch.store(2, Ordering::SeqCst);
+            }
+            if mode == "binding" {
+                let mut binding = f
+                    .service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+                    .into_iter()
+                    .find(|binding| binding.enabled)
+                    .unwrap();
+                binding.enabled = false;
+                f.service
+                    .store
+                    .put("binding", &binding.id, &binding.account_id, &binding)
+                    .unwrap();
+            }
+            f.service
+                .store
+                .put(
+                    "account-cache",
+                    &f.record.view.id,
+                    &f.record.view.account_id,
+                    &cache,
+                )
+                .unwrap();
+            let config = std::fs::read(&f.service.paths.codex_config).unwrap();
+            let catalog = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+            let revision = f.service.store.snapshot().unwrap().revision;
+            assert!(
+                f.service.sync_codex_models(&f.record.view.id).is_err(),
+                "{mode}"
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                config,
+                "{mode}"
+            );
+            assert_eq!(
+                std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+                catalog,
+                "{mode}"
+            );
+            assert_eq!(
+                f.service.store.snapshot().unwrap().revision,
+                revision,
+                "{mode}"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_catalog_sync_keeps_the_confirmed_key_after_default_selection_changes() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let mut record = f.service.record(&f.record.view.id).unwrap();
+        let reference = record.credential_reference.clone().unwrap();
+        let key = api_keys::KeyCredential {
+            origin: record.view.panel_origin.clone(),
+            account_id: record.view.account_id.clone(),
+            installation_id: record.installation_id.clone(),
+            api_key_id: record.api_key_id.clone().unwrap(),
+            key_revision: record.view.credential_revision.clone().unwrap(),
+            secret_reference: reference.clone(),
+            expires_at: record.credential_expires_at,
+            authorization_epoch: record.authorization_epoch,
+            enabled: true,
+        };
+        f.service
+            .store
+            .put(
+                "api-key-credential",
+                &reference,
+                &record.view.account_id,
+                &key,
+            )
+            .unwrap();
+        record.view.revision += 1;
+        record.api_key_id = Some("new-default-key".into());
+        record.credential_reference = Some("new-default-reference".into());
+        record.view.credential_revision = Some("a".repeat(64));
+        f.service
+            .store
+            .put(
+                "connection",
+                &record.view.id,
+                &record.view.account_id,
+                &record,
+            )
+            .unwrap();
+        let mut cache = f.service.account_cache(&record).unwrap();
+        let mut added = cache.models[0].clone();
+        added.id = "new-model".into();
+        cache.models.push(added);
+        cache.catalog_revision = "key-independent-catalog".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.sync_codex_models(&record.view.id).unwrap(),
+            Some((true, 2))
+        );
+        let bindings = f
+            .service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap();
+        assert_eq!(
+            bindings
+                .iter()
+                .find(|binding| binding.enabled)
+                .unwrap()
+                .secret_reference,
+            reference
+        );
+        let saved = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+        cache
+            .keys
+            .iter_mut()
+            .filter(|entry| entry.api_key_id.as_ref() == Some(&key.api_key_id))
+            .for_each(|entry| entry.state = "revoked".into());
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service
+                .sync_codex_models(&record.view.id)
+                .unwrap_err()
+                .code,
+            "binding_disabled"
+        );
+        assert_eq!(
+            std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+            saved
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_catalog_sync_recovers_a_partial_pair_and_keeps_the_first_restore_snapshot() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let source = f
+            .service
+            .store
+            .list::<Journal>("journal", None)
+            .unwrap()
+            .into_iter()
+            .find(|journal| {
+                journal.purpose == JournalPurpose::Switch && journal.phase == "committed"
+            })
+            .unwrap();
+        let mut cache = f.service.account_cache(&f.record).unwrap();
+        let mut added = cache.models[0].clone();
+        added.id = "added-during-sync".into();
+        cache.models.push(added);
+        cache.catalog_revision = "new-catalog".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        let observation = f.service.observe_configuration(ClientKind::Codex).unwrap();
+        let planned = f.service.plan_codex(&f.record, &cache, &f.model).unwrap();
+        let context = f
+            .service
+            .freeze_codex(
+                &f.record,
+                &cache,
+                &planned,
+                observation.configuration_target.as_ref().unwrap(),
+            )
+            .unwrap();
+        let files = vec![
+            FileChange {
+                path: f.service.paths.codex_catalog().display().to_string(),
+                before: read_file(&f.service.paths.codex_catalog()).unwrap(),
+                after: Some(planned.catalog().bytes().to_vec()),
+            },
+            FileChange {
+                path: f.service.paths.codex_config.display().to_string(),
+                before: read_file(&f.service.paths.codex_config).unwrap(),
+                after: read_file(&f.service.paths.codex_config).unwrap(),
+            },
+        ];
+        let engine = f.service.config_engine();
+        let mut journal = engine.prepare_codex_sync(&source, files, context).unwrap();
+        engine
+            .freeze_target(
+                &mut journal,
+                observation.target.version,
+                observation.target.bundle_id,
+            )
+            .unwrap();
+        engine
+            .freeze_policy(&mut journal, &observation.policy.revision)
+            .unwrap();
+        journal.phase = "publishing".into();
+        f.service
+            .store
+            .put("journal", &journal.id, &journal.account_id, &journal)
+            .unwrap();
+        std::fs::write(f.service.paths.codex_catalog(), planned.catalog().bytes()).unwrap();
+        f.service.coordinate_configuration_recovery().unwrap();
+        let current: Journal = f
+            .service
+            .store
+            .get("journal", &journal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.phase, "committed");
+        assert_eq!(f.service.bootstrap().unwrap().switch_snapshots.len(), 1);
+        let restore = f.service.preview_restore(&journal.id).unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&f.service.paths.codex_config).unwrap(),
+            b"model='old'\n"
+        );
+        assert!(!f.service.paths.codex_catalog().exists());
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn codex_model_poll_refreshes_the_scoped_catalog_and_preserves_saved_bytes_offline() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let mut wire = golden()["bootstrap_reply"].clone();
+        let model = &f.service.account_cache(&f.record).unwrap().models[0];
+        wire["data"]["models"][0]["codex_catalog_binding"] =
+            serde_json::to_value(&model.codex_catalog_binding).unwrap();
+        wire["data"]["models"][0]["reasoning"] = serde_json::to_value(&model.reasoning).unwrap();
+        let mut added = wire["data"]["models"][0].clone();
+        added["id"] = json!("other/platform:model-v2");
+        wire["data"]["models"].as_array_mut().unwrap().push(added);
+        wire["data"]["meta"]["catalog_revision"] = json!("poll-catalog");
+        let calls = Arc::new(AtomicU64::new(0));
+        let requests = calls.clone();
+        f.service.http.scripted(Arc::new(move |request| {
+            requests.fetch_add(1, Ordering::SeqCst);
+            let response = if request.url.ends_with("/api/v1/orbit/bootstrap") {
+                wire.clone()
+            } else {
+                assert!(request.url.contains("/api/v1/orbit/models?node_id="));
+                json!({"data": wire["data"]["models"], "meta": {"revision": "poll-catalog"}})
+            };
+            Box::pin(async move {
+                Ok(crate::network::RemoteResponse {
+                    status: 200,
+                    request_id: None,
+                    bytes: serde_json::to_vec(&response).unwrap(),
+                })
+            })
+        }));
+        f.service.synchronize_models().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let client = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Codex)
+            .unwrap();
+        assert_eq!(client.catalog_sync.as_ref().unwrap().model_count, 2);
+        assert_eq!(client.catalog_sync.as_ref().unwrap().state, "updated");
+        let catalog = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+        f.service.http.scripted(Arc::new(|_| {
+            Box::pin(async { Err(fail("network_unavailable")) })
+        }));
+        assert!(f.service.synchronize_models().await.is_err());
+        assert_eq!(
+            std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+            catalog
+        );
+        let client = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Codex)
+            .unwrap();
+        assert_eq!(client.catalog_sync.as_ref().unwrap().state, "blocked");
+        let _maintenance = f.service.begin_maintenance().unwrap();
+        let revision = f.service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            f.service.synchronize_models().await.unwrap_err().code,
+            "update_busy"
+        );
+        assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
+        for mode in ["old-null", "profile", "profile-table"] {
+            let f = policy_fixture(ClientKind::Codex);
+            if mode == "old-null" {
                 let mut cache = f.service.account_cache(&f.record).unwrap();
-                if mode == "old-null" {
-                    cache.models[0].codex_catalog_binding = None;
-                } else {
-                    cache.models[0].reasoning.as_mut().unwrap().default_effort = None;
-                }
+                cache.models[0].codex_catalog_binding = None;
                 f.service
                     .store
                     .put(
@@ -6203,7 +6700,6 @@ mod tests {
                 error.code,
                 match mode {
                     "old-null" => "codex_binding_unavailable",
-                    "null-default" => "codex_reasoning_unavailable",
                     _ => "codex_config_override_unverified",
                 }
             );
