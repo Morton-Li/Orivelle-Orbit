@@ -306,6 +306,50 @@ export async function fixture(
               request.purpose ? (material ? [material] : []) : imageInputs,
             );
           }
+          if (command === "use_history_as_input") {
+            const image = current.image_history.find(
+              (image) => image.id === request.image_id,
+            );
+            if (!image) throw { code: "local_image_missing" };
+            return {
+              id: `input-${image.id}`,
+              name: `${image.id}.png`,
+              mime: image.mime,
+              width: image.width,
+              height: image.height,
+              bytes: image.bytes,
+              preview_url: image.preview_url,
+            };
+          }
+          if (command === "refresh_image_inputs") {
+            const known = [
+              ...imageInputs,
+              ...Object.values(imageMaterials),
+              ...current.image_history.map((image) => ({
+                id: `input-${image.id}`,
+                name: `${image.id}.png`,
+                mime: image.mime,
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes,
+                preview_url: image.preview_url,
+              })),
+            ];
+            return (request.input_ids as string[]).map((id) => {
+              const input = known.find((input) => input?.id === id);
+              if (!input) throw { code: "local_image_missing" };
+              return structuredClone(input);
+            });
+          }
+          if (command === "rename_history_image") {
+            const image = current.image_history.find(
+              (image) => image.id === request.image_id,
+            );
+            if (!image) throw { code: "local_image_missing" };
+            image.title = String(request.title).trim() || null;
+            update();
+            return structuredClone(image);
+          }
           if (command === "save_image_as") return { saved: true };
           if (command === "copy_image") return { copied: true };
           if (command === "probe_nodes")

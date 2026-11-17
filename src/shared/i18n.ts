@@ -486,6 +486,25 @@ const zh = {
   "images.description": "选择获准模型，输入提示词，或加入参考图进行编辑。",
   "images.create": "创作",
   "images.history": "本地历史",
+  "images.historyTitle": "图片标题",
+  "images.rename": "修改标题",
+  "images.renameHint":
+    "留空使用请求 ID，最多 120 个字符。原始请求 ID 保持不变。",
+  "images.invalidTitle": "标题最多 120 个字符，且不能包含控制字符。",
+  "images.chooseKeyFirst": "请先选择有效的 API Key，再提交图片请求。",
+  "images.keyRevoked": "当前 API Key 已失效，请重新选择有效密钥。",
+  "images.noPermission": "当前账户无权提交图片请求，请检查账户权限。",
+  "images.noModels": "当前节点没有可用的图片模型，请切换节点或刷新数据。",
+  "images.chooseModel": "请选择图片模型。",
+  "images.enterPrompt": "请填写提示词，描述要生成的图片或修改要求。",
+  "images.fixPrompt": "请缩短超过上限的提示词后再提交。",
+  "images.fixParameters": "请调整上方标记的图片参数后再提交。",
+  "images.generationInProgress": "当前图片任务正在进行，请等待完成后再提交。",
+  "images.submitting": "正在提交图片请求，请稍候。",
+  "images.preparingInputs": "正在准备已添加的参考图，请稍候。",
+  "images.prepareInputsFailed": "参考图尚未准备完成，请重试或重新添加。",
+  "images.editUnsupported": "所选模型不支持图片编辑，请切换模型。",
+  "images.generationUnsupported": "所选模型不支持图片生成，请切换模型。",
   "images.prompt": "提示词",
   "images.promptPlaceholder":
     "描述主体、构图、光线与风格。添加参考图后将使用编辑接口。",
@@ -1209,6 +1228,35 @@ const en: Record<keyof typeof zh, string> = {
     "Choose an authorized model, describe your idea, or add references to edit.",
   "images.create": "Create",
   "images.history": "Local history",
+  "images.historyTitle": "Image title",
+  "images.rename": "Rename image",
+  "images.renameHint":
+    "Leave empty to use the request ID. Up to 120 characters. The original request ID is retained.",
+  "images.invalidTitle": "Use up to 120 characters without control characters.",
+  "images.chooseKeyFirst":
+    "Choose a valid API key before submitting an image request.",
+  "images.keyRevoked":
+    "The current API key is no longer valid. Choose a valid key.",
+  "images.noPermission":
+    "This account cannot submit image requests. Check its permissions.",
+  "images.noModels":
+    "No image models are available on this node. Choose another node or refresh.",
+  "images.chooseModel": "Choose an image model.",
+  "images.enterPrompt":
+    "Enter a prompt describing the image or the changes you want.",
+  "images.fixPrompt": "Shorten the prompt to fit the limit before submitting.",
+  "images.fixParameters":
+    "Correct the image parameters marked above before submitting.",
+  "images.generationInProgress":
+    "An image task is in progress. Wait for it to finish before submitting again.",
+  "images.submitting": "Submitting the image request…",
+  "images.preparingInputs": "Preparing your reference images…",
+  "images.prepareInputsFailed":
+    "Reference images are not ready. Retry or add them again.",
+  "images.editUnsupported":
+    "This model does not support image editing. Choose another model.",
+  "images.generationUnsupported":
+    "This model does not support image generation. Choose another model.",
   "images.prompt": "Prompt",
   "images.promptPlaceholder":
     "Describe the subject, composition, lighting and style. Adding references uses the editing endpoint.",

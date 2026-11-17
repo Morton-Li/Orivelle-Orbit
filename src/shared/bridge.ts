@@ -46,6 +46,7 @@ export function publicFailure(error: unknown): OrbitError {
     invalid_api_key_request: "keys.errorInvalid",
     orbit_delivery_unusable: "keys.errorDelivery",
     orbit_credential_unavailable: "keys.errorUnavailable",
+    invalid_image_title: "images.invalidTitle",
   };
   const parameters = Array.isArray(value?.unsupported_parameters)
     ? [

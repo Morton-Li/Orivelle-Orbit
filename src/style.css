@@ -1181,6 +1181,39 @@ textarea::placeholder {
   font-size: 12px;
   font-weight: 560;
 }
+.history-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.history-title-row strong {
+  flex: 1;
+  min-width: 0;
+}
+.history-rename {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+}
+.history-rename-form {
+  display: grid;
+  gap: 8px;
+}
+.image-submit-actions {
+  display: grid;
+  gap: 8px;
+}
+.image-submit-hint {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
 .history-card-info p {
   font-size: 10px;
   margin-top: 5px;

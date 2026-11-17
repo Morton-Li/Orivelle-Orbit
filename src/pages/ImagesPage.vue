@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, toRefs, watch } from "vue";
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from "reka-ui";
 import { useOrbitStore } from "../stores/orbit";
 import { subscribeImageInputs } from "../shared/bridge";
@@ -17,7 +17,7 @@ import {
   safePreviewUrl,
   utf8Bytes,
 } from "../shared/format";
-import { t } from "../shared/i18n";
+import { t, type MessageKey } from "../shared/i18n";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
@@ -36,17 +36,20 @@ import {
 } from "../shared/image-api";
 const store = useOrbitStore();
 const tab = ref("create");
-const prompt = ref("");
-const modelId = ref("");
-const inputs = ref<ImageInput[]>([]);
-const mask = ref<ImageInput | null>(null);
-const markup = ref<ImageInput | null>(null);
-const parameters = ref<ImageParameters>({});
-const advanced = ref(false);
+const { prompt, modelId, inputs, mask, markup, parameters, advanced } = toRefs(
+  store.imageDraft,
+);
 // Keep extended controls implemented while only background is open for now.
 const extendedOptionsEnabled = false;
 const enlarged = ref<HistoryImage | null>(null);
 const deleteImageIds = ref<string[]>([]);
+const renamingImage = ref<HistoryImage | null>(null);
+const imageTitle = ref("");
+const titleValid = computed(
+  () =>
+    [...imageTitle.value.trim()].length <= 120 &&
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(imageTitle.value.trim()),
+);
 const now = ref(Date.now());
 let timer: number | undefined;
 let unsubscribe: (() => void) | undefined;
@@ -227,22 +230,63 @@ const active = computed(
     !!activeTask.value &&
     ["queued", "sending", "waiting", "saving"].includes(activeTask.value.state),
 );
-const canSubmit = computed(
+const canPrepare = computed(
   () =>
-    store.ready &&
-    !!model.value &&
-    prompt.value.trim().length > 0 &&
-    promptBytes.value <= promptLimit.value &&
-    !parameterError.value &&
-    inputs.value.length <= (constraints.value?.max_inputs ?? 5) &&
-    !active.value &&
-    !store.busy.has("image-submit") &&
-    model.value.capabilities.includes(
+    !!store.account &&
+    !!store.activeConnection &&
+    !store.state.maintenance_active,
+);
+const submitReason = computed<MessageKey | null>(() => {
+  if (!store.initialized) return "access.waitDetection";
+  if (!store.account) return "access.connectAccountFirst";
+  if (store.state.maintenance_active) return "access.waitMaintenance";
+  if (
+    store.state.session.status === "refreshing" ||
+    store.busy.has("refresh-account")
+  )
+    return "access.waitConnection";
+  if (store.state.session.inference_credential_status === "permission_denied")
+    return "images.noPermission";
+  if (store.state.session.inference_credential_status === "revoked")
+    return "images.keyRevoked";
+  if (store.state.session.inference_credential_status !== "ready")
+    return "images.chooseKeyFirst";
+  if (store.activeConnection?.permission_state !== "allowed")
+    return "images.noPermission";
+  if (
+    !store.activeConnection.node_id ||
+    !store.state.nodes.some(
+      (node) => node.id === store.activeConnection?.node_id && node.available,
+    )
+  )
+    return "access.chooseNodeFirst";
+  if (!store.ready) return "access.waitConnection";
+  if (store.imageDraftRefreshing) return "images.preparingInputs";
+  if (store.imageDraftInputsError && inputs.value.length)
+    return "images.prepareInputsFailed";
+  if (active.value) return "images.generationInProgress";
+  if (store.busy.has("image-submit")) return "images.submitting";
+  if (store.modelsLoading) return "access.waitModels";
+  if (!store.imageModels.length) return "images.noModels";
+  if (!model.value) return "images.chooseModel";
+  if (!prompt.value.trim()) return "images.enterPrompt";
+  if (promptBytes.value > promptLimit.value) return "images.fixPrompt";
+  if (parameterError.value) return "images.fixParameters";
+  if (inputs.value.length > (constraints.value?.max_inputs ?? 5))
+    return "images.inputLimit";
+  if (
+    !model.value.capabilities.includes(
       inputs.value.length
         ? CAPABILITIES.imageEdit
         : CAPABILITIES.imageGeneration,
-    ),
-);
+    )
+  )
+    return inputs.value.length
+      ? "images.editUnsupported"
+      : "images.generationUnsupported";
+  return null;
+});
+const canSubmit = computed(() => !submitReason.value);
 const elapsed = computed(() =>
   activeTask.value?.started_at
     ? Math.max(
@@ -280,17 +324,11 @@ function taskTone(task: TaskView) {
         : ("neutral" as const);
 }
 watch(
-  () => store.scope,
+  () => store.imageDraftScope,
   () => {
-    prompt.value = "";
-    inputs.value = [];
-    mask.value = null;
-    markup.value = null;
-    modelId.value = "";
-    parameters.value = {};
-    advanced.value = false;
     enlarged.value = null;
     deleteImageIds.value = [];
+    renamingImage.value = null;
   },
 );
 watch(modelId, () => {
@@ -311,13 +349,16 @@ watch(
     }
   },
 );
-watch(constraints, () => {
-  parameters.value = supportedParameters(parameters.value);
+watch(constraints, (value) => {
+  if (value) parameters.value = supportedParameters(parameters.value);
 });
 watch(
-  () => store.imageModels,
+  () => [store.imageModels, store.modelsLoading],
   () => {
-    if (!store.imageModels.some((item) => item.id === modelId.value))
+    if (
+      !store.modelsLoading &&
+      !store.imageModels.some((item) => item.id === modelId.value)
+    )
       modelId.value = "";
   },
 );
@@ -357,7 +398,7 @@ function addInputs(values: ImageInput[]) {
 async function chooseMaterial(kind: "mask" | "markup") {
   const connection = store.activeConnection;
   const captured = store.scope;
-  if (!connection) return;
+  if (!connection || !canPrepare.value) return;
   const result = await store.perform(`image-${kind}`, "select_image_inputs", {
     connection_id: connection.id,
     purpose: kind,
@@ -386,7 +427,7 @@ async function chooseMaterial(kind: "mask" | "markup") {
 async function chooseInputs() {
   const connection = store.activeConnection;
   const captured = store.scope;
-  if (!connection) return;
+  if (!connection || !canPrepare.value) return;
   const result = await store.perform("image-inputs", "select_image_inputs", {
     connection_id: connection.id,
   });
@@ -455,7 +496,7 @@ async function edit(image: HistoryImage) {
   }
   const connection = store.activeConnection;
   const captured = store.scope;
-  if (!connection || !store.ready) return;
+  if (!connection || !canPrepare.value) return;
   const result = await store.perform("image-reedit", "use_history_as_input", {
     image_id: image.id,
     connection_id: connection.id,
@@ -468,6 +509,32 @@ async function edit(image: HistoryImage) {
     store.imagePreviewTaskId = null;
     tab.value = "create";
     enlarged.value = null;
+  }
+}
+function historyRequestId(image: HistoryImage) {
+  return (
+    store.tasks.find((task) => task.id === image.task_id)?.request_id ??
+    image.id
+  );
+}
+function historyTitle(image: HistoryImage) {
+  return image.title || historyRequestId(image);
+}
+function rename(image: HistoryImage) {
+  imageTitle.value = historyTitle(image);
+  renamingImage.value = image;
+}
+async function saveTitle() {
+  const image = renamingImage.value;
+  const captured = store.imageDraftScope;
+  if (!image || !titleValid.value) return;
+  const result = await store.perform("image-rename", "rename_history_image", {
+    image_id: image.id,
+    title: imageTitle.value.trim(),
+  });
+  if (result && captured === store.imageDraftScope) {
+    renamingImage.value = null;
+    await store.refresh();
   }
 }
 async function deleteHistory() {
@@ -609,7 +676,7 @@ function copyLabel(image: HistoryImage) {
               type="button"
               class="text-button"
               :disabled="
-                !store.ready || active || store.busy.has('image-inputs')
+                !canPrepare || active || store.busy.has('image-inputs')
               "
               @click="chooseInputs"
             >
@@ -620,7 +687,7 @@ function copyLabel(image: HistoryImage) {
             v-if="!inputs.length"
             type="button"
             class="image-drop-area"
-            :disabled="!store.ready || active"
+            :disabled="!canPrepare || active"
             @click="chooseInputs"
           >
             <OrbitIcon name="upload" /><span>{{ t("images.drop") }}</span>
@@ -924,15 +991,61 @@ function copyLabel(image: HistoryImage) {
         >
           {{ t(usesApi ? "images.apiRoute" : "images.subscriptionRoute") }}
         </p>
-        <button
-          type="submit"
-          class="button primary generate-button"
-          :disabled="!canSubmit"
-        >
-          <OrbitIcon name="spark" />{{
-            t(inputs.length ? "images.edit" : "images.generate")
-          }}
-        </button>
+        <div class="image-submit-actions">
+          <p
+            v-if="submitReason"
+            id="image-submit-reason"
+            class="field-hint image-submit-hint"
+            role="status"
+            aria-live="polite"
+          >
+            <span>{{ t(submitReason) }}</span>
+            <RouterLink
+              v-if="
+                submitReason === 'images.chooseKeyFirst' ||
+                submitReason === 'images.keyRevoked'
+              "
+              to="/api-keys"
+              class="text-button"
+              >{{ t("keys.pickerTitle") }}</RouterLink
+            >
+            <RouterLink
+              v-else-if="
+                submitReason === 'access.chooseNodeFirst' ||
+                submitReason === 'images.noModels'
+              "
+              to="/access"
+              class="text-button"
+              >{{ t("action.manage") }}</RouterLink
+            >
+            <button
+              v-else-if="submitReason === 'images.prepareInputsFailed'"
+              type="button"
+              class="text-button"
+              @click="store.refreshImageDraftInputs()"
+            >
+              {{ t("keys.retry") }}
+            </button>
+            <button
+              v-else-if="submitReason === 'access.connectAccountFirst'"
+              type="button"
+              class="text-button"
+              @click="store.loginOpen = true"
+            >
+              {{ t("action.login") }}
+            </button>
+          </p>
+          <button
+            type="submit"
+            class="button primary generate-button"
+            :disabled="!canSubmit"
+            :aria-describedby="submitReason ? 'image-submit-reason' : undefined"
+          >
+            <OrbitIcon name="spark" />{{
+              t(inputs.length ? "images.edit" : "images.generate")
+            }}
+          </button>
+        </div>
       </form>
       <section class="image-result" :aria-label="t('images.empty')">
         <template v-if="activeTask"
@@ -996,7 +1109,7 @@ function copyLabel(image: HistoryImage) {
                 ><button
                   class="icon-button"
                   :disabled="
-                    !store.ready ||
+                    !canPrepare ||
                     !referenceAllowed(image) ||
                     store.busy.has('image-reedit')
                   "
@@ -1122,9 +1235,23 @@ function copyLabel(image: HistoryImage) {
             /><OrbitIcon v-else name="images" />
           </button>
           <div class="history-card-info">
-            <strong>{{ image.width }} × {{ image.height }}</strong>
+            <div class="history-title-row">
+              <strong class="truncate" :title="historyTitle(image)">{{
+                historyTitle(image)
+              }}</strong>
+              <button
+                class="icon-button history-rename"
+                :aria-label="t('images.rename')"
+                :title="t('images.rename')"
+                :disabled="!canPrepare || store.busy.has('image-rename')"
+                @click="rename(image)"
+              >
+                <OrbitIcon name="edit" :size="13" />
+              </button>
+            </div>
             <p class="muted">
-              {{ imageFormat(image) }} ·
+              {{ imageFormat(image) }} · {{ image.width }} ×
+              {{ image.height }} ·
               {{ formatBytes(image.bytes) }}
             </p>
             <p class="muted">
@@ -1147,7 +1274,11 @@ function copyLabel(image: HistoryImage) {
                 <OrbitIcon name="copy" /></button
               ><button
                 class="icon-button"
-                :disabled="!store.ready || !referenceAllowed(image)"
+                :disabled="
+                  !canPrepare ||
+                  !referenceAllowed(image) ||
+                  store.busy.has('image-reedit')
+                "
                 :title="
                   !referenceAllowed(image)
                     ? t('images.rasterReferenceOnly')
@@ -1202,7 +1333,11 @@ function copyLabel(image: HistoryImage) {
           {{ copyLabel(enlarged) }}</button
         ><button
           class="button primary"
-          :disabled="!store.ready || !referenceAllowed(enlarged)"
+          :disabled="
+            !canPrepare ||
+            !referenceAllowed(enlarged) ||
+            store.busy.has('image-reedit')
+          "
           :title="
             !referenceAllowed(enlarged)
               ? t('images.rasterReferenceOnly')
@@ -1215,6 +1350,48 @@ function copyLabel(image: HistoryImage) {
       </div></template
     ></OrbitDialog
   >
+  <OrbitDialog
+    :open="renamingImage !== null"
+    :title="t('images.rename')"
+    :description="t('images.renameHint')"
+    @update:open="
+      (value) => {
+        if (!value) renamingImage = null;
+      }
+    "
+  >
+    <form class="history-rename-form" @submit.prevent="saveTitle">
+      <label for="image-history-title" class="field-label">{{
+        t("images.historyTitle")
+      }}</label>
+      <input
+        id="image-history-title"
+        v-model="imageTitle"
+        :placeholder="renamingImage ? historyRequestId(renamingImage) : ''"
+        :aria-invalid="!titleValid"
+        :disabled="store.busy.has('image-rename')"
+      />
+      <p v-if="!titleValid" class="error-text" role="alert">
+        {{ t("images.invalidTitle") }}
+      </p>
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="button secondary"
+          @click="renamingImage = null"
+        >
+          {{ t("action.cancel") }}
+        </button>
+        <button
+          type="submit"
+          class="button primary"
+          :disabled="!titleValid || store.busy.has('image-rename')"
+        >
+          {{ t("keys.save") }}
+        </button>
+      </div>
+    </form>
+  </OrbitDialog>
   <OrbitDialog
     :open="deleteImageIds.length > 0"
     :title="t('action.delete')"

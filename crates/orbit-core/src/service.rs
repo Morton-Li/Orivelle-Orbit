@@ -2138,6 +2138,25 @@ impl Service {
         }
         self.bootstrap()
     }
+    // Local image preparation needs an owned session, independently of a paid
+    // inference credential, node selection or inference permission.
+    fn image_preparation_connection(&self, id: &str, revision: u64) -> Result<ConnectionRecord> {
+        let record = self.record(id)?;
+        self.ensure_installation_available(&record.installation_id)?;
+        let active = self
+            .active_record()?
+            .ok_or_else(|| fail("session_expired"))?;
+        if active.view.id != id
+            || record.view.revision != revision
+            || record.session_status != "authenticated"
+            || record
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+        {
+            return Err(fail("connection_conflict"));
+        }
+        Ok(record)
+    }
     fn current_connection(
         &self,
         id: &str,
@@ -3631,9 +3650,13 @@ impl Service {
     }
     pub fn import_inputs(&self, id: &str, paths: &[PathBuf]) -> Result<Vec<ImageInput>> {
         let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let _permit = self.image_memory_permit()?;
         let record = self.record(id)?;
-        let _ = self.current_connection(id, record.view.revision)?;
+        let record = self.image_preparation_connection(id, record.view.revision)?;
         if paths.is_empty() || paths.len() > 16 {
             return Err(fail("image_limit_exceeded"));
         }
@@ -3649,8 +3672,12 @@ impl Service {
         revision: u64,
     ) -> Result<ImageInput> {
         let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let _permit = self.image_memory_permit()?;
-        let (record, _) = self.current_connection(id, revision)?;
+        let record = self.image_preparation_connection(id, revision)?;
         let (image, snapshot) = self.scoped_image(image_id)?;
         if snapshot.panel_origin != record.view.panel_origin
             || image.account_id != record.view.account_id
@@ -3666,6 +3693,76 @@ impl Service {
             .ok_or_else(|| fail("local_image_missing"))?;
         let path = images::owned_image_path(&self.store, &filename)?;
         images::import_input(&self.store, &path, &record.view)
+    }
+    pub fn rename_history_image(&self, image_id: &str, title: &str) -> Result<HistoryImage> {
+        let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let _files = self.store.image_files_lock()?;
+        let title = title.trim();
+        if title.chars().count() > 120 || title.chars().any(char::is_control) {
+            return Err(fail("invalid_image_title"));
+        }
+        let (mut image, _) = self.scoped_image(image_id)?;
+        image.title = (!title.is_empty()).then(|| title.to_owned());
+        self.store
+            .put("image", &image.id, &image.account_id, &image)?;
+        self.changed();
+        Ok(image)
+    }
+    pub fn refresh_image_inputs(
+        &self,
+        id: &str,
+        revision: u64,
+        input_ids: &[String],
+    ) -> Result<Vec<ImageInput>> {
+        let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let record = self.image_preparation_connection(id, revision)?;
+        if input_ids.len() > 18 || input_ids.iter().collect::<HashSet<_>>().len() != input_ids.len()
+        {
+            return Err(fail("image_limit_exceeded"));
+        }
+        let mut inputs = input_ids
+            .iter()
+            .map(|input_id| {
+                validate_uuid(input_id)?;
+                let mut input = self
+                    .store
+                    .get::<InputRecord>("input", input_id)?
+                    .ok_or_else(|| fail("local_image_missing"))?;
+                if input.account_id != record.view.account_id
+                    || input.connection_id != record.view.id
+                    || input.connection_revision > revision
+                    || &input.view.id != input_id
+                {
+                    return Err(fail("input_scope_mismatch"));
+                }
+                input.connection_revision = revision;
+                input.view.preview_url = self
+                    .store
+                    .root
+                    .join("previews")
+                    .join(format!("{input_id}.png"))
+                    .is_file()
+                    .then(|| images::preview_url(&self.store, input_id))
+                    .transpose()?;
+                Ok(input)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut views = Vec::with_capacity(inputs.len());
+        for input in inputs.drain(..) {
+            self.store
+                .put("input", &input.view.id, &input.account_id, &input)?;
+            views.push(input.view);
+        }
+        self.changed();
+        Ok(views)
     }
     pub fn create_image_task(
         self: &Arc<Self>,
@@ -5042,6 +5139,7 @@ fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
 mod tests {
     use super::*;
     mod image_live_demo;
+    mod image_workbench;
     #[cfg(target_os = "macos")]
     mod macos_config_roundtrip;
     #[cfg(target_os = "macos")]

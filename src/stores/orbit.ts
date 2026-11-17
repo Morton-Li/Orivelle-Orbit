@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { defineStore } from "pinia";
 import {
   call,
@@ -17,6 +17,8 @@ import type {
   ClientView,
   IpcCommands,
   ModelView,
+  ImageInput,
+  ImageParameters,
   ScopedErrorEvent,
   SettingsView,
   TaskView,
@@ -102,6 +104,19 @@ export const useOrbitStore = defineStore("orbit", () => {
   const modelsLoading = ref(false);
   // Workbench selection lasts for this app session, independently of saved history.
   const imagePreviewTaskId = ref<string | null>(null);
+  const emptyImageDraft = () => ({
+    prompt: "",
+    modelId: "",
+    inputs: [] as ImageInput[],
+    mask: null as ImageInput | null,
+    markup: null as ImageInput | null,
+    parameters: {} as ImageParameters,
+    advanced: false,
+  });
+  const imageDraft = reactive(emptyImageDraft());
+  const imageDraftRefreshing = ref(false);
+  const imageDraftInputsError = ref(false);
+  let imageDraftGeneration = 0;
   const busy = ref(new Set<string>());
   const update = ref<UpdateView | null>(null);
   const updateOperation = ref<"check" | "download" | "install" | null>(null);
@@ -155,6 +170,11 @@ export const useOrbitStore = defineStore("orbit", () => {
   const scope = computed(() =>
     activeConnection.value
       ? `${activeConnection.value.account_id}/${activeConnection.value.id}/${activeConnection.value.revision}/${activeConnection.value.credential_revision ?? ""}/${activeConnection.value.node_id ?? ""}`
+      : "none",
+  );
+  const imageDraftScope = computed(() =>
+    activeConnection.value
+      ? `${activeConnection.value.panel_origin}/${activeConnection.value.account_id}/${activeConnection.value.id}`
       : "none",
   );
   const canLogin = computed(
@@ -241,6 +261,45 @@ export const useOrbitStore = defineStore("orbit", () => {
     noticeTimer = undefined;
     notice.value = null;
   }
+  async function refreshImageDraftInputs() {
+    const generation = ++imageDraftGeneration;
+    const captured = scope.value;
+    const connection = activeConnection.value;
+    const selected = [
+      ...imageDraft.inputs,
+      ...[imageDraft.mask, imageDraft.markup].filter(
+        (input): input is ImageInput => input !== null,
+      ),
+    ];
+    imageDraftInputsError.value = false;
+    imageDraftRefreshing.value = !!connection && selected.length > 0;
+    if (!connection || !selected.length) return;
+    try {
+      const refreshed = await call("refresh_image_inputs", {
+        connection_id: connection.id,
+        expected_revision: connection.revision,
+        input_ids: [...new Set(selected.map((input) => input.id))],
+      });
+      if (generation !== imageDraftGeneration || captured !== scope.value)
+        return;
+      const byId = new Map(refreshed.map((input) => [input.id, input]));
+      imageDraft.inputs = imageDraft.inputs.map(
+        (input) => byId.get(input.id) ?? input,
+      );
+      if (imageDraft.mask)
+        imageDraft.mask = byId.get(imageDraft.mask.id) ?? imageDraft.mask;
+      if (imageDraft.markup)
+        imageDraft.markup = byId.get(imageDraft.markup.id) ?? imageDraft.markup;
+    } catch (error) {
+      if (generation === imageDraftGeneration && captured === scope.value) {
+        imageDraftInputsError.value = true;
+        report(error);
+      }
+    } finally {
+      if (generation === imageDraftGeneration)
+        imageDraftRefreshing.value = false;
+    }
+  }
   function report(error: unknown) {
     const code = error instanceof OrbitError ? error.code : "operation_failed";
     const policyMessage =
@@ -299,12 +358,21 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       return false;
     const before = scope.value;
+    const beforeDraftScope = imageDraftScope.value;
     const wasInitialized = initialized.value;
     const previousSync = state.value.clients.find(
       (client) => client.client === "codex",
     )?.catalog_sync;
     const previousAccountId = account.value?.id;
     state.value = next;
+    if (imageDraftScope.value !== beforeDraftScope) {
+      ++imageDraftGeneration;
+      imageDraftRefreshing.value = false;
+      imageDraftInputsError.value = false;
+      Object.assign(imageDraft, emptyImageDraft());
+    } else if (scope.value !== before) {
+      void refreshImageDraftInputs();
+    }
     initialized.value = true;
     locale.value = next.settings.locale;
     loginPending.value = next.pending_authorization !== null;
@@ -734,6 +802,11 @@ export const useOrbitStore = defineStore("orbit", () => {
     models,
     modelsLoading,
     imagePreviewTaskId,
+    imageDraft,
+    imageDraftScope,
+    imageDraftRefreshing,
+    imageDraftInputsError,
+    refreshImageDraftInputs,
     imagePreviewTask,
     busy,
     update,
