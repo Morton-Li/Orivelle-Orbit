@@ -314,8 +314,9 @@ if (mode === "preflight") {
           "Invalid pinned macOS signing certificate fingerprint.",
         );
     }
-    // The installed app's update channel is independent of the build repository.
-    releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT = updateEndpoint();
+    releaseInputs.ORBIT_RELEASE_UPDATE_ENDPOINT = updateEndpoint(
+      process.env.GITHUB_REPOSITORY,
+    );
     bundleConfig.bundle.createUpdaterArtifacts = true;
     bundleConfig.plugins = {
       updater: {
