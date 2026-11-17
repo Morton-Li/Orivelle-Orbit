@@ -564,8 +564,9 @@
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
   background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
 }
-.key-choice input {
+.key-choice > input[type="radio"] {
   accent-color: var(--accent);
+  flex: 0 0 13px;
   width: 13px;
   height: 13px;
   min-height: 0;
@@ -574,6 +575,11 @@
 }
 .key-choice > div {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.key-choice > .badge {
+  flex-shrink: 0;
 }
 .key-choice strong {
   display: block;
