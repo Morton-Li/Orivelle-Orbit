@@ -17,7 +17,6 @@ import {
   releaseNames,
   releaseVersion,
   updateEndpoint,
-  updateRepository,
   verifyUpdaterSignature,
 } from "../../scripts/github-release.mjs";
 
@@ -27,13 +26,14 @@ test("formal updates are tied to a stable tag and a GitHub repository", () => {
     assert.throws(() => releaseVersion(tag), /release tag/);
   }
   assert.equal(
-    updateEndpoint(),
+    updateEndpoint("Orivelle-Labs/Orbit"),
     "https://github.com/Orivelle-Labs/Orbit/releases/latest/download/latest.json",
   );
   assert.equal(
     updateEndpoint("Owner/Orbit"),
     "https://github.com/Owner/Orbit/releases/latest/download/latest.json",
   );
+  assert.throws(() => updateEndpoint(), /OWNER\/REPO/);
   assert.throws(() => updateEndpoint("Owner/Orbit/other"), /OWNER\/REPO/);
 });
 
@@ -113,7 +113,7 @@ test("the release requires signed updates for both platforms without checksum fi
   await writeFile(path.join(directory, names.macos), "synthetic disk image");
 
   await assert.rejects(
-    assembleRelease(directory, "v0.2.0", updateRepository, wire.public_key),
+    assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
     /asset set is incomplete or unexpected/,
   );
   await writeFile(
@@ -121,14 +121,14 @@ test("the release requires signed updates for both platforms without checksum fi
     Buffer.from(wire.artifact_base64, "base64"),
   );
   await assert.rejects(
-    assembleRelease(directory, "v0.2.0", updateRepository, wire.public_key),
+    assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
     /asset set is incomplete or unexpected/,
   );
   await writeFile(path.join(directory, names.windowsSignature), wire.signature);
   const assets = await assembleRelease(
     directory,
     "v0.2.0",
-    updateRepository,
+    "Owner/Orbit",
     wire.public_key,
   );
   const manifest = JSON.parse(
@@ -139,13 +139,13 @@ test("the release requires signed updates for both platforms without checksum fi
     platforms: {
       "darwin-aarch64": {
         url:
-          "https://github.com/Orivelle-Labs/Orbit/releases/download/v0.2.0/" +
+          "https://github.com/Owner/Orbit/releases/download/v0.2.0/" +
           names.update,
         signature: wire.signature,
       },
       "windows-x86_64": {
         url:
-          "https://github.com/Orivelle-Labs/Orbit/releases/download/v0.2.0/" +
+          "https://github.com/Owner/Orbit/releases/download/v0.2.0/" +
           names.windows,
         signature: wire.signature,
       },
@@ -162,7 +162,7 @@ test("the release requires signed updates for both platforms without checksum fi
     "changed Windows installer",
   );
   await assert.rejects(
-    assembleRelease(directory, "v0.2.0", updateRepository, wire.public_key),
+    assembleRelease(directory, "v0.2.0", "Owner/Orbit", wire.public_key),
     /package or trusted version signature/,
   );
   await assert.rejects(
