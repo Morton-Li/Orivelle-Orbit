@@ -1529,6 +1529,7 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
         configuration_revision: None,
         loaded_evidence: None,
         connection_evidence: None,
+        catalog_sync: None,
         manual_steps: if client == ClientKind::Claude {
             vec![CLAUDE_CONFIGURATION_IMPACT.into()]
         } else {

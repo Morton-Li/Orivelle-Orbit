@@ -43,7 +43,14 @@ export function configPolicyMessage(code: string): string | null {
     return t("access.codexConfigurationChanged");
   if (code === "codex_binding_unavailable")
     return t("access.codexBindingUnavailable");
-  if (code === "codex_reasoning_unavailable")
+  if (code === "codex_models_unavailable")
+    return t("access.noCompatibleModels");
+  if (code === "codex_model_id_unsupported")
+    return t("access.codexModelIdUnsupported");
+  if (
+    code === "codex_reasoning_unavailable" ||
+    code === "codex_catalog_reasoning_invalid"
+  )
     return t("access.codexReasoningUnavailable");
   if (
     code === "codex_catalog_scope_invalid" ||
@@ -65,7 +72,6 @@ export function configPolicyMessage(code: string): string | null {
       "codex_catalog_limit_exceeded",
       "codex_catalog_alias_unauthorized",
       "codex_catalog_dependency_invalid",
-      "codex_catalog_reasoning_invalid",
       "codex_catalog_default_invalid",
       "codex_catalog_template_unavailable",
     ].includes(code)

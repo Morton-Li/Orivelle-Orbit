@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { createMemoryHistory, createRouter } from "vue-router";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 const bridge = vi.hoisted(() => ({
   call: vi.fn(),
@@ -140,6 +141,62 @@ function writes() {
     ([command]) => command === "apply_client_config",
   );
 }
+
+describe("Codex catalog synchronization status", () => {
+  it.each([
+    ["updated", null, "可用模型目录已同步"],
+    ["current", null, "每 5 分钟自动同步"],
+    ["blocked", "codex_reasoning_unavailable", "当前推理档位策略不足"],
+    ["blocked", "configuration_conflict", "模型目录同步已暂停"],
+  ] as const)(
+    "shows %s without claiming client loading",
+    async (status, error, message) => {
+      const value = bootstrap();
+      value.state_revision = state.state_revision + 1;
+      value.clients = value.clients.filter(
+        (client) => client.client === "codex",
+      );
+      value.clients[0]!.catalog_sync = {
+        state: status,
+        checked_at: new Date().toISOString(),
+        model_count: 2,
+        error,
+      };
+      value.switch_snapshots = [
+        {
+          id: "owned-codex-switch",
+          client: "codex",
+          account_id: "synthetic-account-a",
+          account_label: "Synthetic account",
+          panel_origin: "https://panel.invalid",
+          installation_id: "synthetic-installation",
+          created_at: new Date().toISOString(),
+          expires_at: new Date().toISOString(),
+          file_count: 2,
+          state: "available",
+        },
+      ];
+      state = value;
+      expect(useOrbitStore().acceptState(value)).toBe(true);
+      await flushPromises();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: { template: "<main />" } }],
+      });
+      await router.push("/");
+      await router.isReady();
+      wrapper = mount(AccessPage, {
+        global: {
+          plugins: [router],
+          stubs: { ClientRow: true, OrbitSelect: orbitSelectStub },
+        },
+      });
+      expect(wrapper.text()).toContain(message);
+      expect(wrapper.text()).not.toContain("客户端已载入");
+      expect(writes()).toHaveLength(0);
+    },
+  );
+});
 
 describe("Claude preview after a Panel model refresh", () => {
   it("synchronizes R2 before first displaying its confirmation and keeps saved distinct from loaded", async () => {

@@ -470,7 +470,14 @@ const zh = {
   "access.codexEvidenceBoundary":
     "已安装版本的配置合同、模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
   "access.codexBindingUnavailable":
-    "当前模型缺少可用的 Codex 模板声明。请刷新模型列表，或联系管理员补充声明后重新预览。",
+    "当前可用模型缺少兼容的 Codex 模板声明。请联系管理员检查模型模板后重新预览。",
+  "access.codexModelIdUnsupported":
+    "模型调用 ID 超出 Codex 目录支持的格式或长度。请联系管理员检查模型调用名称。",
+  "access.catalogSynced":
+    "可用模型目录已同步；如客户端未显示更新，请重启 Codex。",
+  "access.catalogCurrent": "可用模型目录已是最新，Orbit 每 5 分钟自动同步。",
+  "access.catalogSyncBlocked":
+    "模型目录同步已暂停，现有配置保留。请检查连接、模型权限或本地配置后刷新。",
   "access.codexReasoningUnavailable":
     "当前推理档位策略不足以生成完整目录。请刷新模型权限后重新预览。",
   "access.codexCatalogChanged":
@@ -1188,7 +1195,15 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexEvidenceBoundary":
     "An installed version's configuration contract, template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
   "access.codexBindingUnavailable":
-    "This model has no available Codex template declaration. Refresh the model list or ask an administrator to declare one, then preview again.",
+    "The available models have no compatible Codex template declarations. Ask an administrator to check the model templates, then preview again.",
+  "access.codexModelIdUnsupported":
+    "The model ID exceeds the format or length supported by the Codex catalog. Ask an administrator to check the model ID.",
+  "access.catalogSynced":
+    "The available model catalog was synchronized. Restart Codex if the updated models are not shown.",
+  "access.catalogCurrent":
+    "The available model catalog is current. Orbit synchronizes it every 5 minutes.",
+  "access.catalogSyncBlocked":
+    "Model catalog synchronization is paused and the existing configuration is preserved. Check the connection, model permissions or local configuration, then refresh.",
   "access.codexReasoningUnavailable":
     "The current reasoning policy cannot produce a complete catalog. Refresh model permissions and preview again.",
   "access.codexCatalogChanged":
