@@ -203,6 +203,8 @@ struct Operation {
     #[zeroize(skip)]
     #[serde(default)]
     source_journal_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    codex_catalog_sync: bool,
     #[zeroize(skip)]
     #[serde(default)]
     codex_context: Option<CodexContext>,
@@ -395,6 +397,9 @@ impl ConfigEngine<'_> {
             || operation.claude_main_preferences_restore_v1.is_some()
         {
             return Err(fail("backup_invalid"));
+        }
+        if operation.codex_catalog_sync {
+            self.codex_sync_original(journal, operation)?;
         }
         if let Some(context) = &operation.codex_context {
             let target = context
@@ -1167,6 +1172,7 @@ impl ConfigEngine<'_> {
             source_journal_id: None,
             source_journal_sha256: None,
             source_journal_phase: None,
+            codex_catalog_sync: false,
             codex_context,
             claude_context,
             claude_main_preferences_restore_v1: None,
@@ -1263,6 +1269,132 @@ impl ConfigEngine<'_> {
             JournalPurpose::Switch
         };
         self.persist_operation(journal, &operation)
+    }
+
+    /// Read the authenticated ownership of a committed switch without requiring
+    /// its old model permissions to remain valid. Current bytes are checked by
+    /// prepare_codex_sync before any refresh transaction can be published.
+    pub(crate) fn codex_switch_context(&self, journal: &Journal) -> Result<(CodexContext, String)> {
+        if journal.client != ClientKind::Codex
+            || journal.purpose != JournalPurpose::Switch
+            || journal.phase != "committed"
+        {
+            return Err(fail("configuration_recovery_required"));
+        }
+        let original = self.decrypt(journal)?;
+        self.check_context_for(journal, &original, true)?;
+        if original.restore || original.codex_catalog_sync {
+            return Err(fail("backup_invalid"));
+        }
+        Ok((
+            original
+                .codex_context
+                .clone()
+                .ok_or_else(|| fail("backup_invalid"))?,
+            original
+                .enable_binding
+                .clone()
+                .ok_or_else(|| fail("binding_disabled"))?,
+        ))
+    }
+
+    pub(crate) fn verify_codex_switch_files(&self, journal: &Journal) -> Result<()> {
+        let operation = self.decrypt(journal)?;
+        if operation
+            .files
+            .iter()
+            .any(|file| !equal_current(file, &file.after).unwrap_or(false))
+        {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_codex_sync(
+        &self,
+        source: &Journal,
+        files: Vec<FileChange>,
+        context: CodexContext,
+    ) -> Result<Journal> {
+        let (previous, _) = self.codex_switch_context(source)?;
+        self.verify_codex_switch_files(source)?;
+        if previous.connection_id != context.connection_id
+            || previous.panel_origin != context.panel_origin
+            || previous.account_id != context.account_id
+            || previous.installation_id != context.installation_id
+            || previous.node_id != context.node_id
+            || previous.edge_base_url != context.edge_base_url
+            || previous.provider_id != context.provider_id
+            || previous.credential_reference != context.credential_reference
+            || previous.credential_revision != context.credential_revision
+            || previous.authorization_epoch != context.authorization_epoch
+        {
+            return Err(fail("codex_catalog_scope_changed"));
+        }
+        let mut journal = self.prepare_codex(
+            &source.account_id,
+            &source.installation,
+            files,
+            None,
+            vec![],
+            context,
+        )?;
+        let mut operation = self.decrypt(&journal)?;
+        journal.purpose = JournalPurpose::Switch;
+        journal.account_label = source.account_label.clone();
+        operation.source_journal_id = Some(source.id.clone());
+        operation.source_journal_sha256 = Some(Self::source_journal_sha256(source)?);
+        operation.codex_catalog_sync = true;
+        self.check_context(&journal, &operation)?;
+        self.persist_operation(&mut journal, &operation)?;
+        Ok(journal)
+    }
+
+    fn codex_sync_original(&self, journal: &Journal, operation: &Operation) -> Result<Operation> {
+        let source: Journal = self
+            .store
+            .get(
+                "journal",
+                operation
+                    .source_journal_id
+                    .as_deref()
+                    .ok_or_else(|| fail("backup_invalid"))?,
+            )?
+            .ok_or_else(|| fail("backup_invalid"))?;
+        if journal.client != ClientKind::Codex
+            || operation.restore
+            || source.client != journal.client
+            || source.purpose != JournalPurpose::Switch
+            || source.phase != "committed"
+            || source.account_id != journal.account_id
+            || source.installation.id != journal.installation.id
+            || source.installation.origin != journal.installation.origin
+            || source.paths != journal.paths
+            || operation.source_journal_sha256.as_deref()
+                != Some(Self::source_journal_sha256(&source)?.as_str())
+        {
+            return Err(fail("backup_invalid"));
+        }
+        let original = self.decrypt(&source)?;
+        let current: Journal = self
+            .store
+            .get("journal", &source.id)?
+            .ok_or_else(|| fail("backup_invalid"))?;
+        if Self::source_journal_sha256(&current)? != Self::source_journal_sha256(&source)? {
+            return Err(fail("backup_invalid"));
+        }
+        if original.restore
+            || original.codex_catalog_sync
+            || original.files.len() != operation.files.len()
+            || original
+                .files
+                .iter()
+                .zip(&operation.files)
+                .any(|(old, new)| old.path != new.path || old.after != new.before)
+        {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(original)
     }
     pub(crate) fn freeze_policy(&self, journal: &mut Journal, revision: &str) -> Result<()> {
         if revision.len() != 64
@@ -1488,6 +1620,28 @@ impl ConfigEngine<'_> {
         journal.phase = "committed".into();
         self.check_policy()?;
         self.check_context(journal, operation)?;
+        if operation.codex_catalog_sync {
+            // Publish against the last saved bytes, then atomically replace the
+            // switch receipt while retaining the user's true pre-Orbit bytes.
+            // A crash before this DB commit leaves the publishing transaction
+            // and its authenticated source available for normal recovery.
+            let original = self.codex_sync_original(journal, operation)?;
+            let mut committed = operation.clone();
+            for (file, previous) in committed.files.iter_mut().zip(&original.files) {
+                file.before = previous.before.clone();
+            }
+            committed.enable_binding = original.enable_binding.clone();
+            committed.disable_bindings = original.disable_bindings.clone();
+            committed.grants_before = original.grants_before.clone();
+            committed.grants_after = original.grants_after.clone();
+            committed.source_journal_id = None;
+            committed.source_journal_sha256 = None;
+            committed.codex_catalog_sync = false;
+            self.seal_operation(journal, &committed)?;
+            self.check_policy()?;
+            self.check_context(journal, &committed)?;
+            self.codex_sync_original(journal, operation)?;
+        }
         self.store.commit_configuration(journal, source)?;
         Ok(())
     }

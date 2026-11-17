@@ -75,16 +75,16 @@ Codex 原始 `NOTICE` 中的 Ratatui 归属行来自上游完整声明，不代�
 
 ## GitHub 工作流职责
 
-| 工作流                                                                       | 触发与结果                                                                                                                                               |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [build.yml](../../.github/workflows/build.yml)                               | main/develop 的 push/PR 及手动触发；先执行默认 prepare-native 检查，再构建未签名候选。默认 macOS，仓库变量 `ORBIT_WINDOWS_PACKAGING=true` 才加入 Windows |
-| [windows-integration.yml](../../.github/workflows/windows-integration.yml)   | develop 的相关路径变更或手动触发；`scope=all/windows-desktop/macos-dmg` 选择回归及原生验收。macOS DMG 作业另要求非空 `candidate-tag`                     |
-| [windows-runner-check.yml](../../.github/workflows/windows-runner-check.yml) | 手动或 main 上自身文件变化；仅核对 Windows x64/PowerShell 环境，不构建或验收 Orbit                                                                       |
-| [macos-self-signed.yml](../../.github/workflows/macos-self-signed.yml)       | 仅 main 上手动运行，使用 codesign 环境生成自签名 DMG artifact；不创建正式 Release 或 updater 频道                                                        |
-| [release.yml](../../.github/workflows/release.yml)                           | 稳定 tag push 或 main 上手动指定 tag。两平台产物通过后，只有 tag push 路径会发布；手动运行仅验证和上传 artifacts                                         |
-| [windows-updater.yml](../../.github/workflows/windows-updater.yml)           | 在 Windows hosted runner 构建两个使用临时 updater 密钥的版本，执行安装后的检查、下载、错误签名、取消、安装重启和数据保留验收；不创建正式 Release          |
+| 工作流                                                                       | 触发与结果                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [build.yml](../../.github/workflows/build.yml)                               | develop 的 push/PR 跑 macOS 与 Windows 常规回归；main 的 push/PR 只构建未签名候选。手动运行 main 时打包，其他 ref 跑回归。候选默认 macOS，`ORBIT_WINDOWS_PACKAGING=true` 才加入 Windows                         |
+| [windows-integration.yml](../../.github/workflows/windows-integration.yml)   | develop 的相关路径变更或手动触发，仅执行原生验收，不重复常规回归；`scope=all/windows-desktop/macos-dmg` 选择平台。macOS DMG 作业另要求非空 `candidate-tag`                                                      |
+| [windows-runner-check.yml](../../.github/workflows/windows-runner-check.yml) | 手动或 develop 上自身文件变化；仅核对 Windows x64/PowerShell 环境，不构建或验收 Orbit                                                                                                                           |
+| [macos-self-signed.yml](../../.github/workflows/macos-self-signed.yml)       | 仅 main 上手动运行，准备工具后直接生成自签名 DMG artifact，不重复常规回归；不创建正式 Release 或 updater 频道                                                                                                   |
+| [release.yml](../../.github/workflows/release.yml)                           | 稳定 tag push 或 main 上手动指定 tag；两平台先跑常规回归，再构建、签名和验证产物。两平台均成功后，只有 tag push 路径会发布；手动运行仅验证和上传 artifacts                                                      |
+| [windows-updater.yml](../../.github/workflows/windows-updater.yml)           | 仅 develop 的更新、签名、打包和生命周期相关路径变更时自动运行，也保留手动入口；构建两个临时密钥签名版本，验收检查、下载、错误签名、取消、安装重启和数据保留。main 与 tag 不自动重复此项验收，不创建正式 Release |
 
-prepare-native 在临时 hosted runner 准备锁定工具/依赖，默认执行前端、宿主构建脚本及原生检查。集成工作流的包作业可设置 `validate=false`，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
+prepare-native 在临时 hosted runner 准备锁定工具/依赖。`validate=true` 执行前端、宿主构建脚本及原生检查，Windows 另解析 PowerShell 脚本并运行浏览器流程测试；develop 和发布 tag 使用同一检查入口。普通候选、自签名打包和原生验收设置 `validate=false`，避免同一平台重复常规回归，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
 
 Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测试包；只有断言、fixture/reuse 脚本或文档变化时才允许复用，并再次核对包摘要及版本签名。生产源码、构建器、锁文件或 updater 工作流变化均重新构建。复用运行检查当前脚本与 PowerShell 语法，回执分别记录构建 source/run 和验收 source/run；[验收结果](../testing/validation.md#2026-11-15-windows-应用内更新)绑定具体产物。
 
@@ -108,7 +108,7 @@ codesign 环境所需公开变量和 secrets：
 | `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`  | updater 签名 secrets，仅传给构建完成后的 bundler                                         |
 | `CODESIGN_CERTIFICATE_P12_BASE64` / `CODESIGN_CERTIFICATE_PASSWORD` | 仅 macOS 需要的代码签名 secrets，须匹配[固定证书指纹](../../scripts/macos-signing-certificate.sha256) |
 
-签名公开配置还包括由仓库身份派生的 GitHub latest.json 地址和固定 macOS 证书摘要；基础 Tauri 配置为空频道/占位公钥。普通候选不会继承正式签名环境。代码签名由 [package-self-signed-macos.sh](../../scripts/package-self-signed-macos.sh)在 hosted Mac 临时 Keychain 内完成并清理，核对证书有效期、私钥及嵌入证书；自签名不表示 Apple 公证已完成。
+签名公开配置还包括固定的 `https://github.com/Orivelle-Labs/Orbit/releases/latest/download/latest.json` 更新地址和固定 macOS 证书摘要。应用更新地址独立于构建所在仓库，macOS 与 Windows 正式构建均使用该地址，不回退旧仓库；基础 Tauri 配置为空频道/占位公钥。普通候选不会继承正式签名环境。代码签名由 [package-self-signed-macos.sh](../../scripts/package-self-signed-macos.sh)在 hosted Mac 临时 Keychain 内完成并清理，核对证书有效期、私钥及嵌入证书；自签名不表示 Apple 公证已完成。
 
 正式文件为 `Orivelle-Orbit-v<版本>-macos-arm64.dmg`、`-windows-x64-setup.exe`、macOS `.app.tar.gz` 及两个平台各自的 `.sig`。发布脚本分别验签后生成同时包含 `darwin-aarch64` 和 `windows-x86_64` 的 `latest.json`，不再生成或发布 `SHA256SUMS` 校验和文件，只接受上述六个文件组成的完整约定集合；检查 tag 未移动、版本高于现有稳定版，再上传并核对 draft 的远端大小/SHA-256，最终公开。已公开同 tag 或冲突 draft 拒绝，不自动替换稳定版。
 

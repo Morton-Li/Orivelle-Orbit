@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { createMemoryHistory, createRouter } from "vue-router";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 const bridge = vi.hoisted(() => ({
   call: vi.fn(),
@@ -140,6 +141,205 @@ function writes() {
     ([command]) => command === "apply_client_config",
   );
 }
+
+describe("Codex catalog synchronization status", () => {
+  it.each([
+    ["updated", null, null],
+    ["current", null, null],
+    ["blocked", "codex_reasoning_unavailable", "当前推理档位策略不足"],
+    ["blocked", "configuration_conflict", null],
+    ["blocked", "network_unavailable", null],
+    ["blocked", "request_timeout", null],
+  ] as const)(
+    "notifies about %s without adding inline sync messages",
+    async (status, error, message) => {
+      const value = bootstrap();
+      value.state_revision = state.state_revision + 1;
+      value.clients = value.clients.filter(
+        (client) => client.client === "codex",
+      );
+      value.clients[0]!.catalog_sync = {
+        state: status,
+        checked_at: new Date().toISOString(),
+        model_count: 2,
+        error,
+      };
+      value.switch_snapshots = [
+        {
+          id: "owned-codex-switch",
+          client: "codex",
+          account_id: value.session.account!.id,
+          account_label: "Synthetic account",
+          panel_origin: value.connections[0]!.panel_origin,
+          installation_id: "synthetic-installation",
+          created_at: new Date().toISOString(),
+          expires_at: new Date().toISOString(),
+          file_count: 2,
+          state: "available",
+        },
+      ];
+      state = value;
+      expect(useOrbitStore().acceptState(value)).toBe(true);
+      await flushPromises();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: { template: "<main />" } }],
+      });
+      await router.push("/");
+      await router.isReady();
+      wrapper = mount(AccessPage, {
+        global: {
+          plugins: [router],
+          stubs: { ClientRow: true, OrbitSelect: orbitSelectStub },
+        },
+      });
+      if (message) {
+        expect(useOrbitStore().notice?.text).toContain(message);
+        expect(wrapper.text()).not.toContain(message);
+        useOrbitStore().clearNotice();
+        const repeated = structuredClone(value);
+        repeated.state_revision++;
+        if (status === "blocked")
+          repeated.clients[0]!.catalog_sync!.checked_at = new Date(
+            Date.now() + 300000,
+          ).toISOString();
+        expect(useOrbitStore().acceptState(repeated)).toBe(true);
+        expect(useOrbitStore().notice).toBeNull();
+      } else {
+        expect(useOrbitStore().notice).toBeNull();
+      }
+      expect(wrapper.text()).not.toContain("每 5 分钟自动同步");
+      expect(wrapper.text()).not.toContain("客户端已载入");
+      expect(writes()).toHaveLength(0);
+    },
+  );
+  it("does not repeat a saved sync message on startup", () => {
+    setActivePinia(createPinia());
+    const value = bootstrap();
+    value.clients.find((client) => client.client === "codex")!.catalog_sync = {
+      state: "updated",
+      checked_at: new Date().toISOString(),
+      model_count: 8,
+      error: null,
+    };
+    value.switch_snapshots = [
+      {
+        id: "owned-codex-startup",
+        client: "codex",
+        account_id: value.session.account!.id,
+        account_label: "Synthetic account",
+        panel_origin: value.connections[0]!.panel_origin,
+        installation_id: "synthetic-installation",
+        created_at: new Date().toISOString(),
+        expires_at: new Date().toISOString(),
+        file_count: 2,
+        state: "available",
+      },
+    ];
+    expect(useOrbitStore().acceptState(value)).toBe(true);
+    expect(useOrbitStore().notice).toBeNull();
+  });
+});
+
+describe("Explicit data refresh feedback", () => {
+  it.each(["updated", "blocked"] as const)(
+    "reports only refresh success when the catalog is %s",
+    async (syncState) => {
+      const store = useOrbitStore();
+      bridge.call.mockImplementation((command) => {
+        if (command === "bootstrap") return state;
+        if (command === "list_models") return nextModels();
+        if (command === "refresh_account") {
+          state = structuredClone(state);
+          state.state_revision++;
+          state.clients[0]!.client = "codex";
+          state.clients[0]!.catalog_sync = {
+            state: syncState,
+            checked_at: new Date().toISOString(),
+            model_count: 8,
+            error:
+              syncState === "blocked" ? "codex_reasoning_unavailable" : null,
+          };
+          state.switch_snapshots = [
+            {
+              id: "owned-codex-refresh",
+              client: "codex",
+              account_id: state.session.account!.id,
+              account_label: "Synthetic account",
+              panel_origin: state.connections[0]!.panel_origin,
+              installation_id: "synthetic-installation",
+              created_at: new Date().toISOString(),
+              expires_at: new Date().toISOString(),
+              file_count: 2,
+              state: "available",
+            },
+          ];
+          store.acceptState(state);
+          expect(store.notice).toBeNull();
+          return state;
+        }
+        throw new Error("Unexpected synthetic IPC");
+      });
+      await store.refreshData();
+      expect(store.notice).toEqual({ text: "刷新成功。", tone: "success" });
+      expect(writes()).toHaveLength(0);
+      if (syncState === "blocked") {
+        store.clearNotice();
+        const background = structuredClone(state);
+        background.state_revision++;
+        background.clients[0]!.catalog_sync!.checked_at = new Date(
+          Date.now() + 300000,
+        ).toISOString();
+        store.acceptState(background);
+        expect(store.notice?.text).toContain("当前推理档位策略不足");
+      }
+    },
+  );
+
+  it.each(["bootstrap", "refresh_account", "list_models"])(
+    "reports one refresh failure when %s fails",
+    async (failure) => {
+      const store = useOrbitStore();
+      bridge.call.mockImplementation((command) => {
+        if (command === failure)
+          throw publicFailure({ code: "network_unavailable" });
+        if (command === "bootstrap" || command === "refresh_account")
+          return state;
+        if (command === "list_models") return nextModels();
+        throw new Error("Unexpected synthetic IPC");
+      });
+      await store.refreshData();
+      expect(store.notice).toEqual({
+        text: "刷新失败，请稍后重试。",
+        tone: "error",
+      });
+    },
+  );
+
+  it("keeps a successful automatic refresh silent", async () => {
+    bridge.call.mockImplementation((command) =>
+      command === "list_models" ? nextModels() : state,
+    );
+    const store = useOrbitStore();
+    await store.refresh(true);
+    expect(store.notice).toBeNull();
+  });
+
+  it("refreshes available account data without requiring a selected node", async () => {
+    const store = useOrbitStore();
+    state = structuredClone(state);
+    state.state_revision++;
+    state.connections[0]!.node_id = null;
+    store.acceptState(state);
+    await flushPromises();
+    bridge.call.mockReset().mockResolvedValue(state);
+    await store.refreshData();
+    expect(store.notice?.text).toBe("刷新成功。");
+    expect(
+      bridge.call.mock.calls.some(([command]) => command === "list_models"),
+    ).toBe(false);
+  });
+});
 
 describe("Claude preview after a Panel model refresh", () => {
   it("synchronizes R2 before first displaying its confirmation and keeps saved distinct from loaded", async () => {

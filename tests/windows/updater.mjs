@@ -6,7 +6,11 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { releaseNames, updateEndpoint } from "../../scripts/github-release.mjs";
+import {
+  releaseNames,
+  updateEndpoint,
+  updateRepository,
+} from "../../scripts/github-release.mjs";
 
 assert.equal(process.platform, "win32");
 assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
@@ -30,8 +34,8 @@ const invalidSignature = (
 const wrongVersionSignature = (
   await readFile(path.join(directory, "wrong-version-setup.exe.sig"), "utf8")
 ).trim();
-const manifestUrl = new URL(updateEndpoint(build.repository));
-const artifactUrl = `https://github.com/${build.repository}/releases/download/v0.3.0/${releaseNames("0.3.0").windows}`;
+const manifestUrl = new URL(updateEndpoint());
+const artifactUrl = `https://github.com/${updateRepository}/releases/download/v0.3.0/${releaseNames("0.3.0").windows}`;
 let mode = "valid";
 const requests = [];
 const receipt = {
@@ -135,22 +139,30 @@ async function connect() {
       { timeout: 60_000 },
     )
     .toBe(true);
-  browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+  browser = await chromium.connectOverCDP("http://127.0.0.1:9222", {
+    noDefaults: true,
+  });
+  // Both windows load index.html; the preloaded tray panel uses #/menubar.
+  // Target ordering can change after the installer restarts the application.
   await expect
     .poll(
-      () =>
-        browser
+      () => {
+        page = browser
           .contexts()
           .flatMap((context) => context.pages())
-          .filter((candidate) => !candidate.url().includes("menubar.html"))
-          .length,
+          .find(
+            (candidate) =>
+              candidate.url().includes("tauri.localhost") &&
+              !candidate.url().includes("#/menubar"),
+          );
+        return Boolean(page);
+      },
+      { timeout: 30_000 },
     )
-    .toBeGreaterThan(0);
-  page = browser
-    .contexts()
-    .flatMap((context) => context.pages())
-    .find((candidate) => !candidate.url().includes("menubar.html"));
-  await page.waitForFunction(() => Boolean(window.__TAURI_INTERNALS__));
+    .toBe(true);
+  await page.waitForFunction(
+    () => window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === "main",
+  );
   await invoke("bootstrap");
 }
 async function reject(command, request, code) {

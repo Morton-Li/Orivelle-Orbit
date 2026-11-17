@@ -101,6 +101,18 @@ fn prepare_native(
     })
 }
 fn observe_native(app: &tauri::AppHandle, service: Arc<Service>) -> orbit_core::error::Result<()> {
+    let model_sync = Arc::downgrade(&service);
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let Some(service) = model_sync.upgrade() else {
+                break;
+            };
+            let _ = service.synchronize_models().await;
+        }
+    });
     let handle = app.clone();
     service.observe(Arc::new(move |state| {
         desktop::update_tray(&handle, &state);
@@ -133,23 +145,27 @@ pub fn run() {
         .manage(desktop::Lifecycle::default())
         .on_menu_event(desktop::menu_event)
         .register_uri_scheme_protocol("asset", |context, request| {
-            let bytes = if context.webview_label() == "main"
+            let asset = if context.webview_label() == "main"
                 && request.method() == tauri::http::Method::GET
                 && request.uri().query().is_none()
             {
-                context
-                    .app_handle()
-                    .try_state::<Native>()
-                    .and_then(|n| n.service.read_preview_asset(request.uri().path()).ok())
+                context.app_handle().try_state::<Native>().and_then(|n| {
+                    n.service
+                        .read_preview_media_asset(request.uri().path())
+                        .ok()
+                })
             } else {
                 None
             };
             tauri::http::Response::builder()
-                .status(if bytes.is_some() { 200 } else { 404 })
-                .header("Content-Type", "image/png")
+                .status(if asset.is_some() { 200 } else { 404 })
+                .header(
+                    "Content-Type",
+                    asset.as_ref().map(|(_, mime)| *mime).unwrap_or("image/png"),
+                )
                 .header("Cache-Control", "no-store, max-age=0")
                 .header("X-Content-Type-Options", "nosniff")
-                .body(bytes.unwrap_or_default())
+                .body(asset.map(|(bytes, _)| bytes).unwrap_or_default())
                 .unwrap()
         })
         .plugin(tauri_plugin_dialog::init())
@@ -243,6 +259,8 @@ pub fn run() {
             restore_client_config,
             select_image_inputs,
             use_history_as_input,
+            rename_history_image,
+            refresh_image_inputs,
             create_image_task,
             cancel_image_task,
             retry_local_save,

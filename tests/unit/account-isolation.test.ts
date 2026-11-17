@@ -412,6 +412,65 @@ describe("account and revision isolation", () => {
     expect(store.tasks[0]?.state).toBe("completed");
     expect(store.tasks[0]?.charge_state).toBe("pending");
   });
+  it("keeps a local image draft across key selection and refreshes its input scope", async () => {
+    const store = useOrbitStore();
+    store.acceptState(bootstrap());
+    const input = {
+      id: "reference",
+      name: "reference.png",
+      mime: "image/png" as const,
+      width: 16,
+      height: 16,
+      bytes: 100,
+      preview_url: null,
+    };
+    store.imageDraft.prompt = "Prepared before choosing a key";
+    store.imageDraft.inputs = [input];
+    const response = deferred<(typeof input)[]>();
+    bridge.call.mockImplementation((command) =>
+      command === "refresh_image_inputs" ? response.promise : [],
+    );
+    const changed = bootstrap("synthetic-account-a", 2);
+    changed.connections[0]!.revision++;
+    changed.connections[0]!.credential_revision = "next-key";
+    store.acceptState(changed);
+    expect(store.imageDraft.prompt).toBe("Prepared before choosing a key");
+    expect(store.imageDraftRefreshing).toBe(true);
+    response.resolve([{ ...input, name: "refreshed.png" }]);
+    await vi.waitFor(() => expect(store.imageDraftRefreshing).toBe(false));
+    expect(store.imageDraft.inputs[0]?.name).toBe("refreshed.png");
+    expect(store.imageDraftInputsError).toBe(false);
+  });
+  it("clears the image draft on an account change and discards a late input refresh", async () => {
+    const store = useOrbitStore();
+    store.acceptState(bootstrap());
+    const input = {
+      id: "private-reference",
+      name: "private.png",
+      mime: "image/png" as const,
+      width: 16,
+      height: 16,
+      bytes: 100,
+      preview_url: null,
+    };
+    store.imageDraft.prompt = "Private account A draft";
+    store.imageDraft.inputs = [input];
+    const response = deferred<(typeof input)[]>();
+    bridge.call.mockImplementation((command) =>
+      command === "refresh_image_inputs" ? response.promise : [],
+    );
+    const changed = bootstrap("synthetic-account-a", 2);
+    changed.connections[0]!.revision++;
+    store.acceptState(changed);
+    expect(store.imageDraftRefreshing).toBe(true);
+    store.acceptState(bootstrap("synthetic-account-b", 3));
+    expect(store.imageDraft.prompt).toBe("");
+    expect(store.imageDraft.inputs).toEqual([]);
+    response.resolve([input]);
+    await Promise.resolve();
+    expect(store.imageDraft.inputs).toEqual([]);
+    expect(store.imageDraftRefreshing).toBe(false);
+  });
   it("prevents double submission while an IPC action is outstanding", async () => {
     const pending = deferred<unknown>();
     bridge.call.mockReturnValue(pending.promise);

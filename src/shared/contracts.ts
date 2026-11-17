@@ -24,7 +24,12 @@ export const CAPABILITIES = {
   imageGeneration: "openai.images.generations",
   imageEdit: "openai.images.edits",
 } as const;
-export type PublicError = { code: string; message: string; retryable: boolean };
+export type PublicError = {
+  unsupported_parameters?: string[];
+  code: string;
+  message: string;
+  retryable: boolean;
+};
 export type Money = {
   amount: string | null;
   currency: string | null;
@@ -174,6 +179,12 @@ export type ClientView = {
   loaded_evidence: ClientEvidence | null;
   connection_evidence: ClientEvidence | null;
   manual_steps: string[];
+  catalog_sync?: {
+    state: "updated" | "current" | "blocked";
+    checked_at: string;
+    model_count: number;
+    error: string | null;
+  } | null;
 };
 export type ClientEvidence = {
   kind:
@@ -221,8 +232,23 @@ export type ModelView = {
   codex_catalog_binding: CodexCatalogBinding | null;
   support_status: "verified" | "unverified" | "unsupported";
   image_parameters: ImageParameterConstraints | null;
+  image_api_parameters?: ImageApiParameters | null;
   sales_price: PriceView | null;
   official_price: PriceView | null;
+};
+export type ImageApiParameters = {
+  contract: "openai-images-api-v1";
+  parameters: ImageParameterConstraints;
+  prompt_maximum_characters: number;
+  mask: boolean;
+  markup: boolean;
+  stream: boolean;
+  partial_images_maximum: number;
+  input_fidelities: string[];
+  moderations: string[];
+  svg_reasoning_efforts: string[];
+  gif_frame_count: { min: number; max: number; default: number };
+  gif_frame_duration_ms: { min: number; max: number; default: number };
 };
 export type ImageInput = {
   id: string;
@@ -238,9 +264,16 @@ export type ImageParameters = {
   quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   size?: string;
   background?: "auto" | "opaque" | "transparent";
-  output_format?: "png" | "jpeg" | "webp";
+  output_format?: "png" | "jpeg" | "webp" | "svg" | "gif";
   output_compression?: number;
   complexity?: "low" | "medium" | "high";
+  stream?: boolean;
+  partial_images?: number;
+  moderation?: "auto" | "low";
+  input_fidelity?: "low" | "high";
+  frame_count?: number;
+  frame_duration_ms?: number;
+  svg?: { model: string; reasoning?: { effort?: string } };
 };
 export type ImageResultParameters = {
   quality: string | null;
@@ -262,6 +295,7 @@ export type ScopedErrorEvent = {
   connection_revision: number | null;
 };
 export type TaskView = {
+  partial_preview?: { id: string; preview_url: string; index: number } | null;
   id: string;
   account_id: string;
   connection_id: string;
@@ -297,12 +331,14 @@ export type TaskView = {
 };
 export type HistoryImage = {
   id: string;
+  title?: string | null;
   task_id: string;
   account_id: string;
   created_at: string;
   requested_model: string;
   observed_model: string | null;
-  mime: "image/png" | "image/jpeg" | "image/webp";
+  mime:
+    "image/png" | "image/jpeg" | "image/webp" | "image/svg+xml" | "image/gif";
   width: number;
   height: number;
   bytes: number;
@@ -525,7 +561,7 @@ export interface IpcCommands {
     result: ConfigResult;
   };
   select_image_inputs: {
-    args: { connection_id: string };
+    args: { connection_id: string; purpose?: "mask" | "markup" };
     result: ImageInput[];
   };
   create_image_task: {
@@ -536,6 +572,8 @@ export interface IpcCommands {
       prompt: string;
       parameters: ImageParameters;
       input_ids: string[];
+      mask_input_id?: string | null;
+      markup_input_id?: string | null;
     };
     result: TaskView;
   };
@@ -554,6 +592,18 @@ export interface IpcCommands {
       expected_revision: number;
     };
     result: ImageInput;
+  };
+  rename_history_image: {
+    args: { image_id: string; title: string };
+    result: HistoryImage;
+  };
+  refresh_image_inputs: {
+    args: {
+      connection_id: string;
+      expected_revision: number;
+      input_ids: string[];
+    };
+    result: ImageInput[];
   };
   update_settings: {
     args: { patch: Partial<SettingsView> };

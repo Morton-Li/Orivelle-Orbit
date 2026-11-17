@@ -67,6 +67,7 @@ jobs:
 
       - uses: ./.github/actions/prepare-native
         with:
+          validate: "true"
           release-tag: ${{ needs.source.outputs.tag }}
 
       - name: Build, self-sign and verify macOS release files
@@ -113,6 +114,7 @@ jobs:
 
       - uses: ./.github/actions/prepare-native
         with:
+          validate: "true"
           release-tag: ${{ needs.source.outputs.tag }}
 
       - name: Build and sign the NSIS updater installer

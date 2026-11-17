@@ -45,6 +45,8 @@ mod claude;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 #[path = "service_claude_tests.rs"]
 mod claude_authority_tests;
+#[path = "service_codex_sync.rs"]
+mod codex_sync;
 #[path = "service_node_latency.rs"]
 mod node_latency;
 
@@ -314,6 +316,7 @@ impl Service {
             if let Some(old) = store.get::<ClientView>("client-state", client.client.as_str())? {
                 client.configuration_state = old.configuration_state;
                 client.configuration_revision = old.configuration_revision;
+                client.catalog_sync = old.catalog_sync;
                 client.loaded_state = if client.configuration_state == "saved" {
                     "restart_required"
                 } else {
@@ -810,11 +813,19 @@ impl Service {
                     .into_iter()
                     .filter(|i| task_ids.contains(&i.task_id))
                     .map(|mut i| {
+                        let animated = i.mime == "image/gif"
+                            && self
+                                .store
+                                .root
+                                .join("previews")
+                                .join(format!("{}.gif", i.id))
+                                .is_file();
+                        let extension = if animated { "gif" } else { "png" };
                         if !self
                             .store
                             .root
                             .join("previews")
-                            .join(format!("{}.png", i.id))
+                            .join(format!("{}.{extension}", i.id))
                             .exists()
                         {
                             i.preview_url = None;
@@ -824,7 +835,7 @@ impl Service {
                                     .meta
                                     .get("preview_runtime_nonce")
                                     .and_then(|nonce| {
-                                        images::preview_url_with_token(
+                                        images::media_preview_url_with_token(
                                             &i.id,
                                             &crate::store::preview_scope_token(
                                                 nonce,
@@ -834,6 +845,7 @@ impl Service {
                                                 &record.view.id,
                                                 record.view.revision,
                                             ),
+                                            animated,
                                         )
                                         .ok()
                                     });
@@ -1855,6 +1867,9 @@ impl Service {
         Ok(self.record(id)?.view)
     }
     pub fn read_preview_asset(&self, path: &str) -> Result<Vec<u8>> {
+        self.read_preview_media_asset(path).map(|(bytes, _)| bytes)
+    }
+    pub fn read_preview_media_asset(&self, path: &str) -> Result<(Vec<u8>, &'static str)> {
         let _gate = self
             .account_gate
             .lock()
@@ -1870,8 +1885,10 @@ impl Service {
         {
             return Err(fail("preview_scope_unavailable"));
         }
+        let animated = parts[1].ends_with(".gif");
+        let extension = if animated { "gif" } else { "png" };
         let id = parts[1]
-            .strip_suffix(".png")
+            .strip_suffix(if animated { ".gif" } else { ".png" })
             .ok_or_else(|| fail("preview_scope_unavailable"))?;
         validate_uuid(id)?;
         let scope = self
@@ -1891,7 +1908,8 @@ impl Service {
             self.store
                 .get::<TaskSnapshot>("task-snapshot", &image.task_id)?
                 .is_some_and(|s| {
-                    image.account_id == scope.account_id
+                    (!animated || image.mime == "image/gif")
+                        && image.account_id == scope.account_id
                         && s.task.account_id == scope.account_id
                         && s.panel_origin == scope.origin
                         && s.task.id == image.task_id
@@ -1899,17 +1917,40 @@ impl Service {
         } else {
             false
         };
-        if !input_owned && !history_owned {
+        let partial_owned = if !input_owned && !history_owned {
+            self.store
+                .list::<TaskSnapshot>("task-snapshot", Some(&scope.account_id))?
+                .iter()
+                .any(|s| {
+                    s.panel_origin == scope.origin
+                        && s.task.connection_id == scope.connection_id
+                        && s.task.connection_revision == scope.connection_revision
+                        && s.task.partial_preview.as_ref().is_some_and(|p| p.id == id)
+                })
+        } else {
+            false
+        };
+        if animated && !history_owned || !input_owned && !history_owned && !partial_owned {
             return Err(fail("preview_scope_unavailable"));
         }
         let bytes = images::bounded_read(
-            &self.store.root.join("previews").join(format!("{id}.png")),
-            4 * 1024 * 1024,
+            &self
+                .store
+                .root
+                .join("previews")
+                .join(format!("{id}.{extension}")),
+            if animated {
+                crate::image_media::MAX_GIF_PREVIEW_BYTES
+            } else {
+                4 * 1024 * 1024
+            },
         )?;
-        if image::guess_format(&bytes).ok() != Some(image::ImageFormat::Png) {
+        if animated {
+            crate::image_media::gif_structure(&bytes, true)?;
+        } else if image::guess_format(&bytes).ok() != Some(image::ImageFormat::Png) {
             return Err(fail("invalid_image"));
         }
-        Ok(bytes)
+        Ok((bytes, if animated { "image/gif" } else { "image/png" }))
     }
     pub fn active_tasks(&self) -> Result<bool> {
         if self.claude_mappings.inflight() != 0
@@ -2012,6 +2053,7 @@ impl Service {
             self.store
                 .put("account-cache", id, &record.view.account_id, &cache)?;
         }
+        self.sync_codex_models_if_bound(id);
         self.changed();
         Ok(models)
     }
@@ -2095,6 +2137,25 @@ impl Service {
                 .await;
         }
         self.bootstrap()
+    }
+    // Local image preparation needs an owned session, independently of a paid
+    // inference credential, node selection or inference permission.
+    fn image_preparation_connection(&self, id: &str, revision: u64) -> Result<ConnectionRecord> {
+        let record = self.record(id)?;
+        self.ensure_installation_available(&record.installation_id)?;
+        let active = self
+            .active_record()?
+            .ok_or_else(|| fail("session_expired"))?;
+        if active.view.id != id
+            || record.view.revision != revision
+            || record.session_status != "authenticated"
+            || record
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+        {
+            return Err(fail("connection_conflict"));
+        }
+        Ok(record)
     }
     fn current_connection(
         &self,
@@ -2465,6 +2526,19 @@ impl Service {
         let (record, cache) = self
             .current_connection(&context.connection_id, context.connection_revision)
             .map_err(|_| fail("codex_catalog_scope_changed"))?;
+        let record = if self
+            .store
+            .get::<api_keys::KeyCredential>("api-key-credential", &context.credential_reference)?
+            .is_some()
+        {
+            self.frozen_api_key_record(
+                &record,
+                &context.credential_reference,
+                &context.credential_revision,
+            )?
+        } else {
+            record
+        };
         let node = cache
             .nodes
             .iter()
@@ -3576,10 +3650,14 @@ impl Service {
     }
     pub fn import_inputs(&self, id: &str, paths: &[PathBuf]) -> Result<Vec<ImageInput>> {
         let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let _permit = self.image_memory_permit()?;
         let record = self.record(id)?;
-        let _ = self.current_connection(id, record.view.revision)?;
-        if paths.is_empty() || paths.len() > 5 {
+        let record = self.image_preparation_connection(id, record.view.revision)?;
+        if paths.is_empty() || paths.len() > 16 {
             return Err(fail("image_limit_exceeded"));
         }
         paths
@@ -3594,13 +3672,20 @@ impl Service {
         revision: u64,
     ) -> Result<ImageInput> {
         let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
         let _permit = self.image_memory_permit()?;
-        let (record, _) = self.current_connection(id, revision)?;
+        let record = self.image_preparation_connection(id, revision)?;
         let (image, snapshot) = self.scoped_image(image_id)?;
         if snapshot.panel_origin != record.view.panel_origin
             || image.account_id != record.view.account_id
         {
             return Err(fail("account_scope_mismatch"));
+        }
+        if !["image/png", "image/jpeg", "image/webp"].contains(&image.mime.as_str()) {
+            return Err(fail("unsupported_image_input"));
         }
         let filename = self
             .store
@@ -3608,6 +3693,76 @@ impl Service {
             .ok_or_else(|| fail("local_image_missing"))?;
         let path = images::owned_image_path(&self.store, &filename)?;
         images::import_input(&self.store, &path, &record.view)
+    }
+    pub fn rename_history_image(&self, image_id: &str, title: &str) -> Result<HistoryImage> {
+        let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let _files = self.store.image_files_lock()?;
+        let title = title.trim();
+        if title.chars().count() > 120 || title.chars().any(char::is_control) {
+            return Err(fail("invalid_image_title"));
+        }
+        let (mut image, _) = self.scoped_image(image_id)?;
+        image.title = (!title.is_empty()).then(|| title.to_owned());
+        self.store
+            .put("image", &image.id, &image.account_id, &image)?;
+        self.changed();
+        Ok(image)
+    }
+    pub fn refresh_image_inputs(
+        &self,
+        id: &str,
+        revision: u64,
+        input_ids: &[String],
+    ) -> Result<Vec<ImageInput>> {
+        let _operation = self.begin_mutation()?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let record = self.image_preparation_connection(id, revision)?;
+        if input_ids.len() > 18 || input_ids.iter().collect::<HashSet<_>>().len() != input_ids.len()
+        {
+            return Err(fail("image_limit_exceeded"));
+        }
+        let mut inputs = input_ids
+            .iter()
+            .map(|input_id| {
+                validate_uuid(input_id)?;
+                let mut input = self
+                    .store
+                    .get::<InputRecord>("input", input_id)?
+                    .ok_or_else(|| fail("local_image_missing"))?;
+                if input.account_id != record.view.account_id
+                    || input.connection_id != record.view.id
+                    || input.connection_revision > revision
+                    || &input.view.id != input_id
+                {
+                    return Err(fail("input_scope_mismatch"));
+                }
+                input.connection_revision = revision;
+                input.view.preview_url = self
+                    .store
+                    .root
+                    .join("previews")
+                    .join(format!("{input_id}.png"))
+                    .is_file()
+                    .then(|| images::preview_url(&self.store, input_id))
+                    .transpose()?;
+                Ok(input)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut views = Vec::with_capacity(inputs.len());
+        for input in inputs.drain(..) {
+            self.store
+                .put("input", &input.view.id, &input.account_id, &input)?;
+            views.push(input.view);
+        }
+        self.changed();
+        Ok(views)
     }
     pub fn create_image_task(
         self: &Arc<Self>,
@@ -3617,6 +3772,21 @@ impl Service {
         prompt: String,
         parameters: ImageParameters,
         input_ids: Vec<String>,
+    ) -> Result<TaskView> {
+        self.create_image_task_with_materials(
+            id, revision, model_id, prompt, parameters, input_ids, None, None,
+        )
+    }
+    pub fn create_image_task_with_materials(
+        self: &Arc<Self>,
+        id: &str,
+        revision: u64,
+        model_id: &str,
+        prompt: String,
+        parameters: ImageParameters,
+        input_ids: Vec<String>,
+        mask_id: Option<String>,
+        markup_id: Option<String>,
     ) -> Result<TaskView> {
         let _operation = self.begin_mutation()?;
         let _gate = self
@@ -3639,12 +3809,14 @@ impl Service {
             .iter()
             .find(|n| n.id == node_id && n.available)
             .ok_or_else(|| fail("node_unavailable"))?;
-        let (maximum_request_bytes, maximum_results) = images::validate_parameters(
+        let (maximum_request_bytes, maximum_results, api) = crate::images_api::validate(
             model,
             &parameters,
             &prompt,
             input_ids.len(),
             node.maximum_request_bytes,
+            mask_id.is_some(),
+            markup_id.is_some(),
         )?;
         let capability = if input_ids.is_empty() {
             "openai.images.generations"
@@ -3687,7 +3859,34 @@ impl Service {
             }
             inputs.push(input);
         }
+        let material = |id: Option<String>| -> Result<Option<InputRecord>> {
+            let Some(id) = id else { return Ok(None) };
+            validate_uuid(&id)?;
+            let input = self
+                .store
+                .get::<InputRecord>("input", &id)?
+                .ok_or_else(|| fail("local_image_missing"))?;
+            if input.account_id != record.view.account_id
+                || input.connection_id != record.view.id
+                || input.connection_revision != revision
+            {
+                return Err(fail("input_scope_mismatch"));
+            }
+            let first = inputs
+                .first()
+                .ok_or_else(|| fail("unsupported_image_parameter"))?;
+            if input.view.mime != "image/png"
+                || input.view.width != first.view.width
+                || input.view.height != first.view.height
+            {
+                return Err(fail("invalid_image_material"));
+            }
+            Ok(Some(input))
+        };
+        let mask = material(mask_id)?;
+        let markup = material(markup_id)?;
         let task = TaskView {
+            partial_preview: None,
             id: uuid(),
             account_id: record.view.account_id.clone(),
             connection_id: id.into(),
@@ -3721,6 +3920,9 @@ impl Service {
             error: None,
         };
         let snapshot = TaskSnapshot {
+            mask,
+            markup,
+            api_contract: api.then(|| crate::images_api::CONTRACT.to_owned()),
             task: task.clone(),
             panel_origin: record.view.panel_origin.clone(),
             edge_base_url: node.base_url.clone(),
@@ -3772,6 +3974,9 @@ impl Service {
                     "unsupported_image_parameter",
                     "image_parameters_upgrade_required",
                     "image_metering_upgrade_required",
+                    "image_routing_upgrade_required",
+                    "image_parameters_unavailable",
+                    "image_api_pricing_unavailable",
                     "model_unavailable",
                     "insufficient_balance",
                     "api_key_spending_limit_exceeded",
@@ -3797,9 +4002,56 @@ impl Service {
             snapshot.task.state = "unconfirmed".into();
             snapshot.task.error = Some(fail("result_unconfirmed"));
         }
+        snapshot.task.partial_preview = None;
         let _ = self.persist_task(&snapshot);
         let _ = self.reconcile_task(&mut snapshot).await;
         let _ = self.prune_api_key_credentials(&snapshot.task.connection_id);
+    }
+    fn publish_image_preview(
+        &self,
+        snapshot: &mut TaskSnapshot,
+        partial: crate::images_stream::Preview,
+    ) -> Result<()> {
+        if self
+            .cancelled
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?
+            .contains(&snapshot.task.id)
+        {
+            return Ok(());
+        }
+        let Ok(_permit) = self.image_memory_permit() else {
+            return Ok(());
+        };
+        let result = images::parse_api_response(&partial.payload, 1)?;
+        let image = result
+            .images
+            .first()
+            .ok_or_else(|| fail("invalid_image_response"))?;
+        let _gate = self
+            .account_gate
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        let Some(scope) = self.store.preview_scope()? else {
+            return Ok(());
+        };
+        if scope.account_id != snapshot.task.account_id
+            || scope.connection_id != snapshot.task.connection_id
+            || scope.connection_revision != snapshot.task.connection_revision
+            || scope.origin != snapshot.panel_origin
+        {
+            return Ok(());
+        }
+        if let Some(url) = images::save_preview(&self.store, &image.id, &image.info.preview)? {
+            snapshot.task.partial_preview = Some(ImagePartialPreview {
+                id: image.id.clone(),
+                preview_url: url,
+                index: partial.index,
+            });
+            snapshot.task.state = "waiting".into();
+            self.persist_task(snapshot)?;
+        }
+        Ok(())
     }
     async fn send_image_once(&self, snapshot: &mut TaskSnapshot) -> Result<()> {
         let record = self.image_key_record(snapshot)?;
@@ -3856,26 +4108,68 @@ impl Service {
         url.set_path(&format!("{base}/{target}"));
         self.claim_image_send(snapshot)?;
         let observation = Arc::new(Mutex::new(None));
-        let response = self
-            .http
-            .request_observed(
-                Method::POST,
-                url.as_str(),
-                body,
-                vec![
-                    ("Authorization".into(), format!("Bearer {}", &*token)),
-                    ("Content-Type".into(), "application/json".into()),
-                    ("Accept".into(), "application/json".into()),
-                    (
-                        "X-Orivelle-Images-Contract".into(),
-                        images::PARAMETER_CONTRACT.into(),
-                    ),
-                ],
-                images::MAX_RESPONSE_BYTES,
-                Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
-                Some(observation.clone()),
-            )
-            .await;
+        let stream = snapshot.task.parameters.stream == Some(true);
+        let mut reader = crate::images_stream::ImageStream::new(
+            &snapshot.task.parameters,
+            snapshot.task.kind == "edit",
+        );
+        let response = if stream {
+            self.http
+                .request_images_stream(
+                    url.as_str(),
+                    body,
+                    vec![
+                        ("Authorization".into(), format!("Bearer {}", &*token)),
+                        ("Content-Type".into(), "application/json".into()),
+                        ("Accept".into(), "text/event-stream".into()),
+                        (
+                            "X-Orivelle-Images-Contract".into(),
+                            images::API_CONTRACT.into(),
+                        ),
+                    ],
+                    images::MAX_RESPONSE_BYTES,
+                    Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
+                    observation.clone(),
+                    |chunk| {
+                        if let Some((_, id)) = observation
+                            .lock()
+                            .map_err(|_| fail("state_unavailable"))?
+                            .clone()
+                        {
+                            snapshot.task.request_id = id;
+                        }
+                        for partial in reader.push(chunk)? {
+                            self.publish_image_preview(snapshot, partial)?;
+                        }
+                        Ok(())
+                    },
+                )
+                .await
+        } else {
+            self.http
+                .request_observed(
+                    Method::POST,
+                    url.as_str(),
+                    body,
+                    vec![
+                        ("Authorization".into(), format!("Bearer {}", &*token)),
+                        ("Content-Type".into(), "application/json".into()),
+                        ("Accept".into(), "application/json".into()),
+                        (
+                            "X-Orivelle-Images-Contract".into(),
+                            if snapshot.api_contract.as_deref() == Some(images::API_CONTRACT) {
+                                images::API_CONTRACT.into()
+                            } else {
+                                images::PARAMETER_CONTRACT.into()
+                            },
+                        ),
+                    ],
+                    images::MAX_RESPONSE_BYTES,
+                    Duration::from_secs(images::REQUEST_TIMEOUT_SECONDS),
+                    Some(observation.clone()),
+                )
+                .await
+        };
         if let Some((_, request_id)) = observation
             .lock()
             .map_err(|_| fail("state_unavailable"))?
@@ -3884,7 +4178,10 @@ impl Service {
             snapshot.task.request_id = request_id;
             self.persist_task(snapshot)?;
         }
-        let response = response?;
+        let mut response = response?;
+        if stream && (200..300).contains(&response.status) {
+            response.bytes = reader.finish()?;
+        }
         snapshot.task.request_id = response.request_id;
         snapshot.task.state = "waiting".into();
         self.persist_task(snapshot)?;
@@ -3892,7 +4189,7 @@ impl Service {
             return Err(if (300..400).contains(&response.status) {
                 fail("generation_redirect_rejected")
             } else {
-                images::generation_failure(response.status, &response.bytes)
+                images::request_failure(response.status, &response.bytes, snapshot)
             });
         }
         let _memory_permit = self
@@ -3901,7 +4198,17 @@ impl Service {
             .acquire_owned()
             .await
             .map_err(|_| fail("image_busy"))?;
-        let result = images::parse_response(&response.bytes, snapshot.maximum_results)?;
+        let api = snapshot.api_contract.as_deref() == Some(images::API_CONTRACT);
+        let maximum_results = snapshot.maximum_results;
+        let result = tokio::task::spawn_blocking(move || {
+            if api {
+                images::parse_api_response(&response.bytes, maximum_results)
+            } else {
+                images::parse_response(&response.bytes, maximum_results)
+            }
+        })
+        .await
+        .map_err(|_| fail("invalid_image_response"))??;
         snapshot.task.result_parameters = Some(result.parameters);
         let received = result.images;
         snapshot.task.state = "saving".into();
@@ -3919,8 +4226,13 @@ impl Service {
         };
         snapshot.task.image_ids = pending.iter().map(|p| p.id.clone()).collect();
         self.persist_task(snapshot)?;
-        let images = images::finish_local_save(&self.store, snapshot)
-            .map_err(|_| fail("local_save_failed"))?;
+        let store = self.store.clone();
+        let frozen = snapshot.clone();
+        let images =
+            tokio::task::spawn_blocking(move || images::finish_local_save(&store, &frozen))
+                .await
+                .map_err(|_| fail("local_save_failed"))?
+                .map_err(|_| fail("local_save_failed"))?;
         snapshot.task.image_ids = images.into_iter().map(|i| i.id).collect();
         snapshot.task.state = "completed".into();
         snapshot.task.local_save_available = false;
@@ -4284,13 +4596,15 @@ impl Service {
                     std::fs::remove_file(path).map_err(|_| fail("local_delete_failed"))?;
                 }
             }
-            let preview = self
-                .store
-                .root
-                .join("previews")
-                .join(format!("{}.png", image.id));
-            if preview.exists() {
-                std::fs::remove_file(preview).map_err(|_| fail("local_delete_failed"))?;
+            for extension in ["png", "gif"] {
+                let preview = self
+                    .store
+                    .root
+                    .join("previews")
+                    .join(format!("{}.{extension}", image.id));
+                if preview.exists() {
+                    std::fs::remove_file(preview).map_err(|_| fail("local_delete_failed"))?;
+                }
             }
             self.store.delete("image", &image.id)?;
             self.store.delete("image-file", &image.id)?;
@@ -4555,6 +4869,11 @@ fn map_model(value: &Value, revision: &str) -> Result<ModelView> {
         None
     };
     Ok(ModelView {
+        image_api_parameters: serde_json::from_value::<ImageApiParameters>(
+            value["image_api_parameters"].clone(),
+        )
+        .ok()
+        .and_then(crate::images_api::normalize),
         codex_catalog_binding: crate::codex_binding::normalize_binding(
             value.get("codex_catalog_binding"),
             &id,
@@ -4820,10 +5139,12 @@ fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
 mod tests {
     use super::*;
     mod image_live_demo;
+    mod image_workbench;
     #[cfg(target_os = "macos")]
     mod macos_config_roundtrip;
     #[cfg(target_os = "macos")]
     mod panel_acceptance;
+    mod release_check;
     use crate::{
         identity::{ProofInput, canonical_proof},
         vault::FakeVault,
@@ -5952,16 +6273,496 @@ mod tests {
     }
     #[cfg(not(windows))]
     #[test]
-    fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
-        for mode in ["old-null", "null-default", "profile", "profile-table"] {
+    fn codex_catalog_sync_updates_all_aliases_and_restores_the_original_external_platform() {
+        let f = policy_fixture(ClientKind::Codex);
+        let original = b"model='external/model'\nmodel_provider='external'\n[model_providers.external]\nbase_url='https://other.example/v1'\nwire_api='responses'\n";
+        std::fs::write(&f.service.paths.codex_config, original).unwrap();
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let before_noop = f.service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            f.service.sync_codex_models(&f.record.view.id).unwrap(),
+            Some((false, 1))
+        );
+        assert_eq!(f.service.store.snapshot().unwrap().revision, before_noop);
+        let mut cache = f.service.account_cache(&f.record).unwrap();
+        cache.models[0].reasoning.as_mut().unwrap().default_effort = None;
+        let mut alias = cache.models[0].clone();
+        alias.id = "gateway/custom:model@v2".into();
+        alias.label = "另一个平台的模型名".into();
+        alias.revision = "new-alias".into();
+        cache.models.push(alias.clone());
+        cache.catalog_revision = "catalog-after-add".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.sync_codex_models(&f.record.view.id).unwrap(),
+            Some((true, 2))
+        );
+        let catalog: Value =
+            serde_json::from_slice(&std::fs::read(f.service.paths.codex_catalog()).unwrap())
+                .unwrap();
+        assert_eq!(catalog["models"][1]["slug"], alias.id);
+        assert_eq!(catalog["models"][1]["display_name"], alias.label);
+        let saved = std::fs::read_to_string(&f.service.paths.codex_config).unwrap();
+        assert!(saved.contains("[model_providers.external]"));
+        cache.models = vec![alias.clone()];
+        cache.catalog_revision = "catalog-after-removal".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.sync_codex_models(&f.record.view.id).unwrap(),
+            Some((true, 1))
+        );
+        let saved: toml_edit::DocumentMut = std::fs::read_to_string(&f.service.paths.codex_config)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(saved["model"].as_str(), Some(alias.id.as_str()));
+        let snapshots = f.service.bootstrap().unwrap().switch_snapshots;
+        assert_eq!(snapshots.len(), 1);
+        let restore = f.service.preview_restore(&snapshots[0].id).unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&f.service.paths.codex_config).unwrap(),
+            original
+        );
+        assert!(!f.service.paths.codex_catalog().exists());
+        assert!(
+            f.service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|binding| !binding.enabled)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_catalog_sync_preserves_external_edits_and_refuses_unavailable_models_or_changed_scope()
+    {
+        for mode in ["external-edit", "no-models", "node", "policy", "binding"] {
             let f = policy_fixture(ClientKind::Codex);
-            if ["old-null", "null-default"].contains(&mode) {
+            let preview = f
+                .service
+                .preview_client_config_legacy(
+                    &f.record.view.id,
+                    f.record.view.revision,
+                    ClientKind::Codex,
+                    "",
+                )
+                .unwrap();
+            f.service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap();
+            let mut cache = f.service.account_cache(&f.record).unwrap();
+            let mut extra = cache.models[0].clone();
+            extra.id = "new-model".into();
+            cache.models.push(extra);
+            cache.catalog_revision = "changed-catalog".into();
+            if mode == "no-models" {
+                cache.models.clear();
+            }
+            if mode == "external-edit" {
+                std::fs::write(
+                    &f.service.paths.codex_config,
+                    "model_provider='another-platform'\n",
+                )
+                .unwrap();
+            }
+            if mode == "node" {
+                let mut record = f.service.record(&f.record.view.id).unwrap();
+                record.view.node_id = Some("other-node".into());
+                f.service
+                    .store
+                    .put(
+                        "connection",
+                        &record.view.id,
+                        &record.view.account_id,
+                        &record,
+                    )
+                    .unwrap();
+            }
+            if mode == "policy" {
+                f.epoch.store(2, Ordering::SeqCst);
+            }
+            if mode == "binding" {
+                let mut binding = f
+                    .service
+                    .store
+                    .list::<HelperBinding>("binding", None)
+                    .unwrap()
+                    .into_iter()
+                    .find(|binding| binding.enabled)
+                    .unwrap();
+                binding.enabled = false;
+                f.service
+                    .store
+                    .put("binding", &binding.id, &binding.account_id, &binding)
+                    .unwrap();
+            }
+            f.service
+                .store
+                .put(
+                    "account-cache",
+                    &f.record.view.id,
+                    &f.record.view.account_id,
+                    &cache,
+                )
+                .unwrap();
+            let config = std::fs::read(&f.service.paths.codex_config).unwrap();
+            let catalog = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+            let revision = f.service.store.snapshot().unwrap().revision;
+            assert!(
+                f.service.sync_codex_models(&f.record.view.id).is_err(),
+                "{mode}"
+            );
+            assert_eq!(
+                std::fs::read(&f.service.paths.codex_config).unwrap(),
+                config,
+                "{mode}"
+            );
+            assert_eq!(
+                std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+                catalog,
+                "{mode}"
+            );
+            assert_eq!(
+                f.service.store.snapshot().unwrap().revision,
+                revision,
+                "{mode}"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_catalog_sync_keeps_the_confirmed_key_after_default_selection_changes() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let mut record = f.service.record(&f.record.view.id).unwrap();
+        let reference = record.credential_reference.clone().unwrap();
+        let key = api_keys::KeyCredential {
+            origin: record.view.panel_origin.clone(),
+            account_id: record.view.account_id.clone(),
+            installation_id: record.installation_id.clone(),
+            api_key_id: record.api_key_id.clone().unwrap(),
+            key_revision: record.view.credential_revision.clone().unwrap(),
+            secret_reference: reference.clone(),
+            expires_at: record.credential_expires_at,
+            authorization_epoch: record.authorization_epoch,
+            enabled: true,
+        };
+        f.service
+            .store
+            .put(
+                "api-key-credential",
+                &reference,
+                &record.view.account_id,
+                &key,
+            )
+            .unwrap();
+        record.view.revision += 1;
+        record.api_key_id = Some("new-default-key".into());
+        record.credential_reference = Some("new-default-reference".into());
+        record.view.credential_revision = Some("a".repeat(64));
+        f.service
+            .store
+            .put(
+                "connection",
+                &record.view.id,
+                &record.view.account_id,
+                &record,
+            )
+            .unwrap();
+        let mut cache = f.service.account_cache(&record).unwrap();
+        let mut added = cache.models[0].clone();
+        added.id = "new-model".into();
+        cache.models.push(added);
+        cache.catalog_revision = "key-independent-catalog".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.sync_codex_models(&record.view.id).unwrap(),
+            Some((true, 2))
+        );
+        let bindings = f
+            .service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap();
+        assert_eq!(
+            bindings
+                .iter()
+                .find(|binding| binding.enabled)
+                .unwrap()
+                .secret_reference,
+            reference
+        );
+        let saved = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+        cache
+            .keys
+            .iter_mut()
+            .filter(|entry| entry.api_key_id.as_ref() == Some(&key.api_key_id))
+            .for_each(|entry| entry.state = "revoked".into());
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &record.view.id,
+                &record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service
+                .sync_codex_models(&record.view.id)
+                .unwrap_err()
+                .code,
+            "binding_disabled"
+        );
+        assert_eq!(
+            std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+            saved
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_catalog_sync_recovers_a_partial_pair_and_keeps_the_first_restore_snapshot() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let source = f
+            .service
+            .store
+            .list::<Journal>("journal", None)
+            .unwrap()
+            .into_iter()
+            .find(|journal| {
+                journal.purpose == JournalPurpose::Switch && journal.phase == "committed"
+            })
+            .unwrap();
+        let mut cache = f.service.account_cache(&f.record).unwrap();
+        let mut added = cache.models[0].clone();
+        added.id = "added-during-sync".into();
+        cache.models.push(added);
+        cache.catalog_revision = "new-catalog".into();
+        f.service
+            .store
+            .put(
+                "account-cache",
+                &f.record.view.id,
+                &f.record.view.account_id,
+                &cache,
+            )
+            .unwrap();
+        let observation = f.service.observe_configuration(ClientKind::Codex).unwrap();
+        let planned = f.service.plan_codex(&f.record, &cache, &f.model).unwrap();
+        let context = f
+            .service
+            .freeze_codex(
+                &f.record,
+                &cache,
+                &planned,
+                observation.configuration_target.as_ref().unwrap(),
+            )
+            .unwrap();
+        let files = vec![
+            FileChange {
+                path: f.service.paths.codex_catalog().display().to_string(),
+                before: read_file(&f.service.paths.codex_catalog()).unwrap(),
+                after: Some(planned.catalog().bytes().to_vec()),
+            },
+            FileChange {
+                path: f.service.paths.codex_config.display().to_string(),
+                before: read_file(&f.service.paths.codex_config).unwrap(),
+                after: read_file(&f.service.paths.codex_config).unwrap(),
+            },
+        ];
+        let engine = f.service.config_engine();
+        let mut journal = engine.prepare_codex_sync(&source, files, context).unwrap();
+        engine
+            .freeze_target(
+                &mut journal,
+                observation.target.version,
+                observation.target.bundle_id,
+            )
+            .unwrap();
+        engine
+            .freeze_policy(&mut journal, &observation.policy.revision)
+            .unwrap();
+        journal.phase = "publishing".into();
+        f.service
+            .store
+            .put("journal", &journal.id, &journal.account_id, &journal)
+            .unwrap();
+        std::fs::write(f.service.paths.codex_catalog(), planned.catalog().bytes()).unwrap();
+        f.service.coordinate_configuration_recovery().unwrap();
+        let current: Journal = f
+            .service
+            .store
+            .get("journal", &journal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.phase, "committed");
+        assert_eq!(f.service.bootstrap().unwrap().switch_snapshots.len(), 1);
+        let restore = f.service.preview_restore(&journal.id).unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&f.service.paths.codex_config).unwrap(),
+            b"model='old'\n"
+        );
+        assert!(!f.service.paths.codex_catalog().exists());
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn codex_model_poll_refreshes_the_scoped_catalog_and_preserves_saved_bytes_offline() {
+        let f = policy_fixture(ClientKind::Codex);
+        let preview = f
+            .service
+            .preview_client_config_legacy(
+                &f.record.view.id,
+                f.record.view.revision,
+                ClientKind::Codex,
+                "",
+            )
+            .unwrap();
+        f.service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        let mut wire = golden()["bootstrap_reply"].clone();
+        let model = &f.service.account_cache(&f.record).unwrap().models[0];
+        wire["data"]["models"][0]["codex_catalog_binding"] =
+            serde_json::to_value(&model.codex_catalog_binding).unwrap();
+        wire["data"]["models"][0]["reasoning"] = serde_json::to_value(&model.reasoning).unwrap();
+        let mut added = wire["data"]["models"][0].clone();
+        added["id"] = json!("other/platform:model-v2");
+        wire["data"]["models"].as_array_mut().unwrap().push(added);
+        wire["data"]["meta"]["catalog_revision"] = json!("poll-catalog");
+        let calls = Arc::new(AtomicU64::new(0));
+        let requests = calls.clone();
+        f.service.http.scripted(Arc::new(move |request| {
+            requests.fetch_add(1, Ordering::SeqCst);
+            let response = if request.url.ends_with("/api/v1/orbit/bootstrap") {
+                wire.clone()
+            } else {
+                assert!(request.url.contains("/api/v1/orbit/models?node_id="));
+                json!({"data": wire["data"]["models"], "meta": {"revision": "poll-catalog"}})
+            };
+            Box::pin(async move {
+                Ok(crate::network::RemoteResponse {
+                    status: 200,
+                    request_id: None,
+                    bytes: serde_json::to_vec(&response).unwrap(),
+                })
+            })
+        }));
+        f.service.synchronize_models().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let client = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Codex)
+            .unwrap();
+        assert_eq!(client.catalog_sync.as_ref().unwrap().model_count, 2);
+        assert_eq!(client.catalog_sync.as_ref().unwrap().state, "updated");
+        let catalog = std::fs::read(f.service.paths.codex_catalog()).unwrap();
+        f.service.http.scripted(Arc::new(|_| {
+            Box::pin(async { Err(fail("network_unavailable")) })
+        }));
+        assert!(f.service.synchronize_models().await.is_err());
+        assert_eq!(
+            std::fs::read(f.service.paths.codex_catalog()).unwrap(),
+            catalog
+        );
+        let client = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|client| client.client == ClientKind::Codex)
+            .unwrap();
+        assert_eq!(client.catalog_sync.as_ref().unwrap().state, "blocked");
+        let _maintenance = f.service.begin_maintenance().unwrap();
+        let revision = f.service.store.snapshot().unwrap().revision;
+        assert_eq!(
+            f.service.synchronize_models().await.unwrap_err().code,
+            "update_busy"
+        );
+        assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
+        for mode in ["old-null", "profile", "profile-table"] {
+            let f = policy_fixture(ClientKind::Codex);
+            if mode == "old-null" {
                 let mut cache = f.service.account_cache(&f.record).unwrap();
-                if mode == "old-null" {
-                    cache.models[0].codex_catalog_binding = None;
-                } else {
-                    cache.models[0].reasoning.as_mut().unwrap().default_effort = None;
-                }
+                cache.models[0].codex_catalog_binding = None;
                 f.service
                     .store
                     .put(
@@ -5998,7 +6799,6 @@ mod tests {
                 error.code,
                 match mode {
                     "old-null" => "codex_binding_unavailable",
-                    "null-default" => "codex_reasoning_unavailable",
                     _ => "codex_config_override_unverified",
                 }
             );
@@ -6462,6 +7262,7 @@ mod tests {
     }
     fn task(record: &ConnectionRecord) -> TaskView {
         TaskView {
+            partial_preview: None,
             id: uuid(),
             account_id: record.view.account_id.clone(),
             connection_id: record.view.id.clone(),
@@ -6492,6 +7293,9 @@ mod tests {
     }
     pub(super) fn task_snapshot(record: &ConnectionRecord) -> TaskSnapshot {
         TaskSnapshot {
+            mask: None,
+            markup: None,
+            api_contract: None,
             task: task(record),
             panel_origin: record.view.panel_origin.clone(),
             edge_base_url: record.view.edge_base_url.clone().unwrap(),
@@ -7923,7 +8727,7 @@ mod tests {
             })
         }));
         for (raw, code) in [
-            (json!({"n":2}), "image_limit_exceeded"),
+            (json!({"n":2}), "unsupported_image_parameter"),
             (json!({"quality":"high"}), "unsupported_image_parameter"),
             (
                 json!({"output_format":"webp"}),
@@ -9395,6 +10199,436 @@ mod tests {
                 "backup_invalid"
             );
             assert_eq!(read_file(&path).unwrap(), Some(b"model='old'\n".to_vec()));
+        }
+    }
+    #[tokio::test]
+    async fn api_media_keeps_original_exports_scoped_previews_and_native_clipboard_pixels() {
+        for animated in [false, true] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let original = if animated {
+                crate::image_media::tests::animation(2)
+            } else {
+                crate::image_media::tests::SVG.to_vec()
+            };
+            let format = if animated { "gif" } else { "svg" };
+            let mime = if animated {
+                "image/gif"
+            } else {
+                "image/svg+xml"
+            };
+            let mut snapshot = task_snapshot(&record);
+            snapshot.api_contract = Some(images::API_CONTRACT.into());
+            snapshot.task.state = "queued".into();
+            snapshot.task.parameters = ImageParameters {
+                output_format: Some(format.into()),
+                ..Default::default()
+            };
+            service.persist_task(&snapshot).unwrap();
+            let calls = Arc::new(AtomicU64::new(0));
+            let observed = calls.clone();
+            let returned = original.clone();
+            service.http.scripted(Arc::new(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["output_format"],format);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&returned);
+                Box::pin(async move { Ok(crate::network::RemoteResponse {status:200,
+                    request_id:Some("33333333-3333-4333-8333-333333333333".into()),
+                    bytes:serde_json::to_vec(&json!({"created":1,"output_format":format,"usage":{"input_tokens":1},"data":[{"b64_json":encoded}]})).unwrap()}) })
+            }));
+            service.send_image_once(&mut snapshot).await.unwrap();
+            service.persist_task(&snapshot).unwrap();
+            assert_eq!(snapshot.task.state, "completed");
+            let image_id = snapshot.task.image_ids[0].clone();
+            let id = &image_id;
+            let image: HistoryImage = service.store.get("image", id).unwrap().unwrap();
+            assert_eq!(image.mime, mime);
+            let name: String = service.store.get("image-file", id).unwrap().unwrap();
+            assert!(name.ends_with(&format!(".{format}")));
+            assert_eq!(
+                std::fs::read(images::owned_image_path(&service.store, &name).unwrap()).unwrap(),
+                original
+            );
+            let path = url::Url::parse(image.preview_url.as_ref().unwrap())
+                .unwrap()
+                .path()
+                .to_owned();
+            let (preview, preview_mime) = service.read_preview_media_asset(&path).unwrap();
+            assert_eq!(
+                preview_mime,
+                if animated { "image/gif" } else { "image/png" }
+            );
+            if animated {
+                assert_eq!(
+                    crate::image_media::gif_structure(&preview, true).unwrap().2,
+                    2
+                );
+            } else {
+                assert_eq!(
+                    image::guess_format(&preview).unwrap(),
+                    image::ImageFormat::Png
+                );
+            }
+            let renewed = service
+                .bootstrap()
+                .unwrap()
+                .image_history
+                .into_iter()
+                .find(|image| &image.id == id)
+                .unwrap();
+            assert!(
+                renewed
+                    .preview_url
+                    .unwrap()
+                    .ends_with(if animated { ".gif" } else { ".png" })
+            );
+            let target = service.store.root.join(format!("exported.{format}"));
+            service
+                .begin_image_export(id)
+                .unwrap()
+                .read()
+                .unwrap()
+                .save(&target)
+                .unwrap();
+            assert_eq!(std::fs::read(target).unwrap(), original);
+            let mut sink = FakeImageClipboard::default();
+            service
+                .begin_image_export(id)
+                .unwrap()
+                .decode()
+                .unwrap()
+                .commit(&mut sink)
+                .unwrap();
+            assert_eq!(sink.frames.len(), 1);
+            assert_eq!(
+                (sink.frames[0].0, sink.frames[0].1),
+                (image.width as usize, image.height as usize)
+            );
+            if animated {
+                assert_eq!(&sink.frames[0].2[..4], &[255, 0, 0, 255]);
+            }
+            assert_eq!(
+                service
+                    .use_history_as_input(id, &record.view.id, record.view.revision)
+                    .unwrap_err()
+                    .code,
+                "unsupported_image_input"
+            );
+            assert!(service.send_image_once(&mut snapshot).await.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            service.delete_history(&[id.clone()], true).unwrap();
+            assert!(service.read_preview_media_asset(&path).is_err());
+            for extension in ["png", "gif"] {
+                assert!(
+                    !service
+                        .store
+                        .root
+                        .join("previews")
+                        .join(format!("{id}.{extension}"))
+                        .exists()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn api_edit_admission_sends_frozen_material_once_and_saves_the_complete_batch() {
+        use base64::engine::general_purpose::STANDARD;
+
+        for markup in [false, true] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../../tests/contracts/images-api-catalog.json"
+            ))
+            .unwrap();
+            let mut cache = service.account_cache(&record).unwrap();
+            let model = cache
+                .models
+                .iter_mut()
+                .find(|model| model.category == "image")
+                .unwrap();
+            model.image_api_parameters = Some(
+                serde_json::from_value(
+                    fixture["models"][if markup {
+                        "gpt-image-2.6-flare"
+                    } else {
+                        "gpt-image-1.5"
+                    }]
+                    .clone(),
+                )
+                .unwrap(),
+            );
+            let model_id = model.id.clone();
+            service
+                .store
+                .put(
+                    "account-cache",
+                    &record.view.id,
+                    &record.view.account_id,
+                    &cache,
+                )
+                .unwrap();
+            let reference_path = service.store.root.join("private-reference.png");
+            let material_path = service.store.root.join("private-material.png");
+            let wrong_size_path = service.store.root.join("private-wrong-size.png");
+            std::fs::write(&reference_path, export_png(16, 16, 0)).unwrap();
+            let material_bytes = export_png(16, 16, 1);
+            std::fs::write(&material_path, &material_bytes).unwrap();
+            std::fs::write(&wrong_size_path, export_png(32, 16, 0)).unwrap();
+            let imported = service
+                .import_inputs(
+                    &record.view.id,
+                    &[reference_path, material_path, wrong_size_path],
+                )
+                .unwrap();
+            let parameters = ImageParameters {
+                n: Some(2),
+                quality: Some("high".into()),
+                size: Some("1536x1024".into()),
+                output_format: Some("jpeg".into()),
+                output_compression: Some(85),
+                background: Some("opaque".into()),
+                input_fidelity: (!markup).then(|| "high".into()),
+                ..Default::default()
+            };
+            let admit = |material: &str| {
+                service.create_image_task_with_materials(
+                    &record.view.id,
+                    record.view.revision,
+                    &model_id,
+                    "Synthetic advanced edit".into(),
+                    parameters.clone(),
+                    vec![imported[0].id.clone()],
+                    (!markup).then(|| material.to_owned()),
+                    markup.then(|| material.to_owned()),
+                )
+            };
+            assert_eq!(
+                admit(&imported[2].id).unwrap_err().code,
+                "invalid_image_material"
+            );
+            let mut input: InputRecord = service
+                .store
+                .get("input", &imported[1].id)
+                .unwrap()
+                .unwrap();
+            input.connection_revision += 1;
+            service
+                .store
+                .put("input", &input.view.id, &input.account_id, &input)
+                .unwrap();
+            assert_eq!(
+                admit(&input.view.id).unwrap_err().code,
+                "input_scope_mismatch"
+            );
+            assert!(
+                service
+                    .store
+                    .list::<TaskView>("task", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            input.connection_revision -= 1;
+            service
+                .store
+                .put("input", &input.view.id, &input.account_id, &input)
+                .unwrap();
+
+            let calls = Arc::new(AtomicU64::new(0));
+            let observed = calls.clone();
+            let expected_model = model_id.clone();
+            let output = export_png(16, 16, 2);
+            let returned = output.clone();
+            service.http.scripted(Arc::new(move |request| {
+                if request.method != Method::POST {
+                    return Box::pin(async { Err(fail("synthetic_fact_not_observed")) });
+                }
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert!(request.url.ends_with("/images/edits"));
+                assert!(request.headers.iter().any(|(key, value)| key == "X-Orivelle-Images-Contract" && value == images::API_CONTRACT));
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["model"], expected_model);
+                assert_eq!(body["n"], 2);
+                assert_eq!(body["quality"], "high");
+                assert_eq!(body["size"], "1536x1024");
+                assert_eq!(body["output_format"], "jpeg");
+                assert_eq!(body["output_compression"], 85);
+                assert_eq!(body["response_format"], "b64_json");
+                assert_eq!(body["images"].as_array().unwrap().len(), 1);
+                let name = if markup { "markup" } else { "mask" };
+                let expected_material = format!("data:image/png;base64,{}", STANDARD.encode(&material_bytes));
+                assert_eq!(body[name]["image_url"], expected_material);
+                assert!(body.get(if markup { "mask" } else { "markup" }).is_none());
+                if markup { assert!(body.get("input_fidelity").is_none()); }
+                else { assert_eq!(body["input_fidelity"], "high"); }
+                assert!(!String::from_utf8_lossy(&request.body).contains("private-"));
+                let encoded = STANDARD.encode(&returned);
+                Box::pin(async move { Ok(crate::network::RemoteResponse {
+                    status: 200, request_id: Some("33333333-3333-4333-8333-333333333333".into()),
+                    bytes: serde_json::to_vec(&json!({"created":1,"usage":{"input_tokens":5},"data":[{"b64_json":encoded},{"b64_json":encoded}]})).unwrap(),
+                }) })
+            }));
+            let queued = admit(&imported[1].id).unwrap();
+            let completed = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let task: TaskView = service.store.get("task", &queued.id).unwrap().unwrap();
+                    if !["queued", "sending", "waiting", "saving"].contains(&task.state.as_str())
+                        && service.image_workers.available_permits() == 2
+                    {
+                        break task;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(completed.state, "completed", "{:?}", completed.error);
+            assert_eq!(completed.image_ids.len(), 2);
+            for id in &completed.image_ids {
+                let image: HistoryImage = service.store.get("image", id).unwrap().unwrap();
+                assert_eq!(image.mime, "image/png");
+                let name: String = service.store.get("image-file", id).unwrap().unwrap();
+                assert_eq!(
+                    std::fs::read(images::owned_image_path(&service.store, &name).unwrap())
+                        .unwrap(),
+                    output
+                );
+            }
+            let snapshot: TaskSnapshot = service
+                .store
+                .get("task-snapshot", &queued.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(snapshot.api_contract.as_deref(), Some(images::API_CONTRACT));
+            assert_eq!(snapshot.maximum_results, 2);
+            assert_eq!(
+                service
+                    .send_image_once(&mut snapshot.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "task_state_conflict"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_image_api_pool_reports_only_frozen_adjusted_parameters() {
+        let (_dir, _service, _vault, record, _install) = setup();
+        let mut snapshot = task_snapshot(&record);
+        snapshot.task.parameters = ImageParameters {
+            quality: Some("high".into()),
+            size: Some("1536x864".into()),
+            n: Some(1),
+            output_format: Some("png".into()),
+            background: Some("transparent".into()),
+            ..Default::default()
+        };
+        let error = images::request_failure(422, br#"{"error":{"code":"image_parameters_unavailable","message":"PRIVATE_PROVIDER_MESSAGE","unsupported_parameters":["everything","PRIVATE"]}}"#, &snapshot);
+        assert_eq!(error.unsupported_parameters, ["quality", "size"]);
+        assert!(!error.message.contains("PRIVATE"));
+        let wire = serde_json::to_string(&error).unwrap();
+        assert!(!wire.contains("everything"));
+        assert!(!wire.contains("background"));
+    }
+
+    #[tokio::test]
+    async fn image_api_stream_saves_only_complete_material_and_never_replays_a_post() {
+        for complete in [true, false] {
+            let (_dir, service, _vault, mut record, install) = setup();
+            service
+                .accept_credential(
+                    &mut record,
+                    &install,
+                    serde_json::from_value(golden()["credential_reply"]["data"].clone()).unwrap(),
+                )
+                .unwrap();
+            let mut snapshot = task_snapshot(&record);
+            snapshot.task.state = "queued".into();
+            snapshot.task.parameters.stream = Some(true);
+            snapshot.task.parameters.partial_images = Some(1);
+            snapshot.api_contract = Some(images::API_CONTRACT.into());
+            service.persist_task(&snapshot).unwrap();
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = count.clone();
+            let bytes = export_png(16, 16, 0);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            service.http.scripted(Arc::new(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert!(
+                    request
+                        .headers
+                        .iter()
+                        .any(|(key, value)| { key == "Accept" && value == "text/event-stream" })
+                );
+                assert!(request.headers.iter().any(|(key, value)| {
+                    key == "X-Orivelle-Images-Contract" && value == images::API_CONTRACT
+                }));
+                let encoded = encoded.clone();
+                Box::pin(async move {
+                    let partial = json!({
+                        "type": "image_generation.partial_image",
+                        "b64_json": encoded, "created_at": 1, "partial_image_index": 0
+                    });
+                    let final_event = json!({
+                        "type": "image_generation.completed",
+                        "b64_json": encoded, "created_at": 1
+                    });
+                    let mut body =
+                        format!("event: image_generation.partial_image\ndata: {partial}\n\n");
+                    if complete {
+                        body +=
+                            &format!("event: image_generation.completed\ndata: {final_event}\n\n");
+                    }
+                    Ok(crate::network::RemoteResponse {
+                        status: 200,
+                        request_id: Some("33333333-3333-4333-8333-333333333333".into()),
+                        bytes: body.into_bytes(),
+                    })
+                })
+            }));
+            let result = service.send_image_once(&mut snapshot).await;
+            if complete {
+                result.unwrap();
+                assert_eq!(snapshot.task.state, "completed");
+                assert_eq!(snapshot.task.image_ids.len(), 1);
+                let filename = service
+                    .store
+                    .get::<String>("image-file", &snapshot.task.image_ids[0])
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read(service.store.root.join("images").join(filename)).unwrap(),
+                    bytes
+                );
+            } else {
+                assert_eq!(result.unwrap_err().code, "image_response_incomplete");
+                assert!(
+                    service
+                        .store
+                        .list::<HistoryImage>("image", None)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            service.persist_task(&snapshot).unwrap();
+            assert!(service.send_image_once(&mut snapshot).await.is_err());
+            assert_eq!(count.load(Ordering::SeqCst), 1);
         }
     }
 }

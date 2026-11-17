@@ -5,6 +5,8 @@ pub struct PublicError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsupported_parameters: Vec<String>,
 }
 impl PublicError {
     pub fn new(code: &str) -> Self {
@@ -31,15 +33,18 @@ impl PublicError {
             "integration_authorization_required" => "此系统集成尚未取得测试授权。",
             "result_unconfirmed" => "请求已发送，结果待确认。请勿自动重新生成。",
             "image_request_timeout" => "等待图片结果超时，请先核对任务状态，勿自动重新生成。",
+            "image_parameters_unavailable" => "当前服务尚未配置本次所需的高级图片功能。",
+            "image_api_pricing_unavailable" => "高级图片销售价格尚未配置完整，请联系管理员。",
             "image_limit_exceeded" => "图片、像素或完整请求超过资源上限。",
             "image_access_denied" => "当前账户无权使用此图片模型或操作。",
             "image_rate_limited" => "图片请求已达到额度或频率限制，请稍后查看额度状态。",
             "invalid_image_request" | "unsupported_image_parameter" => {
                 "当前模型不支持所选图片参数或参数组合。"
             }
-            "image_parameters_upgrade_required" | "image_metering_upgrade_required" => {
-                "图片服务需要升级以支持本次请求，请联系管理员。"
-            }
+            "invalid_image_material" => "蒙版或标注须为与第一张参考图同尺寸的 PNG 图片。",
+            "image_parameters_upgrade_required"
+            | "image_metering_upgrade_required"
+            | "image_routing_upgrade_required" => "图片服务需要升级以支持本次请求，请联系管理员。",
             "model_unavailable" => "当前图片模型不可用，请刷新模型列表。",
             "insufficient_balance" | "api_key_spending_limit_exceeded" => {
                 "可用余额或消费额度不足。"
@@ -49,6 +54,8 @@ impl PublicError {
             }
             "generation_response_failed" => "图片服务未能完成请求，请核对任务状态。",
             "invalid_image" => "图片格式或内容无效。",
+            "unsafe_image_content" => "SVG 含有无法安全预览的脚本或外部资源。",
+            "unsupported_image_input" => "参考图仅支持 PNG、JPEG 或 WebP；请先转换图片格式。",
             "local_save_failed" => "结果已收到，本地保存失败；仅重试本地保存。",
             "update_disabled" => "当前构建没有正式更新信任配置。",
             "update_busy" => "活动任务或凭据 helper 尚未结束，更新已暂停。",
@@ -60,6 +67,7 @@ impl PublicError {
         Self {
             code: code.into(),
             message: message.into(),
+            unsupported_parameters: vec![],
             retryable: false,
         }
     }

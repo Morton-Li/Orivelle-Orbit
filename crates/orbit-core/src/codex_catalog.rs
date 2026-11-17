@@ -46,6 +46,7 @@ pub struct ReasoningConstraint<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct ModelMapping<'a> {
     pub alias: &'a str,
+    pub display_name: Option<&'a str>,
     pub template_slug: &'a str,
     pub purpose: ModelPurpose,
     /// Explicit dependencies, each backed by an authorized Auxiliary mapping.
@@ -101,15 +102,48 @@ pub fn compile(plan: &CatalogPlan<'_>) -> Result<CompiledCatalog> {
     if plan.runtime_cli_version != SUPPORTED_CLI_VERSION {
         return Err(fail("codex_catalog_version_unverified"));
     }
-    if plan.source_sha256 != SOURCE_SHA256
-        || SOURCE.len() > MAX_SOURCE_BYTES
-        || sha256(SOURCE) != SOURCE_SHA256
-    {
+    if plan.source_sha256 != SOURCE_SHA256 {
         return Err(fail("codex_catalog_source_unverified"));
     }
-    let document =
-        serde_json::from_slice(SOURCE).map_err(|_| fail("codex_catalog_source_unverified"))?;
-    compile_document(plan, document)
+    compile_document(plan, source_document()?)
+}
+
+fn source_document() -> Result<Value> {
+    if SOURCE.len() > MAX_SOURCE_BYTES || sha256(SOURCE) != SOURCE_SHA256 {
+        return Err(fail("codex_catalog_source_unverified"));
+    }
+    serde_json::from_slice(SOURCE).map_err(|_| fail("codex_catalog_source_unverified"))
+}
+
+/// Choose a setting Orbit will explicitly write, without asserting an upstream
+/// implicit default. Every choice must exist in both the template and policy.
+pub(crate) fn configured_default(
+    template: &str,
+    allowed: &[&str],
+    preferred: Option<&str>,
+) -> Result<String> {
+    let document = source_document()?;
+    let model = document["models"]
+        .as_array()
+        .and_then(|models| models.iter().find(|model| model["slug"] == template))
+        .ok_or_else(|| fail("codex_catalog_template_unavailable"))?;
+    let available: Vec<_> = model["supported_reasoning_levels"]
+        .as_array()
+        .ok_or_else(|| fail("codex_catalog_reasoning_invalid"))?
+        .iter()
+        .filter_map(|option| option["effort"].as_str())
+        .filter(|effort| allowed.contains(effort))
+        .collect();
+    preferred
+        .filter(|effort| available.contains(effort))
+        .or_else(|| {
+            model["default_reasoning_level"]
+                .as_str()
+                .filter(|effort| available.contains(effort))
+        })
+        .or_else(|| available.first().copied())
+        .map(str::to_owned)
+        .ok_or_else(|| fail("codex_catalog_reasoning_invalid"))
 }
 
 fn valid_name(value: &str) -> bool {
@@ -268,20 +302,24 @@ fn narrow_reasoning(
             .get("default_reasoning_level")
             .and_then(Value::as_str)
     });
-    if retained.is_empty()
-        || default.is_none_or(|effort| !retained_efforts.contains(effort))
-        || template
-            .get("multi_agent_reasoning_effort")
-            .filter(|value| !value.is_null())
-            .is_some_and(|value| {
-                value
-                    .as_str()
-                    .is_none_or(|effort| !retained_efforts.contains(effort))
-            })
-    {
+    if retained.is_empty() || default.is_none_or(|effort| !retained_efforts.contains(effort)) {
         return Err(fail("codex_catalog_reasoning_invalid"));
     }
     let default = default.unwrap().to_owned();
+    if let Some(agent) = template
+        .get("multi_agent_reasoning_effort")
+        .filter(|value| !value.is_null())
+    {
+        let agent = agent
+            .as_str()
+            .ok_or_else(|| fail("codex_catalog_reasoning_invalid"))?;
+        if !retained_efforts.contains(agent) {
+            template.insert(
+                "multi_agent_reasoning_effort".into(),
+                default.clone().into(),
+            );
+        }
+    }
     template.insert("supported_reasoning_levels".into(), retained.into());
     template.insert("default_reasoning_level".into(), default.into());
     Ok(())
@@ -337,6 +375,11 @@ fn compile_document(plan: &CatalogPlan<'_>, mut document: Value) -> Result<Compi
             return Err(fail("codex_catalog_default_invalid"));
         }
         output.insert("slug".into(), mapping.alias.into());
+        if let Some(name) = mapping.display_name.filter(|name| {
+            !name.is_empty() && name.len() <= 1024 && !name.chars().any(char::is_control)
+        }) {
+            output.insert("display_name".into(), name.into());
+        }
         output.insert("upgrade".into(), Value::Null);
         narrow_reasoning(&mut output, mapping.reasoning)?;
         match mapping.purpose {
@@ -394,6 +437,7 @@ mod tests {
 
     fn main<'a>(alias: &'a str, template_slug: &'a str) -> ModelMapping<'a> {
         ModelMapping {
+            display_name: None,
             alias,
             template_slug,
             purpose: ModelPurpose::Main,
@@ -662,6 +706,9 @@ mod tests {
         expected["slug"] = "orbit-main".into();
         expected["upgrade"] = Value::Null;
         expected["default_reasoning_level"] = "xhigh".into();
+        if !expected["multi_agent_reasoning_effort"].is_null() {
+            expected["multi_agent_reasoning_effort"] = "xhigh".into();
+        }
         expected["supported_reasoning_levels"] = json!([
             expected["supported_reasoning_levels"][0],
             expected["supported_reasoning_levels"][3]
@@ -670,12 +717,10 @@ mod tests {
     }
 
     #[test]
-    fn zero_intersection_lost_defaults_and_lost_multi_agent_effort_fail() {
+    fn zero_intersection_and_invalid_explicit_defaults_fail() {
         for (allowed, default) in [
             (&[][..], None),
             (&["unadvertised"][..], None),
-            (&["xhigh"][..], None),
-            (&["low"][..], None),
             (&["low", "xhigh"][..], Some("high")),
             (&["low", "low", "xhigh"][..], None),
         ] {

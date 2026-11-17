@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, toRefs, watch } from "vue";
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from "reka-ui";
 import { useOrbitStore } from "../stores/orbit";
 import { subscribeImageInputs } from "../shared/bridge";
@@ -17,29 +17,39 @@ import {
   safePreviewUrl,
   utf8Bytes,
 } from "../shared/format";
-import { t } from "../shared/i18n";
+import { t, type MessageKey } from "../shared/i18n";
 import OrbitIcon from "../components/OrbitIcon.vue";
 import OrbitDialog from "../components/OrbitDialog.vue";
 import OrbitSelect from "../components/OrbitSelect.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import {
   imageParameterFields,
-  availableImageConstraints,
   imageParameterLabel,
-  imageParameterError,
   supportedImageParameters,
   imageFailureMessage,
   type ImageSelectParameter,
 } from "../shared/image-parameters";
+import {
+  workbenchConstraints,
+  workbenchParameterError,
+  adjustedImageParameters,
+} from "../shared/image-api";
 const store = useOrbitStore();
 const tab = ref("create");
-const prompt = ref("");
-const modelId = ref("");
-const inputs = ref<ImageInput[]>([]);
-const parameters = ref<ImageParameters>({});
-const advanced = ref(false);
+const { prompt, modelId, inputs, mask, markup, parameters, advanced } = toRefs(
+  store.imageDraft,
+);
+// Keep extended controls implemented while only background is open for now.
+const extendedOptionsEnabled = false;
 const enlarged = ref<HistoryImage | null>(null);
 const deleteImageIds = ref<string[]>([]);
+const renamingImage = ref<HistoryImage | null>(null);
+const imageTitle = ref("");
+const titleValid = computed(
+  () =>
+    [...imageTitle.value.trim()].length <= 120 &&
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(imageTitle.value.trim()),
+);
 const now = ref(Date.now());
 let timer: number | undefined;
 let unsubscribe: (() => void) | undefined;
@@ -48,7 +58,10 @@ const model = computed(
   () => store.imageModels.find((item) => item.id === modelId.value) ?? null,
 );
 const constraints = computed(() =>
-  availableImageConstraints(model.value?.image_parameters ?? null),
+  workbenchConstraints(
+    model.value?.image_parameters ?? null,
+    model.value?.image_api_parameters,
+  ),
 );
 const currentNode = computed(() => {
   const index = store.state.nodes.findIndex(
@@ -59,7 +72,115 @@ const currentNode = computed(() => {
     ? nodeName(node, index)
     : t(store.account ? "access.noNode" : "access.noConnection");
 });
-const parameterFields = computed(() => imageParameterFields(constraints.value));
+const apiCaps = computed(() => model.value?.image_api_parameters ?? null);
+const parameterFields = computed(() => {
+  const fields = imageParameterFields(constraints.value);
+  if (apiCaps.value?.moderations.length)
+    fields.push({
+      key: "moderation",
+      label: "images.moderation",
+      values: apiCaps.value.moderations,
+    });
+  if (inputs.value.length && apiCaps.value?.input_fidelities.length)
+    fields.push({
+      key: "input_fidelity",
+      label: "images.inputFidelity",
+      values: apiCaps.value.input_fidelities,
+    });
+  return fields;
+});
+const visibleParameterFields = computed(() =>
+  parameterFields.value.filter(
+    (field) => extendedOptionsEnabled || field.key === "background",
+  ),
+);
+const usesApi = computed(
+  () =>
+    adjustedImageParameters(
+      parameters.value,
+      inputs.value.length,
+      prompt.value,
+      !!mask.value,
+      !!markup.value,
+    ).length > 0,
+);
+const customSize = computed(
+  () =>
+    !!parameters.value.size &&
+    parameters.value.size !== "auto" &&
+    !constraints.value?.sizes.includes(parameters.value.size),
+);
+function fieldValue(key: ImageSelectParameter): string {
+  const value = parameters.value[key];
+  if (key === "size" && customSize.value) return "__custom__";
+  return value === undefined
+    ? key === "n"
+      ? "1"
+      : key === "output_format"
+        ? "png"
+        : key === "input_fidelity"
+          ? "low"
+          : key === "complexity"
+            ? "__default__"
+            : "auto"
+    : String(value);
+}
+function fieldOptions(field: ReturnType<typeof imageParameterFields>[number]) {
+  const values = field.values.map((value) => ({
+    value,
+    label: imageParameterLabel(value),
+  }));
+  if (field.key === "size" && constraints.value?.custom_size)
+    values.push({ value: "__custom__", label: t("images.customSize") });
+  if (field.key === "complexity")
+    values.unshift({ value: "__default__", label: t("images.serviceDefault") });
+  return values;
+}
+function setDimension(axis: number, event: Event) {
+  const size = (parameters.value.size ?? "1536x864").split("x");
+  size[axis] = (event.target as HTMLInputElement).value;
+  parameters.value = { ...parameters.value, size: size.join("x") };
+}
+function setNumeric(
+  key:
+    | "output_compression"
+    | "partial_images"
+    | "frame_count"
+    | "frame_duration_ms",
+  event: Event,
+) {
+  const value = (event.target as HTMLInputElement).value;
+  if (!value) {
+    const next = { ...parameters.value };
+    delete next[key];
+    parameters.value = next;
+    return;
+  }
+  parameters.value = { ...parameters.value, [key]: Number(value) };
+}
+function setStream(event: Event) {
+  const stream = (event.target as HTMLInputElement).checked;
+  parameters.value = {
+    ...parameters.value,
+    stream,
+    partial_images: stream ? (parameters.value.partial_images ?? 1) : 0,
+  };
+}
+function setSvgModel(event: Event) {
+  const value = (event.target as HTMLInputElement).value;
+  const next = { ...parameters.value };
+  if (!value) delete next.svg;
+  else next.svg = { ...next.svg, model: value };
+  parameters.value = next;
+}
+function setSvgEffort(value: string) {
+  const next = { ...parameters.value };
+  if (value === "__default__") {
+    if (next.svg) next.svg = { model: next.svg.model };
+  } else
+    next.svg = { model: next.svg?.model ?? "", reasoning: { effort: value } };
+  parameters.value = next;
+}
 function supportedParameters(values: ImageParameters): ImageParameters {
   const supported = supportedImageParameters(values, constraints.value);
   const backgrounds = constraints.value?.backgrounds ?? [];
@@ -70,11 +191,24 @@ function supportedParameters(values: ImageParameters): ImageParameters {
 }
 const currentParameters = computed(() => parameters.value);
 const parameterError = computed(() =>
-  model.value ? imageParameterError(parameters.value, constraints.value) : null,
+  model.value
+    ? workbenchParameterError(
+        parameters.value,
+        constraints.value,
+        apiCaps.value,
+        inputs.value.length,
+        !!mask.value,
+        !!markup.value,
+      )
+    : null,
 );
-const promptBytes = computed(() => utf8Bytes(prompt.value));
+const promptBytes = computed(() =>
+  apiCaps.value ? [...prompt.value].length : utf8Bytes(prompt.value),
+);
 const promptLimit = computed(() =>
-  Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
+  apiCaps.value
+    ? Math.min(32000, apiCaps.value.prompt_maximum_characters)
+    : Math.min(constraints.value?.prompt_maximum_bytes ?? 32768, 32768),
 );
 const activeTask = computed(() => store.imagePreviewTask);
 const requestedModelLabel = computed(
@@ -96,22 +230,63 @@ const active = computed(
     !!activeTask.value &&
     ["queued", "sending", "waiting", "saving"].includes(activeTask.value.state),
 );
-const canSubmit = computed(
+const canPrepare = computed(
   () =>
-    store.ready &&
-    !!model.value &&
-    prompt.value.trim().length > 0 &&
-    promptBytes.value <= promptLimit.value &&
-    !parameterError.value &&
-    inputs.value.length <= (constraints.value?.max_inputs ?? 5) &&
-    !active.value &&
-    !store.busy.has("image-submit") &&
-    model.value.capabilities.includes(
+    !!store.account &&
+    !!store.activeConnection &&
+    !store.state.maintenance_active,
+);
+const submitReason = computed<MessageKey | null>(() => {
+  if (!store.initialized) return "access.waitDetection";
+  if (!store.account) return "access.connectAccountFirst";
+  if (store.state.maintenance_active) return "access.waitMaintenance";
+  if (
+    store.state.session.status === "refreshing" ||
+    store.busy.has("refresh-account")
+  )
+    return "access.waitConnection";
+  if (store.state.session.inference_credential_status === "permission_denied")
+    return "images.noPermission";
+  if (store.state.session.inference_credential_status === "revoked")
+    return "images.keyRevoked";
+  if (store.state.session.inference_credential_status !== "ready")
+    return "images.chooseKeyFirst";
+  if (store.activeConnection?.permission_state !== "allowed")
+    return "images.noPermission";
+  if (
+    !store.activeConnection.node_id ||
+    !store.state.nodes.some(
+      (node) => node.id === store.activeConnection?.node_id && node.available,
+    )
+  )
+    return "access.chooseNodeFirst";
+  if (!store.ready) return "access.waitConnection";
+  if (store.imageDraftRefreshing) return "images.preparingInputs";
+  if (store.imageDraftInputsError && inputs.value.length)
+    return "images.prepareInputsFailed";
+  if (active.value) return "images.generationInProgress";
+  if (store.busy.has("image-submit")) return "images.submitting";
+  if (store.modelsLoading) return "access.waitModels";
+  if (!store.imageModels.length) return "images.noModels";
+  if (!model.value) return "images.chooseModel";
+  if (!prompt.value.trim()) return "images.enterPrompt";
+  if (promptBytes.value > promptLimit.value) return "images.fixPrompt";
+  if (parameterError.value) return "images.fixParameters";
+  if (inputs.value.length > (constraints.value?.max_inputs ?? 5))
+    return "images.inputLimit";
+  if (
+    !model.value.capabilities.includes(
       inputs.value.length
         ? CAPABILITIES.imageEdit
         : CAPABILITIES.imageGeneration,
-    ),
-);
+    )
+  )
+    return inputs.value.length
+      ? "images.editUnsupported"
+      : "images.generationUnsupported";
+  return null;
+});
+const canSubmit = computed(() => !submitReason.value);
 const elapsed = computed(() =>
   activeTask.value?.started_at
     ? Math.max(
@@ -149,28 +324,41 @@ function taskTone(task: TaskView) {
         : ("neutral" as const);
 }
 watch(
-  () => store.scope,
+  () => store.imageDraftScope,
   () => {
-    prompt.value = "";
-    inputs.value = [];
-    modelId.value = "";
-    parameters.value = {};
-    advanced.value = false;
     enlarged.value = null;
     deleteImageIds.value = [];
+    renamingImage.value = null;
   },
 );
 watch(modelId, () => {
+  mask.value = null;
+  markup.value = null;
   parameters.value = supportedParameters({});
   advanced.value = false;
 });
-watch(constraints, () => {
-  parameters.value = supportedParameters(parameters.value);
+watch(
+  () => inputs.value[0]?.id,
+  () => {
+    mask.value = null;
+    markup.value = null;
+    if (!inputs.value.length) {
+      const next = { ...parameters.value };
+      delete next.input_fidelity;
+      parameters.value = next;
+    }
+  },
+);
+watch(constraints, (value) => {
+  if (value) parameters.value = supportedParameters(parameters.value);
 });
 watch(
-  () => store.imageModels,
+  () => [store.imageModels, store.modelsLoading],
   () => {
-    if (!store.imageModels.some((item) => item.id === modelId.value))
+    if (
+      !store.modelsLoading &&
+      !store.imageModels.some((item) => item.id === modelId.value)
+    )
       modelId.value = "";
   },
 );
@@ -207,10 +395,39 @@ function addInputs(values: ImageInput[]) {
   }
   inputs.value.push(...added);
 }
+async function chooseMaterial(kind: "mask" | "markup") {
+  const connection = store.activeConnection;
+  const captured = store.scope;
+  if (!connection || !canPrepare.value) return;
+  const result = await store.perform(`image-${kind}`, "select_image_inputs", {
+    connection_id: connection.id,
+    purpose: kind,
+  });
+  if (!result?.length || captured !== store.scope) return;
+  const item = result[0]!;
+  const first = inputs.value[0];
+  if (
+    result.length !== 1 ||
+    item.mime !== "image/png" ||
+    !first ||
+    item.width !== first.width ||
+    item.height !== first.height
+  ) {
+    store.notify(t("images.invalidMaterial"), "error");
+    return;
+  }
+  if (kind === "mask") {
+    mask.value = item;
+    markup.value = null;
+  } else {
+    markup.value = item;
+    mask.value = null;
+  }
+}
 async function chooseInputs() {
   const connection = store.activeConnection;
   const captured = store.scope;
-  if (!connection) return;
+  if (!connection || !canPrepare.value) return;
   const result = await store.perform("image-inputs", "select_image_inputs", {
     connection_id: connection.id,
   });
@@ -227,6 +444,8 @@ async function submit() {
     prompt: prompt.value,
     parameters: { ...currentParameters.value },
     input_ids: inputs.value.map((input) => input.id),
+    ...(mask.value ? { mask_input_id: mask.value.id } : {}),
+    ...(markup.value ? { markup_input_id: markup.value.id } : {}),
   });
   if (result && captured === store.scope) {
     store.acceptTask(result);
@@ -271,9 +490,13 @@ async function copy(image: HistoryImage) {
   if (result?.copied) store.notify(t("common.copied"), "success");
 }
 async function edit(image: HistoryImage) {
+  if (!referenceAllowed(image)) {
+    store.notify(t("images.rasterReferenceOnly"), "error");
+    return;
+  }
   const connection = store.activeConnection;
   const captured = store.scope;
-  if (!connection || !store.ready) return;
+  if (!connection || !canPrepare.value) return;
   const result = await store.perform("image-reedit", "use_history_as_input", {
     image_id: image.id,
     connection_id: connection.id,
@@ -286,6 +509,32 @@ async function edit(image: HistoryImage) {
     store.imagePreviewTaskId = null;
     tab.value = "create";
     enlarged.value = null;
+  }
+}
+function historyRequestId(image: HistoryImage) {
+  return (
+    store.tasks.find((task) => task.id === image.task_id)?.request_id ??
+    image.id
+  );
+}
+function historyTitle(image: HistoryImage) {
+  return image.title || historyRequestId(image);
+}
+function rename(image: HistoryImage) {
+  imageTitle.value = historyTitle(image);
+  renamingImage.value = image;
+}
+async function saveTitle() {
+  const image = renamingImage.value;
+  const captured = store.imageDraftScope;
+  if (!image || !titleValid.value) return;
+  const result = await store.perform("image-rename", "rename_history_image", {
+    image_id: image.id,
+    title: imageTitle.value.trim(),
+  });
+  if (result && captured === store.imageDraftScope) {
+    renamingImage.value = null;
+    await store.refresh();
   }
 }
 async function deleteHistory() {
@@ -301,10 +550,29 @@ async function deleteHistory() {
   }
 }
 function setParameter(key: ImageSelectParameter, value: string) {
-  parameters.value = {
-    ...parameters.value,
-    [key]: key === "n" ? Number(value) : value,
-  };
+  const next = { ...parameters.value };
+  if (value === "__default__") {
+    delete next[key];
+    parameters.value = next;
+    return;
+  }
+  if (key === "size" && value === "__custom__") {
+    parameters.value = { ...next, size: "1536x864" };
+    return;
+  }
+  if (key === "output_format") {
+    if (!["jpeg", "webp"].includes(value)) delete next.output_compression;
+    if (value !== "svg") delete next.svg;
+    if (value !== "gif") {
+      delete next.frame_count;
+      delete next.frame_duration_ms;
+    }
+    if (["svg", "gif"].includes(value)) {
+      delete next.stream;
+      delete next.partial_images;
+    }
+  }
+  parameters.value = { ...next, [key]: key === "n" ? Number(value) : value };
 }
 function imageDescription(image: HistoryImage) {
   return (
@@ -312,6 +580,19 @@ function imageDescription(image: HistoryImage) {
       (task) =>
         task.id === image.task_id && task.account_id === image.account_id,
     )?.prompt ?? t("images.generate")
+  );
+}
+function imageFormat(image: HistoryImage) {
+  return image.mime === "image/svg+xml"
+    ? "SVG"
+    : image.mime.replace("image/", "").toUpperCase();
+}
+function referenceAllowed(image: HistoryImage) {
+  return ["image/png", "image/jpeg", "image/webp"].includes(image.mime);
+}
+function copyLabel(image: HistoryImage) {
+  return t(
+    image.mime === "image/gif" ? "images.copyFirstFrame" : "action.copy",
   );
 }
 </script>
@@ -379,10 +660,13 @@ function imageDescription(image: HistoryImage) {
             :class="{ 'error-text': promptBytes > promptLimit }"
           >
             {{ promptBytes.toLocaleString() }} /
-            {{ promptLimit.toLocaleString() }} UTF-8 B
+            {{ promptLimit.toLocaleString() }}
+            {{ apiCaps ? t("images.characters") : "UTF-8 B" }}
           </div>
           <p v-if="promptBytes > promptLimit" class="error-text" role="alert">
-            {{ t("images.promptLimit") }}
+            {{
+              t(apiCaps ? "images.promptCharacterLimit" : "images.promptLimit")
+            }}
           </p>
         </div>
         <div class="field">
@@ -392,7 +676,7 @@ function imageDescription(image: HistoryImage) {
               type="button"
               class="text-button"
               :disabled="
-                !store.ready || active || store.busy.has('image-inputs')
+                !canPrepare || active || store.busy.has('image-inputs')
               "
               @click="chooseInputs"
             >
@@ -403,7 +687,7 @@ function imageDescription(image: HistoryImage) {
             v-if="!inputs.length"
             type="button"
             class="image-drop-area"
-            :disabled="!store.ready || active"
+            :disabled="!canPrepare || active"
             @click="chooseInputs"
           >
             <OrbitIcon name="upload" /><span>{{ t("images.drop") }}</span>
@@ -446,9 +730,9 @@ function imageDescription(image: HistoryImage) {
             <OrbitIcon name="chevron-down" :size="16" />
           </button>
           <div v-if="advanced" id="image-parameters">
-            <div v-if="parameterFields.length" class="parameter-grid">
+            <div v-if="visibleParameterFields.length" class="parameter-grid">
               <div
-                v-for="field in parameterFields"
+                v-for="field in visibleParameterFields"
                 :key="field.key"
                 class="field"
               >
@@ -457,21 +741,239 @@ function imageDescription(image: HistoryImage) {
                 }}</label>
                 <OrbitSelect
                   :id="`image-${field.key}`"
-                  :model-value="String(currentParameters[field.key] ?? '')"
+                  :model-value="fieldValue(field.key)"
                   :disabled="active"
-                  :options="[
-                    ...field.values.map((value) => ({
-                      value,
-                      label: imageParameterLabel(value),
-                    })),
-                  ]"
+                  :options="fieldOptions(field)"
                   @update:model-value="setParameter(field.key, $event)"
                 />
               </div>
             </div>
             <p v-else class="field-hint">{{ t("images.noAdvancedOptions") }}</p>
+            <p v-if="extendedOptionsEnabled && !apiCaps" class="field-hint">
+              {{ t("images.apiUpgradeHint") }}
+            </p>
+            <div
+              v-if="extendedOptionsEnabled && customSize"
+              class="parameter-grid"
+            >
+              <div class="field">
+                <label for="image-custom-width" class="field-label">{{
+                  t("images.width")
+                }}</label
+                ><input
+                  id="image-custom-width"
+                  type="number"
+                  min="16"
+                  max="3840"
+                  step="16"
+                  :value="parameters.size?.split('x')[0]"
+                  :disabled="active"
+                  @input="setDimension(0, $event)"
+                />
+              </div>
+              <div class="field">
+                <label for="image-custom-height" class="field-label">{{
+                  t("images.height")
+                }}</label
+                ><input
+                  id="image-custom-height"
+                  type="number"
+                  min="16"
+                  max="3840"
+                  step="16"
+                  :value="parameters.size?.split('x')[1]"
+                  :disabled="active"
+                  @input="setDimension(1, $event)"
+                />
+              </div>
+            </div>
+            <div
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps &&
+                ['jpeg', 'webp'].includes(parameters.output_format ?? '')
+              "
+              class="field"
+            >
+              <label for="image-compression" class="field-label">{{
+                t("images.compression")
+              }}</label
+              ><input
+                id="image-compression"
+                type="number"
+                min="0"
+                max="100"
+                :value="parameters.output_compression ?? 100"
+                :disabled="active"
+                @input="setNumeric('output_compression', $event)"
+              />
+            </div>
+            <div
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps &&
+                parameters.output_format === 'gif'
+              "
+              class="parameter-grid"
+            >
+              <div class="field">
+                <label for="image-frame-count" class="field-label">{{
+                  t("images.frameCount")
+                }}</label
+                ><input
+                  id="image-frame-count"
+                  type="number"
+                  min="2"
+                  max="16"
+                  :value="parameters.frame_count ?? 9"
+                  :disabled="active"
+                  @input="setNumeric('frame_count', $event)"
+                />
+              </div>
+              <div class="field">
+                <label for="image-frame-duration" class="field-label">{{
+                  t("images.frameDuration")
+                }}</label
+                ><input
+                  id="image-frame-duration"
+                  type="number"
+                  min="20"
+                  max="655350"
+                  step="10"
+                  :value="parameters.frame_duration_ms ?? 200"
+                  :disabled="active"
+                  @input="setNumeric('frame_duration_ms', $event)"
+                />
+              </div>
+            </div>
+            <div
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps &&
+                parameters.output_format === 'svg'
+              "
+              class="field"
+            >
+              <label for="image-svg-model" class="field-label">{{
+                t("images.svgAuthor")
+              }}</label
+              ><input
+                id="image-svg-model"
+                :value="parameters.svg?.model ?? ''"
+                :placeholder="t('images.svgAuthorPlaceholder')"
+                :disabled="active"
+                @input="setSvgModel"
+              />
+              <label for="image-svg-reasoning" class="field-label">{{
+                t("images.svgReasoning")
+              }}</label
+              ><OrbitSelect
+                id="image-svg-reasoning"
+                :model-value="
+                  parameters.svg?.reasoning?.effort ?? '__default__'
+                "
+                :options="[
+                  { value: '__default__', label: t('images.serviceDefault') },
+                  ...apiCaps.svg_reasoning_efforts.map((value) => ({
+                    value,
+                    label: imageParameterLabel(value),
+                  })),
+                ]"
+                :disabled="active"
+                @update:model-value="setSvgEffort"
+              />
+            </div>
+            <div
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps?.stream &&
+                !['svg', 'gif'].includes(parameters.output_format ?? '')
+              "
+              class="field"
+            >
+              <label class="image-stream-toggle"
+                ><input
+                  id="image-stream"
+                  type="checkbox"
+                  :checked="parameters.stream ?? false"
+                  :disabled="active"
+                  @change="setStream"
+                />{{ t("images.stream") }}</label
+              >
+              <p class="field-hint">{{ t("images.streamHint") }}</p>
+              <template v-if="parameters.stream"
+                ><label for="image-partials" class="field-label">{{
+                  t("images.partialImages")
+                }}</label
+                ><input
+                  id="image-partials"
+                  type="number"
+                  min="0"
+                  max="3"
+                  :value="parameters.partial_images ?? 0"
+                  :disabled="active"
+                  @input="setNumeric('partial_images', $event)"
+              /></template>
+            </div>
+            <div
+              v-if="
+                extendedOptionsEnabled &&
+                apiCaps &&
+                inputs.length &&
+                (apiCaps.mask || apiCaps.markup)
+              "
+              class="field image-materials"
+            >
+              <div class="field-heading">
+                <button
+                  v-if="apiCaps.mask && parameters.output_format !== 'gif'"
+                  type="button"
+                  class="button secondary"
+                  :disabled="active || store.busy.has('image-mask')"
+                  @click="chooseMaterial('mask')"
+                >
+                  {{ t("images.addMask") }}</button
+                ><button
+                  v-if="apiCaps.markup"
+                  type="button"
+                  class="button secondary"
+                  :disabled="active || store.busy.has('image-markup')"
+                  @click="chooseMaterial('markup')"
+                >
+                  {{ t("images.addMarkup") }}
+                </button>
+              </div>
+              <p class="field-hint">{{ t("images.materialHint") }}</p>
+              <div
+                v-for="item in [mask, markup].filter(
+                  (entry): entry is ImageInput => !!entry,
+                )"
+                :key="item.id"
+                class="image-input-item"
+              >
+                <span class="truncate"
+                  >{{ mask ? t("images.mask") : t("images.markup") }} ·
+                  {{ item.name }}</span
+                ><button
+                  type="button"
+                  class="icon-button"
+                  :aria-label="t('action.delete')"
+                  :disabled="active"
+                  @click="
+                    mask = null;
+                    markup = null;
+                  "
+                >
+                  <OrbitIcon name="close" />
+                </button>
+              </div>
+            </div>
             <p
-              v-if="parameterFields.some((field) => field.key === 'background')"
+              v-if="
+                visibleParameterFields.some(
+                  (field) => field.key === 'background',
+                )
+              "
               class="field-hint"
             >
               {{ t("images.backgroundUsageHint") }}
@@ -481,15 +983,69 @@ function imageDescription(image: HistoryImage) {
             {{ t(parameterError) }}
           </p>
         </section>
-        <button
-          type="submit"
-          class="button primary generate-button"
-          :disabled="!canSubmit"
+        <p
+          v-if="model"
+          class="image-route-hint"
+          :class="{ 'image-route-api': usesApi }"
+          role="status"
         >
-          <OrbitIcon name="spark" />{{
-            t(inputs.length ? "images.edit" : "images.generate")
-          }}
-        </button>
+          {{ t(usesApi ? "images.apiRoute" : "images.subscriptionRoute") }}
+        </p>
+        <div class="image-submit-actions">
+          <p
+            v-if="submitReason"
+            id="image-submit-reason"
+            class="field-hint image-submit-hint"
+            role="status"
+            aria-live="polite"
+          >
+            <span>{{ t(submitReason) }}</span>
+            <RouterLink
+              v-if="
+                submitReason === 'images.chooseKeyFirst' ||
+                submitReason === 'images.keyRevoked'
+              "
+              to="/api-keys"
+              class="text-button"
+              >{{ t("keys.pickerTitle") }}</RouterLink
+            >
+            <RouterLink
+              v-else-if="
+                submitReason === 'access.chooseNodeFirst' ||
+                submitReason === 'images.noModels'
+              "
+              to="/access"
+              class="text-button"
+              >{{ t("action.manage") }}</RouterLink
+            >
+            <button
+              v-else-if="submitReason === 'images.prepareInputsFailed'"
+              type="button"
+              class="text-button"
+              @click="store.refreshImageDraftInputs()"
+            >
+              {{ t("keys.retry") }}
+            </button>
+            <button
+              v-else-if="submitReason === 'access.connectAccountFirst'"
+              type="button"
+              class="text-button"
+              @click="store.loginOpen = true"
+            >
+              {{ t("action.login") }}
+            </button>
+          </p>
+          <button
+            type="submit"
+            class="button primary generate-button"
+            :disabled="!canSubmit"
+            :aria-describedby="submitReason ? 'image-submit-reason' : undefined"
+          >
+            <OrbitIcon name="spark" />{{
+              t(inputs.length ? "images.edit" : "images.generate")
+            }}
+          </button>
+        </div>
       </form>
       <section class="image-result" :aria-label="t('images.empty')">
         <template v-if="activeTask"
@@ -502,7 +1058,12 @@ function imageDescription(image: HistoryImage) {
             >
           </div>
           <p v-if="activeTask.error" class="error-text" role="alert">
-            {{ imageFailureMessage(activeTask.error.code) }}
+            {{
+              imageFailureMessage(
+                activeTask.error.code,
+                activeTask.error.unsupported_parameters,
+              )
+            }}
           </p>
           <div v-if="resultImages.length" class="result-grid">
             <article
@@ -527,9 +1088,7 @@ function imageDescription(image: HistoryImage) {
               </button>
               <div class="image-card-meta">
                 <span>{{ image.width }} × {{ image.height }}</span
-                ><span>{{
-                  image.mime.replace("image/", "").toUpperCase()
-                }}</span
+                ><span>{{ imageFormat(image) }}</span
                 ><span>{{ formatBytes(image.bytes) }}</span>
               </div>
               <div class="image-card-actions">
@@ -543,13 +1102,22 @@ function imageDescription(image: HistoryImage) {
                 ><button
                   class="icon-button"
                   :disabled="store.busy.has(`copy-${image.id}`)"
-                  :aria-label="t('action.copy')"
+                  :aria-label="copyLabel(image)"
                   @click="copy(image)"
                 >
                   <OrbitIcon name="copy" /></button
                 ><button
                   class="icon-button"
-                  :disabled="!store.ready || store.busy.has('image-reedit')"
+                  :disabled="
+                    !canPrepare ||
+                    !referenceAllowed(image) ||
+                    store.busy.has('image-reedit')
+                  "
+                  :title="
+                    !referenceAllowed(image)
+                      ? t('images.rasterReferenceOnly')
+                      : undefined
+                  "
                   :aria-label="t('action.edit')"
                   @click="edit(image)"
                 >
@@ -558,6 +1126,22 @@ function imageDescription(image: HistoryImage) {
               </div>
             </article>
           </div>
+          <figure
+            v-else-if="
+              active &&
+              activeTask.partial_preview &&
+              safePreviewUrl(activeTask.partial_preview.preview_url)
+            "
+            class="partial-image-preview"
+          >
+            <img
+              :src="safePreviewUrl(activeTask.partial_preview.preview_url)!"
+              :alt="t('images.partialPreview')"
+            />
+            <figcaption class="field-hint">
+              {{ t("images.partialPreview") }}
+            </figcaption>
+          </figure>
           <div v-else class="task-waiting">
             <OrbitIcon
               :name="active ? 'loader' : 'images'"
@@ -651,9 +1235,23 @@ function imageDescription(image: HistoryImage) {
             /><OrbitIcon v-else name="images" />
           </button>
           <div class="history-card-info">
-            <strong>{{ image.width }} × {{ image.height }}</strong>
+            <div class="history-title-row">
+              <strong class="truncate" :title="historyTitle(image)">{{
+                historyTitle(image)
+              }}</strong>
+              <button
+                class="icon-button history-rename"
+                :aria-label="t('images.rename')"
+                :title="t('images.rename')"
+                :disabled="!canPrepare || store.busy.has('image-rename')"
+                @click="rename(image)"
+              >
+                <OrbitIcon name="edit" :size="13" />
+              </button>
+            </div>
             <p class="muted">
-              {{ image.mime.replace("image/", "").toUpperCase() }} ·
+              {{ imageFormat(image) }} · {{ image.width }} ×
+              {{ image.height }} ·
               {{ formatBytes(image.bytes) }}
             </p>
             <p class="muted">
@@ -670,13 +1268,22 @@ function imageDescription(image: HistoryImage) {
                 <OrbitIcon name="download" /></button
               ><button
                 class="icon-button"
-                :aria-label="t('action.copy')"
+                :aria-label="copyLabel(image)"
                 @click="copy(image)"
               >
                 <OrbitIcon name="copy" /></button
               ><button
                 class="icon-button"
-                :disabled="!store.ready"
+                :disabled="
+                  !canPrepare ||
+                  !referenceAllowed(image) ||
+                  store.busy.has('image-reedit')
+                "
+                :title="
+                  !referenceAllowed(image)
+                    ? t('images.rasterReferenceOnly')
+                    : undefined
+                "
                 :aria-label="t('action.edit')"
                 @click="edit(image)"
               >
@@ -712,17 +1319,30 @@ function imageDescription(image: HistoryImage) {
         :height="enlarged.height"
       />
       <p class="muted">
-        {{ enlarged.width }} × {{ enlarged.height }} · {{ enlarged.mime }} ·
+        {{ enlarged.width }} × {{ enlarged.height }} ·
+        {{ imageFormat(enlarged) }} ·
         {{ formatBytes(enlarged.bytes) }}
+      </p>
+      <p v-if="enlarged.mime === 'image/gif'" class="field-hint">
+        {{ t("images.gifPreviewHint") }}
       </p>
       <div class="dialog-actions">
         <button class="button secondary" @click="save(enlarged)">
           {{ t("action.save") }}</button
         ><button class="button secondary" @click="copy(enlarged)">
-          {{ t("action.copy") }}</button
+          {{ copyLabel(enlarged) }}</button
         ><button
           class="button primary"
-          :disabled="!store.ready"
+          :disabled="
+            !canPrepare ||
+            !referenceAllowed(enlarged) ||
+            store.busy.has('image-reedit')
+          "
+          :title="
+            !referenceAllowed(enlarged)
+              ? t('images.rasterReferenceOnly')
+              : undefined
+          "
           @click="edit(enlarged)"
         >
           {{ t("action.edit") }}
@@ -730,6 +1350,48 @@ function imageDescription(image: HistoryImage) {
       </div></template
     ></OrbitDialog
   >
+  <OrbitDialog
+    :open="renamingImage !== null"
+    :title="t('images.rename')"
+    :description="t('images.renameHint')"
+    @update:open="
+      (value) => {
+        if (!value) renamingImage = null;
+      }
+    "
+  >
+    <form class="history-rename-form" @submit.prevent="saveTitle">
+      <label for="image-history-title" class="field-label">{{
+        t("images.historyTitle")
+      }}</label>
+      <input
+        id="image-history-title"
+        v-model="imageTitle"
+        :placeholder="renamingImage ? historyRequestId(renamingImage) : ''"
+        :aria-invalid="!titleValid"
+        :disabled="store.busy.has('image-rename')"
+      />
+      <p v-if="!titleValid" class="error-text" role="alert">
+        {{ t("images.invalidTitle") }}
+      </p>
+      <div class="dialog-actions">
+        <button
+          type="button"
+          class="button secondary"
+          @click="renamingImage = null"
+        >
+          {{ t("action.cancel") }}
+        </button>
+        <button
+          type="submit"
+          class="button primary"
+          :disabled="!titleValid || store.busy.has('image-rename')"
+        >
+          {{ t("keys.save") }}
+        </button>
+      </div>
+    </form>
+  </OrbitDialog>
   <OrbitDialog
     :open="deleteImageIds.length > 0"
     :title="t('action.delete')"

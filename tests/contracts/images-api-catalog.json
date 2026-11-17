@@ -1,0 +1,218 @@
+{
+  "contract": "openai-images-api-v1",
+  "evidence_scope": "synthetic_contract_not_real_upstream",
+  "models": {
+    "gpt-image-2": {
+      "contract": "openai-images-api-v1",
+      "parameters": {
+        "contract": "openai-images-api-v1",
+        "max_results": 10,
+        "max_inputs": 16,
+        "maximum_request_bytes": 67108864,
+        "prompt_maximum_bytes": 128000,
+        "qualities": ["auto", "low", "medium", "high"],
+        "sizes": [
+          "auto",
+          "1024x1024",
+          "1536x1024",
+          "1024x1536",
+          "2048x2048",
+          "2048x1152",
+          "3840x2160",
+          "2160x3840"
+        ],
+        "backgrounds": ["auto", "opaque", "transparent"],
+        "output_formats": ["png", "jpeg", "webp"],
+        "output_compression": true,
+        "complexities": [],
+        "custom_size": {
+          "multiple": 16,
+          "min_edge": 16,
+          "max_edge": 3840,
+          "min_pixels": 655360,
+          "max_pixels": 8294400,
+          "max_aspect_ratio": 3
+        },
+        "request_timeout_seconds": 630,
+        "verified": false
+      },
+      "prompt_maximum_characters": 32000,
+      "mask": true,
+      "markup": false,
+      "stream": true,
+      "partial_images_maximum": 3,
+      "input_fidelities": [],
+      "moderations": ["auto", "low"],
+      "svg_reasoning_efforts": [],
+      "gif_frame_count": {
+        "min": 2,
+        "max": 16,
+        "default": 9
+      },
+      "gif_frame_duration_ms": {
+        "min": 20,
+        "max": 655350,
+        "default": 200
+      }
+    },
+    "gpt-image-2.5-flare": {
+      "contract": "openai-images-api-v1",
+      "parameters": {
+        "contract": "openai-images-api-v1",
+        "max_results": 10,
+        "max_inputs": 16,
+        "maximum_request_bytes": 67108864,
+        "prompt_maximum_bytes": 128000,
+        "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+        "sizes": [
+          "auto",
+          "1024x1024",
+          "1536x1024",
+          "1024x1536",
+          "2048x2048",
+          "2048x1152",
+          "3840x2160",
+          "2160x3840"
+        ],
+        "backgrounds": ["auto", "opaque", "transparent"],
+        "output_formats": ["png", "jpeg", "webp", "svg", "gif"],
+        "output_compression": true,
+        "complexities": ["low", "medium", "high"],
+        "custom_size": {
+          "multiple": 16,
+          "min_edge": 16,
+          "max_edge": 3840,
+          "min_pixels": 655360,
+          "max_pixels": 8294400,
+          "max_aspect_ratio": 3
+        },
+        "request_timeout_seconds": 630,
+        "verified": false
+      },
+      "prompt_maximum_characters": 32000,
+      "mask": true,
+      "markup": true,
+      "stream": true,
+      "partial_images_maximum": 3,
+      "input_fidelities": [],
+      "moderations": ["auto", "low"],
+      "svg_reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "gif_frame_count": {
+        "min": 2,
+        "max": 16,
+        "default": 9
+      },
+      "gif_frame_duration_ms": {
+        "min": 20,
+        "max": 655350,
+        "default": 200
+      }
+    },
+    "gpt-image-2.6-flare": {
+      "contract": "openai-images-api-v1",
+      "parameters": {
+        "contract": "openai-images-api-v1",
+        "max_results": 10,
+        "max_inputs": 16,
+        "maximum_request_bytes": 67108864,
+        "prompt_maximum_bytes": 128000,
+        "qualities": ["auto", "low", "medium", "high", "xhigh", "max"],
+        "sizes": [
+          "auto",
+          "1024x1024",
+          "1536x1024",
+          "1024x1536",
+          "2048x2048",
+          "2048x1152",
+          "3840x2160",
+          "2160x3840"
+        ],
+        "backgrounds": ["auto", "opaque", "transparent"],
+        "output_formats": ["png", "jpeg", "webp", "svg", "gif"],
+        "output_compression": true,
+        "complexities": ["low", "medium", "high"],
+        "custom_size": {
+          "multiple": 16,
+          "min_edge": 16,
+          "max_edge": 3840,
+          "min_pixels": 655360,
+          "max_pixels": 8294400,
+          "max_aspect_ratio": 3
+        },
+        "request_timeout_seconds": 630,
+        "verified": false
+      },
+      "prompt_maximum_characters": 32000,
+      "mask": true,
+      "markup": true,
+      "stream": true,
+      "partial_images_maximum": 3,
+      "input_fidelities": [],
+      "moderations": ["auto", "low"],
+      "svg_reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "gif_frame_count": {
+        "min": 2,
+        "max": 16,
+        "default": 9
+      },
+      "gif_frame_duration_ms": {
+        "min": 20,
+        "max": 655350,
+        "default": 200
+      }
+    },
+    "gpt-image-1.5": {
+      "contract": "openai-images-api-v1",
+      "parameters": {
+        "contract": "openai-images-api-v1",
+        "max_results": 10,
+        "max_inputs": 16,
+        "maximum_request_bytes": 67108864,
+        "prompt_maximum_bytes": 128000,
+        "qualities": ["auto", "low", "medium", "high"],
+        "sizes": ["auto", "1024x1024", "1536x1024", "1024x1536"],
+        "backgrounds": ["auto", "opaque", "transparent"],
+        "output_formats": ["png", "jpeg", "webp"],
+        "output_compression": true,
+        "complexities": [],
+        "custom_size": null,
+        "request_timeout_seconds": 630,
+        "verified": false
+      },
+      "prompt_maximum_characters": 32000,
+      "mask": true,
+      "markup": false,
+      "stream": true,
+      "partial_images_maximum": 3,
+      "input_fidelities": ["low", "high"],
+      "moderations": ["auto", "low"],
+      "svg_reasoning_efforts": [],
+      "gif_frame_count": {
+        "min": 2,
+        "max": 16,
+        "default": 9
+      },
+      "gif_frame_duration_ms": {
+        "min": 20,
+        "max": 655350,
+        "default": 200
+      }
+    }
+  }
+}

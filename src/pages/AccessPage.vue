@@ -84,8 +84,46 @@ const claudeModels = computed(() =>
       model.capabilities.includes(CAPABILITIES.messages),
   ),
 );
-const claudeOptions = computed(() =>
-  claudeModels.value.map((model) => ({ value: model.id, label: model.label })),
+const boundClaudeMapping = computed(() => {
+  const snapshot = switchSnapshot("claude");
+  if (
+    !snapshot ||
+    snapshot.account_id !== store.account?.id ||
+    snapshot.panel_origin !== store.activeConnection?.panel_origin
+  )
+    return null;
+  return (
+    apiKeys.page?.bindings.find((binding) => binding.client === "claude")
+      ?.claude_mapping ?? null
+  );
+});
+const displayedClaudeMapping = computed(() =>
+  switchSnapshot("claude")
+    ? (boundClaudeMapping.value ?? { sonnet: "", opus: "", haiku: "" })
+    : selectedMapping.value,
+);
+const claudeOptions = computed(() => {
+  const options = claudeModels.value.map((model) => ({
+    value: model.id,
+    label: model.label,
+  }));
+  if (boundClaudeMapping.value) {
+    for (const id of Object.values(boundClaudeMapping.value)) {
+      if (id && !options.some((option) => option.value === id))
+        options.push({ value: id, label: id });
+    }
+  }
+  return options;
+});
+function selectClaudeModel(role: keyof ClaudeModelMapping, value: string) {
+  if (!switchSnapshot("claude")) selectedMapping.value[role] = value;
+}
+watch(
+  boundClaudeMapping,
+  (mapping) => {
+    if (mapping) selectedMapping.value = { ...mapping };
+  },
+  { immediate: true },
 );
 const codexModelsAvailable = computed(() =>
   store.textModels.some(
@@ -125,6 +163,10 @@ function connectReason(kind: ClientKind): MessageKey | null {
     return "access.preparingPreview";
   return null;
 }
+function connectHint(kind: ClientKind): MessageKey | null {
+  const reason = connectReason(kind);
+  return reason === "access.chooseKeyFirst" ? null : reason;
+}
 watch(
   () => store.scope,
   () => {
@@ -150,6 +192,10 @@ watch(
   { immediate: true },
 );
 async function requestPreview(client: ClientKind) {
+  if (connectReason(client) === "access.chooseKeyFirst") {
+    store.notify(t("access.chooseKeyFirst"), "warning");
+    return;
+  }
   const connection = store.activeConnection;
   if (
     !connection ||
@@ -385,9 +431,47 @@ onMounted(async () => {
         compact
       />
       <div class="access-client-controls">
+        <section
+          v-if="client.client === 'claude'"
+          class="claude-model-config"
+          aria-labelledby="claude-model-heading"
+        >
+          <h3 id="claude-model-heading">{{ t("access.modelMapping") }}</h3>
+          <p class="muted">{{ t("access.claudeMappingHint") }}</p>
+          <div class="claude-mappings">
+            <div
+              v-for="entry in claudeMappings"
+              :key="entry.key"
+              class="claude-mapping"
+            >
+              <label :for="`claude-${entry.key}`" class="field-label">{{
+                t(entry.label)
+              }}</label>
+              <OrbitSelect
+                :id="`claude-${entry.key}`"
+                :model-value="displayedClaudeMapping[entry.key]"
+                :options="claudeOptions"
+                :placeholder="
+                  t(
+                    store.modelsLoading
+                      ? 'common.loading'
+                      : 'access.selectModel',
+                  )
+                "
+                :disabled="
+                  !!switchSnapshot('claude') ||
+                  store.modelsLoading ||
+                  !claudeOptions.length ||
+                  previewing.claude
+                "
+                @update:model-value="selectClaudeModel(entry.key, $event)"
+              />
+            </div>
+          </div>
+        </section>
         <template v-if="switchSnapshot(client.client)">
           <button
-            class="button secondary"
+            class="button secondary access-client-action"
             :disabled="
               switchSnapshot(client.client)?.state === 'unavailable' ||
               !configurationAllowed(client.client) ||
@@ -409,72 +493,31 @@ onMounted(async () => {
           <p v-if="client.client === 'codex'" class="muted">
             {{ t("access.allCodexModels") }}
           </p>
-          <section
-            v-else
-            class="claude-model-config"
-            aria-labelledby="claude-model-heading"
+          <div
+            class="access-connect-actions"
+            :class="{ 'claude-connect-actions': client.client === 'claude' }"
           >
-            <h3 id="claude-model-heading">{{ t("access.modelMapping") }}</h3>
-            <p class="muted">{{ t("access.claudeMappingHint") }}</p>
-            <div class="claude-mappings">
-              <div
-                v-for="entry in claudeMappings"
-                :key="entry.key"
-                class="claude-mapping"
-              >
-                <label :for="`claude-${entry.key}`" class="field-label">{{
-                  t(entry.label)
-                }}</label>
-                <OrbitSelect
-                  :id="`claude-${entry.key}`"
-                  v-model="selectedMapping[entry.key]"
-                  :options="claudeOptions"
-                  :placeholder="
-                    t(
-                      store.modelsLoading
-                        ? 'common.loading'
-                        : 'access.selectModel',
-                    )
-                  "
-                  :disabled="
-                    store.modelsLoading ||
-                    !claudeOptions.length ||
-                    previewing.claude
-                  "
-                />
-              </div>
-            </div>
-          </section>
-          <button
-            class="button primary"
-            :class="{ 'claude-connect': client.client === 'claude' }"
-            :aria-describedby="
-              connectReason(client.client)
-                ? `connect-reason-${client.client}`
-                : undefined
-            "
-            :disabled="
-              !store.ready ||
-              !previewAllowed(client.client) ||
-              (client.client === 'claude'
-                ? !mappingReady
-                : !codexModelsAvailable) ||
-              store.modelsLoading ||
-              previewing[client.client] ||
-              store.busy.has(`preview-${client.client}`)
-            "
-            @click="requestPreview(client.client)"
-          >
-            <OrbitIcon name="access" />{{ t("access.connectOrbit") }}
-          </button>
-          <p
-            v-if="connectReason(client.client)"
-            :id="`connect-reason-${client.client}`"
-            class="field-hint"
-            role="status"
-          >
-            {{ t(connectReason(client.client)!) }}
-          </p>
+            <button
+              class="button primary access-client-action"
+              :aria-describedby="
+                connectHint(client.client)
+                  ? `connect-reason-${client.client}`
+                  : undefined
+              "
+              :disabled="!!connectHint(client.client)"
+              @click="requestPreview(client.client)"
+            >
+              <OrbitIcon name="access" />{{ t("access.connectOrbit") }}
+            </button>
+            <p
+              v-if="connectHint(client.client)"
+              :id="`connect-reason-${client.client}`"
+              class="field-hint"
+              role="status"
+            >
+              {{ t(connectHint(client.client)!) }}
+            </p>
+          </div>
         </template>
       </div>
     </article>

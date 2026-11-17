@@ -191,7 +191,7 @@ const zh = {
   "nav.images": "图片工作台",
   "nav.access": "接入",
   "nav.apiKeys": "API Key",
-  "access.chooseKeyFirst": "请先选择 API Key。",
+  "access.chooseKeyFirst": "请前往左侧「API Key」页面选择密钥后再接入。",
   "access.manageKeys": "管理密钥",
   "access.selectKey": "请选择 API Key",
   "access.updatingKey":
@@ -470,7 +470,11 @@ const zh = {
   "access.codexEvidenceBoundary":
     "已安装版本的配置合同、模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
   "access.codexBindingUnavailable":
-    "当前模型缺少可用的 Codex 模板声明。请刷新模型列表，或联系管理员补充声明后重新预览。",
+    "当前可用模型缺少兼容的 Codex 模板声明。请联系管理员检查模型模板后重新预览。",
+  "access.codexModelIdUnsupported":
+    "模型调用 ID 超出 Codex 目录支持的格式或长度。请联系管理员检查模型调用名称。",
+  "app.refreshSucceeded": "刷新成功。",
+  "app.refreshFailed": "刷新失败，请稍后重试。",
   "access.codexReasoningUnavailable":
     "当前推理档位策略不足以生成完整目录。请刷新模型权限后重新预览。",
   "access.codexCatalogChanged":
@@ -482,6 +486,25 @@ const zh = {
   "images.description": "选择获准模型，输入提示词，或加入参考图进行编辑。",
   "images.create": "创作",
   "images.history": "本地历史",
+  "images.historyTitle": "图片标题",
+  "images.rename": "修改标题",
+  "images.renameHint":
+    "留空使用请求 ID，最多 120 个字符。原始请求 ID 保持不变。",
+  "images.invalidTitle": "标题最多 120 个字符，且不能包含控制字符。",
+  "images.chooseKeyFirst": "请先选择有效的 API Key，再提交图片请求。",
+  "images.keyRevoked": "当前 API Key 已失效，请重新选择有效密钥。",
+  "images.noPermission": "当前账户无权提交图片请求，请检查账户权限。",
+  "images.noModels": "当前节点没有可用的图片模型，请切换节点或刷新数据。",
+  "images.chooseModel": "请选择图片模型。",
+  "images.enterPrompt": "请填写提示词，描述要生成的图片或修改要求。",
+  "images.fixPrompt": "请缩短超过上限的提示词后再提交。",
+  "images.fixParameters": "请调整上方标记的图片参数后再提交。",
+  "images.generationInProgress": "当前图片任务正在进行，请等待完成后再提交。",
+  "images.submitting": "正在提交图片请求，请稍候。",
+  "images.preparingInputs": "正在准备已添加的参考图，请稍候。",
+  "images.prepareInputsFailed": "参考图尚未准备完成，请重试或重新添加。",
+  "images.editUnsupported": "所选模型不支持图片编辑，请切换模型。",
+  "images.generationUnsupported": "所选模型不支持图片生成，请切换模型。",
   "images.prompt": "提示词",
   "images.promptPlaceholder":
     "描述主体、构图、光线与风格。添加参考图后将使用编辑接口。",
@@ -489,13 +512,49 @@ const zh = {
   "images.addInputs": "添加参考图",
   "images.drop": "拖入 PNG、JPEG 或 WebP，也可从文件选择器添加",
   "images.noInputs": "未添加参考图",
+  "images.mask": "编辑蒙版",
+  "images.markup": "标注图层",
+  "images.addMask": "选择蒙版 PNG",
+  "images.addMarkup": "选择标注 PNG",
+  "images.materialHint":
+    "蒙版与标注二选一，需要与首张参考图尺寸一致的透明 PNG。",
+  "images.stream": "流式预览",
+  "images.partialImages": "中间预览图数量",
+  "images.streamHint": "生成过程中显示预览；最终结果完成后才保存到历史。",
+  "images.moderation": "内容审核",
+  "images.inputFidelity": "输入保真度",
+  "images.frameCount": "GIF 帧数",
+  "images.frameDuration": "每帧时长（毫秒）",
+  "images.svgAuthor": "SVG 编写模型",
+  "images.svgAuthorPlaceholder": "留空使用服务默认模型",
+  "images.svgReasoning": "SVG 编写推理强度",
+  "images.customSize": "自定义尺寸",
+  "images.width": "宽度",
+  "images.height": "高度",
+  "images.compression": "压缩率（%）",
+  "images.subscriptionRoute": "本次使用订阅图片服务",
+  "images.apiRoute": "本次使用高级图像 API，按高级销售价计费",
+  "images.apiUnavailable": "当前服务尚未配置所需的高级图片功能。",
+  "images.priceUnavailable": "高级图片销售价格尚未配置完整，请联系管理员。",
+  "images.unavailableParameters": "当前暂不支持调整：",
+  "images.invalidMaterial":
+    "请添加参考图，并使用尺寸一致的 PNG 蒙版或标注图层。",
+  "images.invalidSvg": "SVG 仅支持无参考图的单张生成。",
+  "images.invalidMediaOptions": "当前格式不支持所选流式、压缩或动画参数组合。",
+  "images.svgAuthorRequired":
+    "请填写有效的 SVG 编写模型，并选择支持的推理强度。",
+  "images.partialPreview": "生成中预览，尚不是最终结果",
+  "images.copyFirstFrame": "复制首帧",
+  "images.rasterReferenceOnly":
+    "参考图仅支持 PNG、JPEG 或 WebP，请先转换图片格式。",
+  "images.gifPreviewHint": "动图预览经过缩小；另存保留原尺寸及完整动画。",
+  "images.unsafeContent": "SVG 含有无法安全预览的脚本或外部资源。",
+  "images.characters": "字符",
+  "images.serviceDefault": "使用默认设置",
+  "images.apiUpgradeHint": "更多高级能力需要更新图片服务。",
   "images.params": "高级选项",
   "images.outputFormat": "输出格式",
-  "images.compression": "压缩质量",
   "images.complexity": "画面规划复杂度",
-  "images.customSize": "自定义尺寸",
-  "images.width": "宽度（像素）",
-  "images.height": "高度（像素）",
   "images.xhigh": "超高",
   "images.max": "最高",
   "images.invalidParameters": "所选参数不适用于当前模型，请调整后提交。",
@@ -541,6 +600,8 @@ const zh = {
   "images.completed": "本地结果已保存",
   "images.cancelHint": "取消本地等待不能保证服务端停止或不结算。",
   "images.promptLimit": "提示词超过 32768 个 UTF-8 字节。",
+  "images.promptCharacterLimit": "提示词超过当前模型的字符上限。",
+  "images.errorLimit": "图片内容、尺寸或完整请求超过本机处理上限。",
   "images.requestedModel": "请求模型",
   "images.unverified": "此模型的参数组合尚未验证",
   "images.backgroundUsageHint": "透明背景可能增加图片 token 用量。",
@@ -847,7 +908,8 @@ const en: Record<keyof typeof zh, string> = {
   "nav.images": "Images",
   "nav.access": "Access",
   "nav.apiKeys": "API Key",
-  "access.chooseKeyFirst": "Select an API key first.",
+  "access.chooseKeyFirst":
+    'Select a key on the "API Key" page in the left sidebar before connecting.',
   "access.manageKeys": "Manage keys",
   "access.selectKey": "Select an API key",
   "access.updatingKey":
@@ -1149,7 +1211,11 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexEvidenceBoundary":
     "An installed version's configuration contract, template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
   "access.codexBindingUnavailable":
-    "This model has no available Codex template declaration. Refresh the model list or ask an administrator to declare one, then preview again.",
+    "The available models have no compatible Codex template declarations. Ask an administrator to check the model templates, then preview again.",
+  "access.codexModelIdUnsupported":
+    "The model ID exceeds the format or length supported by the Codex catalog. Ask an administrator to check the model ID.",
+  "app.refreshSucceeded": "Data refreshed.",
+  "app.refreshFailed": "Could not refresh data. Please try again later.",
   "access.codexReasoningUnavailable":
     "The current reasoning policy cannot produce a complete catalog. Refresh model permissions and preview again.",
   "access.codexCatalogChanged":
@@ -1162,6 +1228,35 @@ const en: Record<keyof typeof zh, string> = {
     "Choose an authorized model, describe your idea, or add references to edit.",
   "images.create": "Create",
   "images.history": "Local history",
+  "images.historyTitle": "Image title",
+  "images.rename": "Rename image",
+  "images.renameHint":
+    "Leave empty to use the request ID. Up to 120 characters. The original request ID is retained.",
+  "images.invalidTitle": "Use up to 120 characters without control characters.",
+  "images.chooseKeyFirst":
+    "Choose a valid API key before submitting an image request.",
+  "images.keyRevoked":
+    "The current API key is no longer valid. Choose a valid key.",
+  "images.noPermission":
+    "This account cannot submit image requests. Check its permissions.",
+  "images.noModels":
+    "No image models are available on this node. Choose another node or refresh.",
+  "images.chooseModel": "Choose an image model.",
+  "images.enterPrompt":
+    "Enter a prompt describing the image or the changes you want.",
+  "images.fixPrompt": "Shorten the prompt to fit the limit before submitting.",
+  "images.fixParameters":
+    "Correct the image parameters marked above before submitting.",
+  "images.generationInProgress":
+    "An image task is in progress. Wait for it to finish before submitting again.",
+  "images.submitting": "Submitting the image request…",
+  "images.preparingInputs": "Preparing your reference images…",
+  "images.prepareInputsFailed":
+    "Reference images are not ready. Retry or add them again.",
+  "images.editUnsupported":
+    "This model does not support image editing. Choose another model.",
+  "images.generationUnsupported":
+    "This model does not support image generation. Choose another model.",
   "images.prompt": "Prompt",
   "images.promptPlaceholder":
     "Describe the subject, composition, lighting and style. Adding references uses the editing endpoint.",
@@ -1169,13 +1264,58 @@ const en: Record<keyof typeof zh, string> = {
   "images.addInputs": "Add references",
   "images.drop": "Drop PNG, JPEG or WebP images, or select files",
   "images.noInputs": "No reference images",
+  "images.mask": "Edit mask",
+  "images.markup": "Markup layer",
+  "images.addMask": "Choose mask PNG",
+  "images.addMarkup": "Choose markup PNG",
+  "images.materialHint":
+    "Use either a mask or markup: a transparent PNG matching the first reference image.",
+  "images.stream": "Streaming previews",
+  "images.partialImages": "Partial preview count",
+  "images.streamHint":
+    "Show previews during generation. Only completed results enter history.",
+  "images.moderation": "Content moderation",
+  "images.inputFidelity": "Input fidelity",
+  "images.frameCount": "GIF frames",
+  "images.frameDuration": "Frame duration (ms)",
+  "images.svgAuthor": "SVG author model",
+  "images.svgAuthorPlaceholder": "Leave blank for the service default",
+  "images.svgReasoning": "SVG author reasoning",
+  "images.customSize": "Custom size",
+  "images.width": "Width",
+  "images.height": "Height",
+  "images.compression": "Compression (%)",
+  "images.subscriptionRoute": "This request uses subscription image service",
+  "images.apiRoute":
+    "This request uses the image API and advanced sales pricing",
+  "images.apiUnavailable":
+    "The requested advanced image features are not configured.",
+  "images.priceUnavailable":
+    "Advanced image sales pricing is incomplete. Contact your administrator.",
+  "images.unavailableParameters": "These controls are currently unavailable:",
+  "images.invalidMaterial":
+    "Add a reference image and a PNG mask or markup of matching dimensions.",
+  "images.invalidSvg":
+    "SVG requires a single generation without reference images.",
+  "images.invalidMediaOptions":
+    "This format cannot use the selected streaming, compression, or animation options.",
+  "images.svgAuthorRequired":
+    "Enter a valid SVG author model and supported reasoning effort.",
+  "images.partialPreview": "Generation preview, not the final result",
+  "images.copyFirstFrame": "Copy first frame",
+  "images.rasterReferenceOnly":
+    "References support PNG, JPEG or WebP. Convert the image first.",
+  "images.gifPreviewHint":
+    "The animation preview is scaled down. Saving preserves the original dimensions and animation.",
+  "images.unsafeContent":
+    "The SVG contains scripts or external resources that cannot be previewed safely.",
+  "images.characters": "characters",
+  "images.serviceDefault": "Use defaults",
+  "images.apiUpgradeHint":
+    "Update the image service to enable more advanced controls.",
   "images.params": "Advanced options",
   "images.outputFormat": "Output format",
-  "images.compression": "Compression quality",
   "images.complexity": "Image planning complexity",
-  "images.customSize": "Custom dimensions",
-  "images.width": "Width (pixels)",
-  "images.height": "Height (pixels)",
   "images.xhigh": "Extra high",
   "images.max": "Maximum",
   "images.invalidParameters":
@@ -1230,6 +1370,10 @@ const en: Record<keyof typeof zh, string> = {
   "images.cancelHint":
     "Stopping local waiting does not guarantee execution or billing stops.",
   "images.promptLimit": "Prompt exceeds 32768 UTF-8 bytes.",
+  "images.promptCharacterLimit":
+    "The prompt exceeds this model's character limit.",
+  "images.errorLimit":
+    "Image content, dimensions or the complete request exceeds local processing limits.",
   "images.requestedModel": "Requested model",
   "images.unverified": "This model’s parameter combination is unverified",
   "images.backgroundUsageHint":

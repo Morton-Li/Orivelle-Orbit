@@ -89,7 +89,7 @@ onUnmounted(() => {
       :title="t('app.refreshHint')"
       :disabled="!store.native || store.busy.has('refresh')"
       :aria-busy="store.busy.has('refresh')"
-      @click="store.refresh(true)"
+      @click="store.refreshData()"
     >
       <OrbitIcon name="refresh" />{{ t("action.refresh") }}
     </button>
@@ -152,7 +152,11 @@ onUnmounted(() => {
       v-if="store.notice"
       class="toast"
       :class="`toast-${store.notice.tone}`"
-      :role="store.notice.tone === 'error' ? 'alert' : 'status'"
+      :role="
+        store.notice.tone === 'error' || store.notice.tone === 'warning'
+          ? 'alert'
+          : 'status'
+      "
     >
       <span>{{ store.notice.text }}</span
       ><button

@@ -806,8 +806,26 @@ textarea::placeholder {
   font-size: 14px;
   font-weight: 600;
 }
-.claude-connect {
+.access-client-action {
   justify-self: end;
+  width: 140px;
+  flex-shrink: 0;
+}
+.access-connect-actions {
+  display: contents;
+}
+.claude-connect-actions {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 13px;
+}
+.claude-connect-actions .field-hint {
+  order: -1;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
 }
 .section-block {
   margin-top: 30px;
@@ -1163,6 +1181,39 @@ textarea::placeholder {
   font-size: 12px;
   font-weight: 560;
 }
+.history-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.history-title-row strong {
+  flex: 1;
+  min-width: 0;
+}
+.history-rename {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+}
+.history-rename-form {
+  display: grid;
+  gap: 8px;
+}
+.image-submit-actions {
+  display: grid;
+  gap: 8px;
+}
+.image-submit-hint {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
 .history-card-info p {
   font-size: 10px;
   margin-top: 5px;
@@ -1439,6 +1490,11 @@ textarea::placeholder {
 .toast-success {
   border-color: var(--success);
 }
+.toast-warning {
+  border-color: var(--warning);
+  color: var(--warning);
+  font-size: 14px;
+}
 .context-banner {
   padding: 9px 30px;
   background: var(--soft);
@@ -1518,9 +1574,6 @@ textarea::placeholder {
   .access-client-controls {
     gap: 14px;
     padding-right: 20px;
-  }
-  .access-client-controls .button {
-    width: 100%;
   }
   .claude-mapping {
     grid-template-columns: minmax(0, 1fr);
@@ -2150,4 +2203,44 @@ textarea::placeholder {
   .usage-pagination > span {
     display: none;
   }
+}
+
+.image-route-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0;
+}
+.image-route-api {
+  color: var(--text);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.image-stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.image-stream-toggle input {
+  width: 16px;
+  height: 16px;
+}
+.image-materials .field-heading {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.partial-image-preview {
+  margin: 16px 0;
+  display: grid;
+  gap: 10px;
+}
+.partial-image-preview img {
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+  border-radius: 8px;
 }

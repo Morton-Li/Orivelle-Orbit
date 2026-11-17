@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { defineStore } from "pinia";
 import {
   call,
@@ -17,6 +17,8 @@ import type {
   ClientView,
   IpcCommands,
   ModelView,
+  ImageInput,
+  ImageParameters,
   ScopedErrorEvent,
   SettingsView,
   TaskView,
@@ -27,6 +29,16 @@ import { locale, t } from "../shared/i18n";
 import { configPolicyMessage } from "../shared/format";
 import { updateFailureMessage } from "../shared/updates";
 
+// These failures leave the confirmed catalog without a compatible model and
+// require model configuration changes. Network retries and provider switches
+// do not require a background notification.
+const catalogActionErrors = new Set([
+  "codex_binding_unavailable",
+  "codex_reasoning_unavailable",
+  "codex_catalog_reasoning_invalid",
+  "codex_model_id_unsupported",
+  "codex_models_unavailable",
+]);
 const defaultSettings: SettingsView = {
   theme: "system",
   locale: "zh-CN",
@@ -92,6 +104,19 @@ export const useOrbitStore = defineStore("orbit", () => {
   const modelsLoading = ref(false);
   // Workbench selection lasts for this app session, independently of saved history.
   const imagePreviewTaskId = ref<string | null>(null);
+  const emptyImageDraft = () => ({
+    prompt: "",
+    modelId: "",
+    inputs: [] as ImageInput[],
+    mask: null as ImageInput | null,
+    markup: null as ImageInput | null,
+    parameters: {} as ImageParameters,
+    advanced: false,
+  });
+  const imageDraft = reactive(emptyImageDraft());
+  const imageDraftRefreshing = ref(false);
+  const imageDraftInputsError = ref(false);
+  let imageDraftGeneration = 0;
   const busy = ref(new Set<string>());
   const update = ref<UpdateView | null>(null);
   const updateOperation = ref<"check" | "download" | "install" | null>(null);
@@ -108,7 +133,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   );
   const notice = ref<{
     text: string;
-    tone: "success" | "error" | "neutral";
+    tone: "success" | "error" | "warning" | "neutral";
   } | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const loginOpen = ref(false);
@@ -126,6 +151,8 @@ export const useOrbitStore = defineStore("orbit", () => {
   let unsubscribeAuthorization: (() => void) | undefined;
   let modelGeneration = 0;
   let initPromise: Promise<void> | undefined;
+  let refreshFeedback = false;
+  let lastCatalogIssue: string | null = null;
   let settingsGeneration = 0;
   const account = computed(() =>
     ["authenticated", "refreshing"].includes(state.value.session.status)
@@ -143,6 +170,11 @@ export const useOrbitStore = defineStore("orbit", () => {
   const scope = computed(() =>
     activeConnection.value
       ? `${activeConnection.value.account_id}/${activeConnection.value.id}/${activeConnection.value.revision}/${activeConnection.value.credential_revision ?? ""}/${activeConnection.value.node_id ?? ""}`
+      : "none",
+  );
+  const imageDraftScope = computed(() =>
+    activeConnection.value
+      ? `${activeConnection.value.panel_origin}/${activeConnection.value.account_id}/${activeConnection.value.id}`
       : "none",
   );
   const canLogin = computed(
@@ -217,7 +249,7 @@ export const useOrbitStore = defineStore("orbit", () => {
 
   function notify(
     text: string,
-    tone: "success" | "error" | "neutral" = "neutral",
+    tone: "success" | "error" | "warning" | "neutral" = "neutral",
     durationMs = tone === "error" ? 6000 : 4000,
   ) {
     clearNotice();
@@ -228,6 +260,45 @@ export const useOrbitStore = defineStore("orbit", () => {
     clearTimeout(noticeTimer);
     noticeTimer = undefined;
     notice.value = null;
+  }
+  async function refreshImageDraftInputs() {
+    const generation = ++imageDraftGeneration;
+    const captured = scope.value;
+    const connection = activeConnection.value;
+    const selected = [
+      ...imageDraft.inputs,
+      ...[imageDraft.mask, imageDraft.markup].filter(
+        (input): input is ImageInput => input !== null,
+      ),
+    ];
+    imageDraftInputsError.value = false;
+    imageDraftRefreshing.value = !!connection && selected.length > 0;
+    if (!connection || !selected.length) return;
+    try {
+      const refreshed = await call("refresh_image_inputs", {
+        connection_id: connection.id,
+        expected_revision: connection.revision,
+        input_ids: [...new Set(selected.map((input) => input.id))],
+      });
+      if (generation !== imageDraftGeneration || captured !== scope.value)
+        return;
+      const byId = new Map(refreshed.map((input) => [input.id, input]));
+      imageDraft.inputs = imageDraft.inputs.map(
+        (input) => byId.get(input.id) ?? input,
+      );
+      if (imageDraft.mask)
+        imageDraft.mask = byId.get(imageDraft.mask.id) ?? imageDraft.mask;
+      if (imageDraft.markup)
+        imageDraft.markup = byId.get(imageDraft.markup.id) ?? imageDraft.markup;
+    } catch (error) {
+      if (generation === imageDraftGeneration && captured === scope.value) {
+        imageDraftInputsError.value = true;
+        report(error);
+      }
+    } finally {
+      if (generation === imageDraftGeneration)
+        imageDraftRefreshing.value = false;
+    }
   }
   function report(error: unknown) {
     const code = error instanceof OrbitError ? error.code : "operation_failed";
@@ -287,8 +358,21 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       return false;
     const before = scope.value;
+    const beforeDraftScope = imageDraftScope.value;
+    const wasInitialized = initialized.value;
+    const previousSync = state.value.clients.find(
+      (client) => client.client === "codex",
+    )?.catalog_sync;
     const previousAccountId = account.value?.id;
     state.value = next;
+    if (imageDraftScope.value !== beforeDraftScope) {
+      ++imageDraftGeneration;
+      imageDraftRefreshing.value = false;
+      imageDraftInputsError.value = false;
+      Object.assign(imageDraft, emptyImageDraft());
+    } else if (scope.value !== before) {
+      void refreshImageDraftInputs();
+    }
     initialized.value = true;
     locale.value = next.settings.locale;
     loginPending.value = next.pending_authorization !== null;
@@ -305,7 +389,7 @@ export const useOrbitStore = defineStore("orbit", () => {
       imagePreviewTaskId.value = null;
       modelGeneration++;
       models.value = [];
-      void loadModels();
+      void loadModels({ silent: refreshFeedback });
     }
     if (
       !connectionTasks.value.some(
@@ -318,9 +402,34 @@ export const useOrbitStore = defineStore("orbit", () => {
           ["queued", "sending", "waiting", "saving"].includes(task.state),
         )?.id ?? null;
     }
+    const sync = next.clients.find(
+      (client) => client.client === "codex",
+    )?.catalog_sync;
+    if (before !== scope.value || sync?.state !== "blocked")
+      lastCatalogIssue = null;
+    if (
+      wasInitialized &&
+      !busy.value.has("refresh") &&
+      before === scope.value &&
+      sync?.state === "blocked" &&
+      sync.error &&
+      catalogActionErrors.has(sync.error) &&
+      sync.checked_at !== previousSync?.checked_at &&
+      next.session.status === "authenticated" &&
+      switchSnapshots.value.some((snapshot) => snapshot.client === "codex")
+    ) {
+      const issue = `${scope.value}/${sync.error}`;
+      if (issue !== lastCatalogIssue) {
+        const reason = configPolicyMessage(sync.error);
+        if (reason) notify(reason, "warning", 6000);
+        lastCatalogIssue = issue;
+      }
+    }
     return true;
   }
-  async function loadModels(): Promise<boolean> {
+  async function loadModels(
+    options: { silent?: boolean } = {},
+  ): Promise<boolean> {
     const connection = activeConnection.value;
     const capturedScope = scope.value;
     const generation = ++modelGeneration;
@@ -341,7 +450,11 @@ export const useOrbitStore = defineStore("orbit", () => {
       );
       return true;
     } catch (error) {
-      if (generation === modelGeneration && capturedScope === scope.value)
+      if (
+        !options.silent &&
+        generation === modelGeneration &&
+        capturedScope === scope.value
+      )
         report(error);
       return false;
     } finally {
@@ -373,12 +486,21 @@ export const useOrbitStore = defineStore("orbit", () => {
       busy.value.delete(key);
     }
   }
-  async function refresh(remote = false) {
+  async function refresh(remote = false, notifyResult = false) {
     if (busy.value.has("refresh")) return;
     busy.value.add("refresh");
+    refreshFeedback = notifyResult;
+    const originalScope = scope.value;
+    let succeeded = false;
     try {
-      const result = await perform("bootstrap", "bootstrap", {});
-      if (result) acceptState(result);
+      const result = await perform(
+        "bootstrap",
+        "bootstrap",
+        {},
+        { silent: notifyResult },
+      );
+      if (!result) return;
+      acceptState(result);
       const session = state.value.session;
       // A successful authorization can precede its first account response.
       // Recover that read without allowing paid actions or rendering another actor.
@@ -397,18 +519,38 @@ export const useOrbitStore = defineStore("orbit", () => {
         state.value.session.status === "authenticated"
       ) {
         const captured = scope.value;
-        const updated = await perform("refresh-account", "refresh_account", {
-          connection_id: connection.id,
-          expected_revision: connection.revision,
-        });
-        if (updated) {
-          acceptState(updated);
-          if (captured === scope.value) await loadModels();
-        }
+        const updated = await perform(
+          "refresh-account",
+          "refresh_account",
+          {
+            connection_id: connection.id,
+            expected_revision: connection.revision,
+          },
+          { silent: notifyResult },
+        );
+        if (!updated) return;
+        acceptState(updated);
+        if (captured !== scope.value) return;
+        if (
+          activeConnection.value?.node_id &&
+          !(await loadModels({ silent: notifyResult }))
+        )
+          return;
       }
+      succeeded = true;
     } finally {
+      refreshFeedback = false;
       busy.value.delete("refresh");
+      if (notifyResult && originalScope === scope.value) {
+        notify(
+          t(succeeded ? "app.refreshSucceeded" : "app.refreshFailed"),
+          succeeded ? "success" : "error",
+        );
+      }
     }
+  }
+  async function refreshData() {
+    await refresh(true, true);
   }
   async function initialize(): Promise<void> {
     if (initPromise) return initPromise;
@@ -660,6 +802,11 @@ export const useOrbitStore = defineStore("orbit", () => {
     models,
     modelsLoading,
     imagePreviewTaskId,
+    imageDraft,
+    imageDraftScope,
+    imageDraftRefreshing,
+    imageDraftInputsError,
+    refreshImageDraftInputs,
     imagePreviewTask,
     busy,
     update,
@@ -692,6 +839,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     loadModels,
     perform,
     refresh,
+    refreshData,
     initialize,
     dispose,
     login,
