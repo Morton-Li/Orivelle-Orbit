@@ -164,7 +164,7 @@ async fn run_case(case: &str, stream: bool, edit: bool) {
         "fixture_boundaries":["preseeded local session","in-memory FakeVault","controlled test upstream"],
         "expected_fixture_chain":["local Edge main","local Panel machine authorization and MySQL settlement","controlled upstream"],
         "outbound_client_media":"application/json",
-        "expected_provider_edit_media":if edit {Some("multipart/form-data")}else{None},
+        "expected_provider_edit_media":if edit {Some("application/json")}else{None},
         "request_sha256":request_hash,"request_id":snapshot.task.request_id,
         "state":snapshot.task.state,"parameters":snapshot.task.parameters,
         "api_contract":snapshot.api_contract,
