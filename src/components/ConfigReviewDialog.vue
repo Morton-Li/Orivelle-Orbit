@@ -1,15 +1,33 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
-import type { ConfigPreview, ConfigResult } from "../shared/contracts";
-import { t } from "../shared/i18n";
+import type {
+  ClientKind,
+  ConfigPreview,
+  ConfigResult,
+} from "../shared/contracts";
+import { t, type MessageKey } from "../shared/i18n";
+import {
+  matchesReviewConnection,
+  matchesReviewModel,
+} from "../shared/config-review";
 import { configPolicyMessage, nodeName } from "../shared/format";
 import OrbitDialog from "./OrbitDialog.vue";
 import OrbitIcon from "./OrbitIcon.vue";
-const props = defineProps<{ preview: ConfigPreview | null }>();
-const emit = defineEmits<{ close: []; applied: [result: ConfigResult] }>();
+const props = defineProps<{
+  preview: ConfigPreview | null;
+  reviewClient?: ClientKind | null;
+  checking?: boolean;
+  error?: string;
+}>();
+const emit = defineEmits<{
+  close: [];
+  retry: [];
+  applied: [result: ConfigResult];
+}>();
 const store = useOrbitStore();
 const now = ref(Date.now());
+const failure = ref<{ id: string; message: string } | null>(null);
 const rejectedPreviewIds = ref(new Set<string>());
 const targetClient = computed(() =>
   store.state.clients.find((item) => item.client === props.preview?.client),
@@ -23,15 +41,85 @@ const previewNodeName = computed(() => {
   const node = store.state.nodes[index];
   return node ? nodeName(node, index) : t("access.node");
 });
-const timer = window.setInterval(() => {
-  now.value = Date.now();
-}, 1000);
-onUnmounted(() => window.clearInterval(timer));
+watch(
+  () => props.preview?.expires_at,
+  (expiry, _, onCleanup) => {
+    if (!expiry) return;
+    now.value = Date.now();
+    const timer = window.setInterval(() => {
+      now.value = Date.now();
+    }, 1000);
+    onCleanup(() => window.clearInterval(timer));
+  },
+  { immediate: true },
+);
+
+const switchReview = computed(() => {
+  const preview = props.preview;
+  return preview?.operation === "apply" && preview.expires_at === null
+    ? preview
+    : null;
+});
+const reviewIssue = computed<MessageKey | null>(() => {
+  const preview = switchReview.value;
+  if (!preview) return null;
+  if (!matchesReviewConnection(preview, store.activeConnection))
+    return "access.scopeChanged";
+  if (store.activeConnection?.permission_state === "readonly")
+    return "access.readonly";
+  if (["expired", "revoked", "logged_out"].includes(store.state.session.status))
+    return "access.connectAccountFirst";
+  if (
+    ["revoked", "permission_denied"].includes(
+      store.state.session.inference_credential_status,
+    )
+  )
+    return "access.chooseKeyFirst";
+  const client = targetClient.value;
+  if (client?.managed === "yes" || client?.configuration_access === "blocked")
+    return "client.configurationBlocked";
+  if (client?.configuration_access === "unverified")
+    return "access.checkConfiguration";
+  if (!client?.installed) return "access.installClientFirst";
+  const codex = preview.client === "codex";
+  const changed = codex
+    ? "access.codexConfigurationChanged"
+    : "access.claudeConfigurationChanged";
+  if (!client.platform_supported || client.version !== preview.target_version)
+    return changed;
+  const target = codex
+    ? preview.codex_configuration_target
+    : preview.claude_configuration_target;
+  if (
+    !target?.revision ||
+    (codex
+      ? !preview.codex_catalog ||
+        !preview.codex_configuration_target?.cli_version
+      : !preview.claude_configuration_target?.app_version ||
+        preview.claude_configuration_target.app_version !== client.version)
+  )
+    return codex
+      ? "access.codexConfigurationUnavailable"
+      : "access.claudeConfigurationUnavailable";
+  if (
+    client.configuration_access !== "allowed" ||
+    !client.configuration_access_revision
+  )
+    return "access.checkConfiguration";
+  if (client.configuration_access_revision !== target.revision) return changed;
+  if (!matchesReviewModel(preview, store.models))
+    return store.modelsLoading
+      ? "access.waitModels"
+      : "access.reviewModelsChanged";
+  if (!store.ready) return "access.waitConnection";
+  return null;
+});
 const current = computed(() => {
   const preview = props.preview;
   if (!preview || rejectedPreviewIds.value.has(preview.id)) return false;
+  if (switchReview.value) return reviewIssue.value === null;
   const client = targetClient.value;
-  const expiresAt = Date.parse(preview.expires_at);
+  const expiresAt = preview.expires_at ? Date.parse(preview.expires_at) : NaN;
   if (
     !client?.installed ||
     !client.platform_supported ||
@@ -76,9 +164,11 @@ const current = computed(() => {
     if (
       preview.restore_coordination != null &&
       (preview.client !== "claude" ||
-        !["claude_main_preferences_v1", "claude_main_settings_v2"].includes(
-          preview.restore_coordination,
-        ))
+        ![
+          "claude_main_preferences_v1",
+          "claude_main_settings_v2",
+          "claude_library_settings_v3",
+        ].includes(preview.restore_coordination))
     )
       return false;
     const source = preview.restore_source;
@@ -96,25 +186,26 @@ const current = computed(() => {
         ["available", "conflict"].includes(backup.state),
     );
   }
-  const connection = store.activeConnection;
-  if (!connection) return false;
   return (
-    connection.id === preview.context.connection_id &&
-    connection.account_id === preview.context.account_id &&
-    connection.revision === preview.context.connection_revision &&
-    connection.credential_revision === preview.context.credential_revision &&
-    connection.node_id === preview.context.node_id &&
-    store.models.some(
-      (model) =>
-        model.id === preview.model_id &&
-        model.revision === preview.context.model_revision,
-    )
+    matchesReviewConnection(preview, store.activeConnection) &&
+    matchesReviewModel(preview, store.models)
   );
 });
 watch(
-  () => [props.preview?.id ?? null, current.value] as const,
-  ([id, valid]) => {
-    if (id && !valid) rejectedPreviewIds.value.add(id);
+  () => [props.preview?.id, current.value, reviewIssue.value] as const,
+  ([id, valid, issue]) => {
+    if (!id || valid || rejectedPreviewIds.value.has(id)) return;
+    if (switchReview.value) {
+      if (
+        !issue ||
+        issue === "access.checkConfiguration" ||
+        issue === "access.waitConnection" ||
+        issue === "access.waitModels"
+      )
+        return;
+      failure.value = { id, message: t(issue) };
+    }
+    rejectedPreviewIds.value.add(id);
   },
   { immediate: true, flush: "sync" },
 );
@@ -163,19 +254,34 @@ async function exportImport() {
 async function confirm() {
   const preview = props.preview;
   if (!preview || !allowed.value) return;
-  const result =
+  let message: string | undefined;
+  const result = await store.perform(
+    "config-apply",
     preview.operation === "restore"
-      ? await store.perform("config-apply", "restore_client_config", {
-          preview_id: preview.id,
-          confirmed: true,
-        })
-      : await store.perform("config-apply", "apply_client_config", {
-          preview_id: preview.id,
-          confirmed: true,
-        });
+      ? "restore_client_config"
+      : "apply_client_config",
+    { preview_id: preview.id, confirmed: true },
+    {
+      onError: (error) => {
+        message = store.report(error);
+      },
+    },
+  );
   if (!result) {
+    if (preview.expires_at === null || preview.client === "codex")
+      failure.value = {
+        id: preview.id,
+        message:
+          message ??
+          t(
+            store.state.maintenance_active
+              ? "common.updateMaintenance"
+              : "common.failed",
+          ),
+      };
     rejectedPreviewIds.value.add(preview.id);
-    if (preview.client === "claude") await store.refresh();
+    if (preview.client === "claude" && preview.expires_at !== null)
+      await store.refresh();
   }
   if (result) {
     await store.refresh();
@@ -195,7 +301,7 @@ async function confirm() {
 </script>
 <template>
   <OrbitDialog
-    :open="preview !== null"
+    :open="!!reviewClient || preview !== null"
     :title="
       t(
         preview?.operation === 'restore'
@@ -216,7 +322,35 @@ async function confirm() {
       }
     "
   >
-    <template v-if="preview">
+    <template v-if="reviewClient && (!preview || error)">
+      <p v-if="error" class="error-text" role="alert">{{ error }}</p>
+      <p v-else role="status">
+        {{
+          t(
+            reviewClient === "claude"
+              ? "access.checkingClaude"
+              : "access.checkingCodex",
+          )
+        }}
+      </p>
+      <div class="dialog-actions">
+        <button class="button secondary" @click="emit('close')">
+          {{ t("action.cancel") }}
+        </button>
+        <button
+          v-if="error"
+          class="button primary"
+          :disabled="checking"
+          @click="emit('retry')"
+        >
+          {{ t("access.checkAgain") }}
+        </button>
+        <button v-else class="button primary" disabled>
+          {{ t("access.confirmApply") }}
+        </button>
+      </div>
+    </template>
+    <template v-else-if="preview">
       <dl v-if="preview.operation === 'apply'" class="preview-context">
         <div>
           <dt>{{ t("access.node") }}</dt>
@@ -236,11 +370,15 @@ async function confirm() {
         role="alert"
       >
         {{
-          t(
-            preview.operation === "restore"
-              ? "access.restorePreviewExpired"
-              : "access.previewExpired",
-          )
+          failure?.id === preview.id
+            ? failure.message
+            : reviewIssue
+              ? t(reviewIssue)
+              : t(
+                  preview.operation === "restore"
+                    ? "access.restorePreviewExpired"
+                    : "access.previewExpired",
+                )
         }}
       </p>
       <p v-else-if="preview.blocking_reason" class="error-text" role="alert">
@@ -264,6 +402,15 @@ async function confirm() {
           @click="exportImport"
         >
           {{ t("access.exportImport") }}
+        </button>
+        <button
+          v-if="
+            reviewClient && (!current || preview.blocking_reason) && !configBusy
+          "
+          class="button secondary"
+          @click="emit('retry')"
+        >
+          {{ t("access.checkAgain") }}
         </button>
         <button class="button primary" :disabled="!allowed" @click="confirm">
           <OrbitIcon name="check" />{{

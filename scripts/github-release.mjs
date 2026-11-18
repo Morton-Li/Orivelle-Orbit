@@ -9,7 +9,6 @@ import { digest, freezeSource } from "./candidate-evidence.mjs";
 const versionPattern =
   /^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$/;
 const repositoryPattern = /^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/;
-export const updateRepository = "Orivelle-Labs/Orbit";
 
 export function releaseVersion(tag) {
   const version = tag?.startsWith("v") && tag.slice(1);
@@ -31,7 +30,7 @@ function repositoryUrl(repository) {
   return "https://github.com/" + repository;
 }
 
-export function updateEndpoint(repository = updateRepository) {
+export function updateEndpoint(repository) {
   return repositoryUrl(repository) + "/releases/latest/download/latest.json";
 }
 

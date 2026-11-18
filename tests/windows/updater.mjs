@@ -6,11 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
-import {
-  releaseNames,
-  updateEndpoint,
-  updateRepository,
-} from "../../scripts/github-release.mjs";
+import { releaseNames, updateEndpoint } from "../../scripts/github-release.mjs";
 
 assert.equal(process.platform, "win32");
 assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
@@ -34,8 +30,8 @@ const invalidSignature = (
 const wrongVersionSignature = (
   await readFile(path.join(directory, "wrong-version-setup.exe.sig"), "utf8")
 ).trim();
-const manifestUrl = new URL(updateEndpoint());
-const artifactUrl = `https://github.com/${updateRepository}/releases/download/v0.3.0/${releaseNames("0.3.0").windows}`;
+const manifestUrl = new URL(updateEndpoint(build.repository));
+const artifactUrl = `https://github.com/${build.repository}/releases/download/v0.3.0/${releaseNames("0.3.0").windows}`;
 let mode = "valid";
 const requests = [];
 const receipt = {

@@ -17,6 +17,8 @@ export function configPolicyMessage(code: string): string | null {
     return t("access.claudeMappingUnavailable");
   if (code === "claude_native_migration_required")
     return t("access.claudeNativeMigrationRequired");
+  if (code === "codex_signature_verification_timeout")
+    return t("access.codexVerificationTimeout");
   if (code === "claude_signature_verification_timeout")
     return t("access.claudeVerificationTimeout");
   if (code === "managed_policy_unverified") return t("access.policyUnverified");
@@ -64,6 +66,8 @@ export function configPolicyMessage(code: string): string | null {
     return t("access.codexRestoreContextUnavailable");
   if (code === "codex_config_override_unverified")
     return t("access.codexOverrideUnavailable");
+  if (code === "codex_configuration_invalid")
+    return t("access.codexConfigInvalid");
   if (
     [
       "codex_catalog_version_unverified",

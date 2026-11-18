@@ -1201,12 +1201,35 @@ async fn claude_mapping_activation_restart_reuses_only_original_port_and_preserv
         .collect();
     f.service.stop_claude_mappings();
     let collider = take_stopped_mapping_port(plan.port).await;
+    // Upgrade a previously saved route after Claude itself edited an unrelated preference.
+    let mut old: ClientView = f
+        .service
+        .store
+        .get("client-state", "claude")
+        .unwrap()
+        .unwrap();
+    old.claude_route_revision = None;
+    f.service
+        .store
+        .put("client-state", "claude", "local", &old)
+        .unwrap();
     let reopened = Service::new(
         f.service.store.clone(),
         f.vault.clone(),
         f.service.paths.clone(),
     )
     .unwrap();
+    assert_eq!(
+        reopened
+            .bootstrap()
+            .unwrap()
+            .clients
+            .iter()
+            .find(|c| c.client == ClientKind::Claude)
+            .unwrap()
+            .configuration_state,
+        "saved"
+    );
     let calls = Arc::new(AtomicU64::new(0));
     let count = calls.clone();
     reopened.http.scripted_mapping(Arc::new(move |_| {
@@ -1985,7 +2008,7 @@ fn claude_mapping_helper_modes_and_late_epoch_never_expose_the_upstream_key() {
     let target = observation.claude_configuration_target.as_ref().unwrap();
     let mut context = frozen(&f);
     let manager = MappingManager::default();
-    let mapping = manager
+    let (mapping, _ticket) = manager
         .reserve(
             &context.binding_id,
             &context.profile_id,
@@ -2580,41 +2603,171 @@ async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_rev
             })
         })
     }));
-    // This is the Service entry used by the Tauri preview/apply commands.
-    let preview = fixture
-        .service
-        .preview_client_config_refreshed(
+    let mapping = ClaudeModelMapping {
+        sonnet: fixture.model.clone(),
+        opus: fixture.model.clone(),
+        haiku: fixture.model.clone(),
+    };
+    let service = &fixture.service;
+    let preview = service
+        .preview_switch_config(
             &fixture.record.view.id,
             fixture.record.view.revision,
             ClientKind::Claude,
-            &fixture.model,
+            Some(&mapping),
         )
         .await
         .unwrap();
-    assert!(preview.can_apply && preview.paths.len() == 3);
-    assert!(!fixture.service.paths.claude_library.exists());
-    let saved = fixture
-        .service
+    assert!(preview.can_apply && preview.paths.len() == 3 && preview.expires_at.is_none());
+    assert!(!service.paths.claude_library.exists());
+    assert!(
+        service
+            .store
+            .list::<Journal>("journal", None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        service
+            .store
+            .list::<crate::claude_mapping::MappingRecord>("claude-mapping", None)
+            .unwrap()
+            .is_empty()
+    );
+    {
+        let pending = service.previews.lock().unwrap();
+        let review = &pending[&preview.id];
+        assert!(
+            review.claude_draft.is_some()
+                && review.journal_id.is_none()
+                && review._mapping_reservation.is_none()
+        );
+        assert!(review.claude_context.as_ref().unwrap().mapping.is_none());
+    }
+    // Another switcher adds an inactive entry and the user edits MCP settings while reviewing.
+    fs::create_dir_all(&service.paths.claude_library).unwrap();
+    let latest_index =
+        br#"{ "entries": [{"id":"other-2","name":"Personal","weight":1.0000000000000000000001}] }"#;
+    let latest_main = br#"{ "mcpServers" : {"local":{"command":"example"}} }"#;
+    fs::write(&preview.paths[1], latest_index).unwrap();
+    fs::write(&preview.paths[2], latest_main).unwrap();
+    let saved = service
         .apply_client_config_refreshed(&preview.id, true)
         .await
         .unwrap();
-    tests::mark_switch_snapshot(&fixture.service, saved.snapshot_id.as_ref().unwrap());
     assert_eq!(saved.state, "saved");
     assert_eq!(
         calls.lock().unwrap().as_slice(),
         ["bootstrap", "models", "bootstrap", "models"]
     );
     assert!(preview.paths.iter().all(|path| Path::new(path).is_file()));
-    assert_unobserved(&fixture.service, "saved");
-    let restore = fixture
-        .service
-        .preview_restore(saved.snapshot_id.as_ref().unwrap())
+    assert!(
+        fs::read_to_string(&preview.paths[1])
+            .unwrap()
+            .contains("1.0000000000000000000001")
+    );
+    assert_unobserved(service, "saved");
+    assert_eq!(
+        service
+            .apply_client_config_refreshed(&preview.id, true)
+            .await
+            .unwrap_err()
+            .code,
+        "preview_expired"
+    );
+    let mappings = service
+        .store
+        .list::<crate::claude_mapping::MappingRecord>("claude-mapping", None)
         .unwrap();
-    fixture
-        .service
+    assert_eq!(mappings.len(), 1);
+    let plan = mappings[0].context.mapping.as_ref().unwrap();
+    assert!(mappings[0].committed && plan.port > 0 && plan.models.as_ref() == Some(&mapping));
+    let restore = service
+        .preview_restore_with_coordination(
+            saved.snapshot_id.as_ref().unwrap(),
+            Some(ClaudeRestoreCoordination::LibrarySettingsV3),
+        )
+        .unwrap();
+    service
         .apply_client_config(&restore.id, true, true)
         .unwrap();
-    assert!(preview.paths.iter().all(|path| !Path::new(path).exists()));
+    assert!(!Path::new(&preview.paths[0]).exists());
+    assert_eq!(fs::read(&preview.paths[1]).unwrap(), latest_index);
+    assert_eq!(fs::read(&preview.paths[2]).unwrap(), latest_main);
+}
+
+#[test]
+fn claude_switch_review_discards_or_refuses_a_changed_source_without_preparing_a_binding() {
+    let f = mapping_fixture();
+    let service = &f.service;
+    let mapping = ClaudeModelMapping {
+        sonnet: f.model.clone(),
+        opus: f.model.clone(),
+        haiku: f.model.clone(),
+    };
+    let open = || {
+        service
+            .remember_client_preview(
+                service
+                    .build_claude_entry(
+                        &f.record.view.id,
+                        f.record.view.revision,
+                        &f.model,
+                        Some(&mapping),
+                        claude::Preparation::Review,
+                    )
+                    .unwrap(),
+                None,
+            )
+            .unwrap()
+    };
+    let canceled = open();
+    service.discard_config_preview(&canceled.id).unwrap();
+    assert_eq!(
+        service
+            .apply_client_config(&canceled.id, true, false)
+            .unwrap_err()
+            .code,
+        "preview_expired"
+    );
+    let stale = open();
+    fs::create_dir_all(service.paths.claude_library.parent().unwrap()).unwrap();
+    let switched = br#"{"deploymentMode":"1p"}"#;
+    fs::write(&stale.paths[2], switched).unwrap();
+    assert_eq!(
+        service
+            .apply_client_config(&stale.id, true, false)
+            .unwrap_err()
+            .code,
+        "configuration_conflict"
+    );
+    assert_eq!(fs::read(&stale.paths[2]).unwrap(), switched);
+    assert!(
+        stale.paths[..2]
+            .iter()
+            .all(|path| !Path::new(path).exists())
+    );
+    assert!(
+        service
+            .store
+            .list::<Journal>("journal", None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        service
+            .store
+            .list::<HelperBinding>("binding", None)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn preview_journal(service: &Service, preview: &ConfigPreview) -> Journal {
@@ -2668,7 +2821,8 @@ fn claude_switch_snapshot_remains_restorable_after_its_creation_timestamp_deadli
         json!({"snapshot_id": source_id, "expires_at": old_deadline})
     );
     assert!(
-        chrono::DateTime::parse_from_rfc3339(&restore.expires_at).unwrap() > chrono::Utc::now()
+        chrono::DateTime::parse_from_rfc3339(restore.expires_at.as_deref().unwrap()).unwrap()
+            > chrono::Utc::now()
     );
     f.service.commit_logout(&f.record.view.id).unwrap();
     assert_eq!(
@@ -2706,7 +2860,7 @@ fn claude_switch_restore_expired_confirmation_refuses_before_files_or_grants() {
         .get_mut(&restore.id)
         .unwrap()
         .view
-        .expires_at = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        .expires_at = Some((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
     f.vault.calls.store(0, Ordering::SeqCst);
     f.vault.mutations.store(0, Ordering::SeqCst);
     assert_eq!(
@@ -3865,14 +4019,17 @@ fn frozen(fixture: &tests::PolicyFixture) -> ClaudeContext {
     .unwrap();
     fixture
         .service
-        .freeze_claude(claude::Plan {
-            record: &fixture.record,
-            cache: &cache,
-            compiled: &compiled,
-            observation: &observation,
-            binding_id: &binding,
-            selected_model_id: &fixture.model,
-        })
+        .freeze_claude(
+            claude::Plan {
+                record: &fixture.record,
+                cache: &cache,
+                compiled: &compiled,
+                observation: &observation,
+                binding_id: &binding,
+                selected_model_id: &fixture.model,
+            },
+            false,
+        )
         .unwrap()
 }
 

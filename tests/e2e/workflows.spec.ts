@@ -111,9 +111,40 @@ test("real capability names populate client models and image edit options", asyn
   const changed = bootstrap("synthetic-account-a", 2);
   changed.connections[0]!.revision = 2;
   await pushState(page, changed);
-  await expect(dialog.getByRole("button", { name: "确认接入" })).toBeDisabled();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "账户、API Key 或节点已切换",
+  );
+  await expect(dialog.getByRole("button", { name: "重新检查" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "确认接入" })).toHaveCount(0);
   expect(await calls(page, "apply_client_config")).toBe(0);
 });
+
+for (const platform of ["macos", "windows"] as const) {
+  for (const client of ["codex", "claude"] as const) {
+    test(`${client} stays confirmable after a long review on ${platform}`, async ({
+      page,
+    }) => {
+      const state = bootstrap();
+      state.platform = platform;
+      await fixture(page, { state });
+      await page.clock.install();
+      await page.goto("/#/access");
+      if (client === "claude") await chooseClaudeRoles(page);
+      const target = page
+        .locator(".access-client")
+        .nth(client === "codex" ? 0 : 1);
+      await target.getByRole("button", { name: "接入 Orbit" }).click();
+      const dialog = page.getByRole("dialog");
+      const confirm = dialog.getByRole("button", { name: "确认接入" });
+      await expect(confirm).toBeEnabled();
+      await page.clock.fastForward(45 * 60_000);
+      await expect(confirm).toBeEnabled();
+      await confirm.click();
+      await expect(dialog).toHaveCount(0);
+      expect(await calls(page, "apply_client_config")).toBe(1);
+    });
+  }
+}
 
 test("changing accounts clears prompt and drafts before another submit", async ({
   page,

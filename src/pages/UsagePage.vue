@@ -7,6 +7,7 @@ import { locale, t, type MessageKey } from "../shared/i18n";
 import { formatMoney, formatUpdatedAt } from "../shared/format";
 import {
   dateRange,
+  usageTokenRows,
   type UsageMoney,
   type UsageQuantity,
   type UsageRecord,
@@ -605,24 +606,11 @@ function duration(value: number | null) {
                       <dd>{{ record.request_id }}</dd>
                     </div>
                     <div
-                      v-for="item in [
-                        'input',
-                        'cached_input',
-                        'output',
-                        'reasoning',
-                      ] as const"
-                      :key="item"
+                      v-for="item in usageTokenRows(record.usage.tokens)"
+                      :key="item.key"
                     >
-                      <dt>
-                        {{
-                          t(
-                            item === "cached_input"
-                              ? "usage.cached"
-                              : `usage.${item}`,
-                          )
-                        }}
-                      </dt>
-                      <dd>{{ quantity(record.usage.tokens[item]) }}</dd>
+                      <dt>{{ t(`usage.${item.key}` as MessageKey) }}</dt>
+                      <dd>{{ quantity(item.quantity) }}</dd>
                     </div>
                   </dl>
                   <p v-if="record.result_note" class="field-hint">

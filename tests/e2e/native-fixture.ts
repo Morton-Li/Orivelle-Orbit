@@ -595,7 +595,10 @@ export async function fixture(
               impact: ["Synthetic fixture configuration only"],
               redacted_diff:
                 "- model = old\n+ model = synthetic-text\n+ helper binding = [redacted]",
-              expires_at: new Date(Date.now() + 60000).toISOString(),
+              expires_at:
+                request.client === "claude" && claudeImport
+                  ? new Date(Date.now() + 60000).toISOString()
+                  : null,
               can_apply: !claudeImport || request.client !== "claude",
               can_export_import: claudeImport && request.client === "claude",
               blocking_reason:
@@ -604,6 +607,7 @@ export async function fixture(
                   : null,
             };
           }
+          if (command === "discard_config_preview") return null;
           if (command === "export_claude_import") return { saved: true };
           throw { code: "unsupported_fixture_command", retryable: false };
         },

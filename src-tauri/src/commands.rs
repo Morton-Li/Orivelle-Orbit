@@ -136,6 +136,11 @@ pub struct Preview {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PreviewId {
+    preview_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Confirmation {
     preview_id: String,
     confirmed: bool,
@@ -153,6 +158,7 @@ fn restore_coordination_selection<'de, D: serde::Deserializer<'de>>(
     match String::deserialize(deserializer)?.as_str() {
         "claude_main_preferences_v1" => Ok(Some(ClaudeRestoreCoordination::MainPreferencesV1)),
         "claude_main_settings_v2" => Ok(Some(ClaudeRestoreCoordination::MainSettingsV2)),
+        "claude_library_settings_v3" => Ok(Some(ClaudeRestoreCoordination::LibrarySettingsV3)),
         _ => Err(serde::de::Error::custom("unsupported restore coordination")),
     }
 }
@@ -384,6 +390,10 @@ pub async fn preview_client_config(
             request.claude_mapping.as_ref(),
         )
         .await
+}
+#[tauri::command]
+pub fn discard_config_preview(native: State<'_, Native>, request: PreviewId) -> Result<()> {
+    native.service.discard_config_preview(&request.preview_id)
 }
 #[tauri::command]
 pub async fn apply_client_config(

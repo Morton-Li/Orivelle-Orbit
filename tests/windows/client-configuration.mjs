@@ -47,6 +47,10 @@ export async function exerciseClientConfiguration(
       `${kind} native preflight failed`,
     );
     console.log(new Date().toISOString(), kind, "preview");
+    const originalCodex =
+      kind === "codex"
+        ? await Promise.all(target.config_paths.map(digest))
+        : null;
     const preview = await invoke(page, "preview_client_config", {
       connection_id: connection.id,
       expected_revision: connection.revision,
@@ -67,6 +71,15 @@ export async function exerciseClientConfiguration(
     );
     assert.equal(preview.paths.length, kind === "codex" ? 2 : 3);
     const before = await Promise.all(preview.paths.map(digest));
+    assert.equal(preview.expires_at, null);
+    if (kind === "codex") {
+      assert.deepEqual(preview.paths, target.config_paths);
+      assert.deepEqual(
+        before,
+        originalCodex,
+        "Reviewing must preserve both complete files.",
+      );
+    }
     const originalMain =
       kind === "claude"
         ? JSON.parse(
@@ -217,7 +230,7 @@ export async function exerciseClientConfiguration(
         : undefined;
       const restore = await invoke(page, "preview_restore", {
         snapshot_id: applied.snapshot_id,
-        ...(openedClient ? { coordination: "claude_main_settings_v2" } : {}),
+        ...(openedClient ? { coordination: "claude_library_settings_v3" } : {}),
       });
       assert(
         restore.can_apply,
@@ -238,7 +251,12 @@ export async function exerciseClientConfiguration(
         "Restore must preserve the exact original bytes/absence.",
       );
       if (openedClient) {
-        const retained = JSON.parse(await readFile(preview.paths[2], "utf8"));
+        const retained = JSON.parse(
+          await readFile(preview.paths[2], "utf8").catch((error) => {
+            if (error.code === "ENOENT" && before[2] === null) return "{}";
+            throw error;
+          }),
+        );
         assert.equal(retained.deploymentMode, originalMain.deploymentMode);
         delete retained.deploymentMode;
         delete currentMain.deploymentMode;
@@ -407,7 +425,7 @@ if (
         const preview = await invoke(page, "preview_restore", {
           snapshot_id: recoveryId,
           ...(recoveryBefore.client === "claude"
-            ? { coordination: "claude_main_settings_v2" }
+            ? { coordination: "claude_library_settings_v3" }
             : {}),
         });
         console.log(

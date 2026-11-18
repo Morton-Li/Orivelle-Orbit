@@ -17,7 +17,6 @@ use std::{
     collections::HashMap,
     net::{Ipv4Addr, TcpListener},
     sync::{Arc, Mutex, Weak},
-    time::{Duration, Instant},
 };
 use url::Url;
 use zeroize::Zeroizing;
@@ -289,8 +288,6 @@ enum Slot {
     Reserved {
         plan: MappingPlan,
         listener: TcpListener,
-        expires: Instant,
-        confirmed: bool,
     },
     Running {
         plan: MappingPlan,
@@ -326,25 +323,7 @@ impl MappingManager {
         model_id: &str,
         models: Option<&ClaudeModelMapping>,
         display_names: [&str; 3],
-    ) -> Result<MappingPlan> {
-        self.reserve_for(
-            binding_id,
-            profile_id,
-            model_id,
-            models,
-            display_names,
-            Duration::from_secs(300),
-        )
-    }
-    fn reserve_for(
-        &self,
-        binding_id: &str,
-        profile_id: &str,
-        model_id: &str,
-        models: Option<&ClaudeModelMapping>,
-        display_names: [&str; 3],
-        ttl: Duration,
-    ) -> Result<MappingPlan> {
+    ) -> Result<(MappingPlan, ReservationTicket)> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| fail("claude_mapping_unavailable"))?;
         listener
@@ -379,9 +358,6 @@ impl MappingManager {
         };
         plan.validate()?;
         let mut slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
-        slots.retain(
-            |_, slot| !matches!(slot, Slot::Reserved{expires,confirmed:false,..} if *expires <= Instant::now()),
-        );
         if slots.len() >= 8 || slots.contains_key(binding_id) {
             return Err(fail("claude_mapping_unavailable"));
         }
@@ -390,41 +366,25 @@ impl MappingManager {
             Slot::Reserved {
                 plan: plan.clone(),
                 listener,
-                expires: Instant::now() + ttl,
-                confirmed: false,
             },
         );
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let weak = Arc::downgrade(&self.slots);
-            runtime.spawn(async move {tokio::time::sleep(ttl).await;
-                if let Some(slots)=weak.upgrade() && let Ok(mut slots)=slots.lock(){
-                    slots.retain(|_,slot|!matches!(slot,Slot::Reserved{expires,confirmed:false,..} if *expires<=Instant::now()));
-                }
-            });
-        }
-        Ok(plan)
-    }
-    pub(crate) fn ticket(&self, plan: &MappingPlan) -> ReservationTicket {
-        ReservationTicket {
+        let ticket = ReservationTicket {
             slots: Arc::downgrade(&self.slots),
-            binding_id: plan.binding_id.clone(),
+            binding_id: binding_id.into(),
+        };
+        Ok((plan, ticket))
+    }
+
+    pub(crate) fn check_reservation(&self, plan: &MappingPlan) -> Result<()> {
+        let slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
+        if matches!(slots.get(&plan.binding_id), Some(Slot::Reserved {plan: current,..}) if current == plan)
+        {
+            Ok(())
+        } else {
+            Err(fail("claude_mapping_unavailable"))
         }
     }
-    pub(crate) fn claim(&self, plan: &MappingPlan) -> Result<()> {
-        let mut slots = self.slots.lock().map_err(|_| fail("state_unavailable"))?;
-        match slots.get_mut(&plan.binding_id) {
-            Some(Slot::Reserved {
-                plan: current,
-                confirmed,
-                expires,
-                ..
-            }) if current == plan && (*confirmed || *expires > Instant::now()) => {
-                *confirmed = true;
-                Ok(())
-            }
-            _ => Err(fail("preview_expired")),
-        }
-    }
+
     pub(crate) fn activate(
         &self,
         plan: &MappingPlan,
@@ -811,86 +771,27 @@ pub(crate) fn authenticate_local(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn mapping_reservations_expire_without_another_preview_and_drop_on_discard() {
+    #[test]
+    fn confirmed_reservations_hold_the_port_until_the_transaction_releases_its_ticket() {
         let manager = MappingManager::default();
-        let plan = manager
-            .reserve_for(
+        let reserve = || {
+            manager.reserve(
                 &crate::identity::uuid(),
                 &crate::identity::uuid(),
                 "gpt-6-luna",
                 None,
                 ["GPT 6 Luna"; 3],
-                Duration::from_millis(20),
             )
-            .unwrap();
-        // Under load the expiry task may resume after this test's timer. Wait
-        // for its cleanup without another preview triggering that cleanup.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let reserved = manager.slots.lock().unwrap().contains_key(&plan.binding_id);
-                if !reserved {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("unconfirmed reservation must expire without another preview");
-        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_ok());
-        let confirmed = manager
-            .reserve_for(
-                &crate::identity::uuid(),
-                &crate::identity::uuid(),
-                "gpt-6-luna",
-                None,
-                ["GPT 6 Luna"; 3],
-                Duration::from_millis(20),
-            )
-            .unwrap();
-        let ticket = manager.ticket(&confirmed);
-        manager.claim(&confirmed).unwrap();
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        assert!(
-            TcpListener::bind((Ipv4Addr::LOCALHOST, confirmed.port)).is_err(),
-            "accepted confirmation preserves its reservation across slow qualification"
-        );
+        };
+        let mut reservations = (0..8).map(|_| reserve().unwrap()).collect::<Vec<_>>();
+        assert!(reserve().is_err());
+        let (plan, ticket) = reservations.pop().unwrap();
+        assert!(manager.check_reservation(&plan).is_ok());
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_err());
         drop(ticket);
-        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, confirmed.port)).is_ok());
-        let plan = manager
-            .reserve(
-                &crate::identity::uuid(),
-                &crate::identity::uuid(),
-                "gpt-6-luna",
-                None,
-                ["GPT 6 Luna"; 3],
-            )
-            .unwrap();
-        let ticket = manager.ticket(&plan);
-        drop(ticket);
+        assert!(manager.check_reservation(&plan).is_err());
         assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, plan.port)).is_ok());
-        for _ in 0..8 {
-            manager
-                .reserve(
-                    &crate::identity::uuid(),
-                    &crate::identity::uuid(),
-                    "gpt-6-luna",
-                    None,
-                    ["GPT 6 Luna"; 3],
-                )
-                .unwrap();
-        }
-        assert!(
-            manager
-                .reserve(
-                    &crate::identity::uuid(),
-                    &crate::identity::uuid(),
-                    "gpt-6-luna",
-                    None,
-                    ["GPT 6 Luna"; 3],
-                )
-                .is_err()
-        );
+        assert!(reserve().is_ok());
     }
 
     #[test]
@@ -924,7 +825,7 @@ mod tests {
         let manager = MappingManager::default();
         let binding = crate::identity::uuid();
         let profile = crate::identity::uuid();
-        let plan = manager
+        let (plan, _ticket) = manager
             .reserve(&binding, &profile, "gpt-6-luna", None, ["GPT 6 Luna"; 3])
             .unwrap();
         assert_eq!(plan.version, 4);
@@ -960,7 +861,7 @@ mod tests {
         let mut tampered = plan.clone();
         tampered.aliases[0].label_override = "Claude Sonnet".into();
         assert_ne!(tampered.revision().unwrap(), plan.revision().unwrap());
-        assert!(manager.claim(&tampered).is_err());
+        assert!(manager.check_reservation(&tampered).is_err());
         for label in ["", "invalid\nname"] {
             tampered.aliases[0].label_override = label.into();
             assert!(tampered.validate().is_err());

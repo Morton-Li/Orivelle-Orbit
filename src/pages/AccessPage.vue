@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useApiKeysStore } from "../stores/api-keys";
 import { useOrbitStore } from "../stores/orbit";
 import { t, type MessageKey } from "../shared/i18n";
+import { call } from "../shared/bridge";
+import {
+  matchesReviewConnection,
+  matchesReviewModel,
+} from "../shared/config-review";
 import { nodeName } from "../shared/format";
 import type {
   ClaudeRestoreCoordination,
@@ -42,12 +47,22 @@ const selectedMapping = ref<ClaudeModelMapping>({
   haiku: "",
 });
 const preview = ref<ConfigPreview | null>(null);
+const reviewClient = ref<ClientKind | null>(null);
+const reviewError = ref("");
+function discard(prepared: ConfigPreview | null | undefined) {
+  if (prepared?.operation === "apply" && prepared.expires_at === null) {
+    void call("discard_config_preview", { preview_id: prepared.id }).catch(
+      () => {},
+    );
+  }
+}
 const previewing = ref<Record<ClientKind, boolean>>({
   codex: false,
   claude: false,
 });
 let previewGeneration = 0;
 onUnmounted(() => {
+  discard(preview.value);
   previewGeneration++;
 });
 function configurationAllowed(kind: ClientKind): boolean {
@@ -64,6 +79,12 @@ function previewAllowed(kind: ClientKind): boolean {
   const client = store.state.clients.find((item) => item.client === kind);
   return (
     configurationAllowed(kind) ||
+    !!(
+      client?.installed &&
+      client.platform_supported &&
+      client.managed !== "yes" &&
+      client.configuration_access === "unverified"
+    ) ||
     !!(
       kind === "claude" &&
       client?.installed &&
@@ -172,8 +193,19 @@ watch(
   () => {
     previewGeneration++;
     selectedMapping.value = { sonnet: "", opus: "", haiku: "" };
+    if (reviewClient.value) reviewError.value = t("access.scopeChanged");
   },
   { flush: "sync" },
+);
+watch(
+  selectedMapping,
+  () => {
+    if (reviewClient.value === "claude" && !reviewError.value) {
+      previewGeneration++;
+      reviewError.value = t("access.reviewModelsChanged");
+    }
+  },
+  { deep: true, flush: "sync" },
 );
 watch(
   claudeModels,
@@ -192,8 +224,13 @@ watch(
   { immediate: true },
 );
 async function requestPreview(client: ClientKind) {
-  if (connectReason(client) === "access.chooseKeyFirst") {
-    store.notify(t("access.chooseKeyFirst"), "warning");
+  const reason = connectReason(client);
+  if (reason && reviewClient.value === client) {
+    reviewError.value = t(reason);
+    return;
+  }
+  if (reason === "access.chooseKeyFirst") {
+    store.notify(t(reason), "warning");
     return;
   }
   const connection = store.activeConnection;
@@ -215,7 +252,14 @@ async function requestPreview(client: ClientKind) {
     scope === store.scope &&
     origin === store.activeConnection?.panel_origin;
   previewing.value[client] = true;
+  let prepared: ConfigPreview | undefined;
+  discard(preview.value);
+  preview.value = null;
+  reviewError.value = "";
+  reviewClient.value = client;
   try {
+    await nextTick();
+    if (!current()) return;
     const result = await store.perform(
       `preview-${client}`,
       "preview_client_config",
@@ -225,47 +269,69 @@ async function requestPreview(client: ClientKind) {
         client,
         ...(mapping ? { claude_mapping: mapping } : {}),
       },
+      {
+        onError: (error) => {
+          if (!current()) return;
+          reviewError.value = store.report(error);
+        },
+      },
     );
-    if (!result || !current()) return;
+    prepared = result;
+    if (!current()) return;
+    if (!result) {
+      if (!reviewError.value)
+        reviewError.value = t(
+          store.state.maintenance_active
+            ? "common.updateMaintenance"
+            : "common.failed",
+        );
+      return;
+    }
     // Native preview refreshes Panel's catalogue. Synchronize that authoritative
     // model revision before the dialog can permanently retire a fresh preview.
     const noticeBeforeRead = store.notice;
-    const synchronized = await store.loadModels();
+    const synchronized =
+      (result.expires_at === null &&
+        matchesReviewModel(result, store.models)) ||
+      (await store.loadModels());
     if (!current()) return;
     if (
       !synchronized &&
       store.notice !== noticeBeforeRead &&
       store.notice?.tone === "error"
-    )
+    ) {
+      reviewError.value = store.notice.text;
       return;
-    const active = store.activeConnection;
+    }
+    const sameConnection = matchesReviewConnection(
+      result,
+      store.activeConnection,
+    );
     if (
       !synchronized ||
       result.operation !== "apply" ||
       result.client !== client ||
-      !store.ready ||
+      (!store.ready && result.expires_at !== null) ||
       (mapping &&
         (result.model_id !== mapping.sonnet ||
           !mappingReady.value ||
           claudeMappings.some(
             ({ key }) => mapping[key] !== selectedMapping.value[key],
           ))) ||
-      result.context.connection_id !== active?.id ||
-      result.context.account_id !== active.account_id ||
-      result.context.connection_revision !== active.revision ||
-      result.context.credential_revision !== active.credential_revision ||
-      result.context.node_id !== active.node_id ||
-      !store.models.some(
-        (model) =>
-          model.id === result.model_id &&
-          model.revision === result.context.model_revision,
-      )
+      !sameConnection ||
+      !matchesReviewModel(result, store.models)
     ) {
-      store.notify(t("access.previewExpired"));
+      const message = t(
+        !sameConnection ? "access.scopeChanged" : "access.reviewModelsChanged",
+      );
+      reviewError.value = message;
+      if (result.expires_at !== null) store.notify(message);
       return;
     }
     preview.value = result;
+    prepared = undefined;
   } finally {
+    discard(prepared);
     previewing.value[client] = false;
   }
 }
@@ -303,6 +369,8 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   preview.value = result;
 }
 async function configurationApplied(result: ConfigResult) {
+  reviewClient.value = null;
+  reviewError.value = "";
   preview.value = null;
   if (updatingClient.value === result.client && result.state === "restored") {
     await store.loadModels();
@@ -314,6 +382,10 @@ async function configurationApplied(result: ConfigResult) {
   }
 }
 function closePreview() {
+  previewGeneration++;
+  discard(preview.value);
+  reviewClient.value = null;
+  reviewError.value = "";
   preview.value = null;
   updatingClient.value = null;
   apiKeys.updateMapping = null;
@@ -338,7 +410,7 @@ onMounted(async () => {
     selectedMapping.value = { ...apiKeys.updateMapping.mapping };
   await restore(
     backup.id,
-    client === "claude" ? "claude_main_settings_v2" : undefined,
+    client === "claude" ? "claude_library_settings_v3" : undefined,
   );
 });
 </script>
@@ -481,7 +553,7 @@ onMounted(async () => {
               restore(
                 switchSnapshot(client.client)!.id,
                 client.client === 'claude'
-                  ? 'claude_main_settings_v2'
+                  ? 'claude_library_settings_v3'
                   : undefined,
               )
             "
@@ -524,6 +596,10 @@ onMounted(async () => {
   </section>
   <ConfigReviewDialog
     :preview="preview"
+    :review-client="reviewClient"
+    :checking="reviewClient ? previewing[reviewClient] : false"
+    :error="reviewError"
+    @retry="reviewClient && requestPreview(reviewClient)"
     @close="closePreview"
     @applied="configurationApplied"
   />

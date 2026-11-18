@@ -1,6 +1,7 @@
-//! Opt-in synthetic acceptance of the native image consumer over real TLS.
-//! The owned fixture supplies a disposable inference key; it must run an actual
-//! local Edge, Panel and controlled upstream. Login and Vault remain synthetic.
+//! Opt-in synthetic acceptance of native image and usage consumers over real TLS.
+//! Image cases use a disposable inference key and real local Edge/Panel/upstream.
+//! Usage reads require only a signed account session and settled synthetic data.
+//! Login and Vault remain synthetic.
 use super::*;
 use std::io::Write;
 
@@ -20,6 +21,215 @@ async fn local_release_check_api_stream_once() {
 #[ignore = "requires an owned synthetic local Panel/Edge/upstream fixture"]
 async fn local_release_check_api_mask_edit_once() {
     run_case("api-mask-edit", false, true).await;
+}
+
+#[tokio::test]
+#[ignore = "requires owned synthetic settled usage, real Panel/MySQL/TLS and a guarded session provisioner"]
+async fn local_release_check_cache_usage_readonly() {
+    use crate::usage::UsageQuery;
+    use std::process::{Command, Stdio};
+
+    assert_eq!(std::env::var("ORBIT_RELEASE_USAGE").as_deref(), Ok("1"));
+    let root = PathBuf::from(std::env::var("ORBIT_RELEASE_USAGE_ROOT").unwrap());
+    assert!(root.is_absolute());
+    let root = root.canonicalize().unwrap();
+    let fixture: Value =
+        serde_json::from_slice(&std::fs::read(root.join("fixture.json")).unwrap()).unwrap();
+    assert_eq!(fixture["synthetic"], true);
+    let port = fixture["panel_tls_port"]
+        .as_u64()
+        .and_then(|v| u16::try_from(v).ok())
+        .filter(|v| *v != 0)
+        .unwrap();
+    let ca = std::fs::read(root.join("certs/ca.pem")).unwrap();
+    let environment: HashMap<String, String> = serde_json::from_slice(
+        &std::fs::read(root.join("../integration/env-candidate.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(environment.get("PREFLIGHT_SYNTHETIC").unwrap(), "1");
+    let mut report = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join("evidence/orbit-cache-usage.json"))
+        .expect("keep earlier acceptance outcomes in separate evidence roots");
+    report
+        .write_all(b"{\"synthetic\":true,\"state\":\"reserved\"}\n")
+        .unwrap();
+    report.sync_all().unwrap();
+    let (_dir, service, vault, mut record, _) = setup();
+    let mut native = Arc::try_unwrap(service).unwrap_or_else(|_| panic!("exclusive service"));
+    native.http = Http::for_local_tls_acceptance(&ca, port).unwrap();
+    let service = Arc::new_cyclic(|weak| {
+        native.self_reference = weak.clone();
+        native
+    });
+    let installation =
+        Installation::create(&format!("https://orbit-e2e.test:{port}"), &*vault).unwrap();
+    service
+        .store
+        .put(
+            "installation",
+            &sha256(installation.origin.as_bytes()),
+            &installation.origin,
+            &installation,
+        )
+        .unwrap();
+    record.installation_id = installation.id.clone();
+    record.view.panel_origin = installation.origin.clone();
+    // Usage reads need a signed account session, never an inference key or node.
+    record.view.permission_state = "readonly".into();
+    record.view.node_id = None;
+    record.view.edge_base_url = None;
+    let mut results = vec![];
+    for owner in [true, false] {
+        let mut provision = Command::new("php")
+            .arg(root.join("provision.php"))
+            .envs(&environment)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        provision
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                &serde_json::to_vec(&json!({
+                    "installation_id":installation.id,
+                    "public_key":installation.public_key,"owner":owner
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let issued = provision.wait_with_output().unwrap();
+        assert!(
+            issued.status.success(),
+            "guarded synthetic session provisioning failed"
+        );
+        let token: TokenResponse = serde_json::from_slice(&issued.stdout).unwrap();
+        let (account_id, session) = token.into_session(&installation).unwrap();
+        record.view.account_id = account_id.clone();
+        record.expires_at = session.expires_at;
+        record.session_expires_at = Some(parse_timestamp(&session.session_expires_at).unwrap());
+        service
+            .store
+            .put("connection", &record.view.id, &account_id, &record)
+            .unwrap();
+        service
+            .store
+            .set_meta(
+                &authorization_epoch_reference(&installation.origin, &installation.id, &account_id),
+                "1",
+            )
+            .unwrap();
+        service.save_session(&record, session).unwrap();
+        let request = UsageQuery {
+            connection_id: record.view.id.clone(),
+            expected_revision: record.view.revision,
+            date_from: fixture["date_from"].as_str().unwrap().into(),
+            date_to: fixture["date_to"].as_str().unwrap().into(),
+            timezone: "UTC".into(),
+            api_key_id: None,
+            outcome: None,
+            cursor: None,
+        };
+        let summary = service.read_usage_summary(&request).await.unwrap();
+        let page = service.list_usage_records(&request).await.unwrap();
+        std::fs::write(
+            root.join(format!(
+                "evidence/usage-{}.json",
+                if owner { "owner" } else { "other" }
+            )),
+            serde_json::to_vec_pretty(&json!({"synthetic":true,"request":request,
+                "summary":summary,"page":page}))
+            .unwrap(),
+        )
+        .unwrap();
+        if owner {
+            assert_eq!(
+                summary.summary.counts.requests,
+                fixture["expected_requests"].as_u64().unwrap()
+            );
+            let expected_30m = fixture["expected_cache_write_30m"].as_u64().unwrap();
+            let expected_12h = fixture["expected_cache_write_12h"].as_u64().unwrap();
+            let split = page.data.iter().find(|row| {
+                row.usage
+                    .tokens
+                    .cache_write_30m
+                    .as_ref()
+                    .is_some_and(|q| q.status == "known" && q.value == Some(expected_30m))
+                    && row
+                        .usage
+                        .tokens
+                        .cache_write_12h
+                        .as_ref()
+                        .is_some_and(|q| q.status == "known" && q.value == Some(expected_12h))
+            });
+            assert!(split.is_some(), "actual settled split cache usage required");
+            assert!(
+                page.data.iter().any(|row| {
+                    row.usage
+                        .tokens
+                        .cache_write_30m
+                        .as_ref()
+                        .is_some_and(|q| q.status == "unknown" && q.value.is_none())
+                }),
+                "unknown lifetime usage must not become zero"
+            );
+            for (summary_bucket, record_total) in [
+                (
+                    summary.summary.usage.tokens.cache_write_30m.as_ref(),
+                    page.data
+                        .iter()
+                        .filter_map(|row| row.usage.tokens.cache_write_30m.as_ref()?.value)
+                        .sum::<u64>(),
+                ),
+                (
+                    summary.summary.usage.tokens.cache_write_12h.as_ref(),
+                    page.data
+                        .iter()
+                        .filter_map(|row| row.usage.tokens.cache_write_12h.as_ref()?.value)
+                        .sum::<u64>(),
+                ),
+            ] {
+                let bucket = summary_bucket.expect("actual aggregated lifetime field required");
+                assert_eq!(bucket.status, "partial");
+                assert_eq!(bucket.value, Some(record_total));
+            }
+            let row = split.unwrap();
+            results.push(json!({"owner":true,"account_id":account_id,
+                "summary_requests":summary.summary.counts.requests,
+                "summary_tokens":summary.summary.usage.tokens,
+                "record_count":page.data.len(),"request_id":row.request_id,
+                "tokens":row.usage.tokens,"charges":row.charges}));
+        } else {
+            assert!(
+                page.data.is_empty(),
+                "another account must not receive owner records"
+            );
+            assert_eq!(summary.summary.counts.requests, 0);
+            results.push(json!({"owner":false,"account_id":account_id,
+                "summary_requests":0,"record_count":0}));
+        }
+        assert!(record.credential_reference.is_none() && record.view.node_id.is_none());
+    }
+    use std::io::Seek;
+    report.rewind().unwrap();
+    report.set_len(0).unwrap();
+    report
+        .write_all(
+            &serde_json::to_vec_pretty(&json!({"synthetic":true,"state":"passed",
+                "actual_components":["Orbit Service read_usage_summary/list_usage_records",
+                    "native reqwest strict TLS and Ed25519 installation proof",
+                    "real candidate Panel usage controllers and owner-scoped MySQL queries"],
+                "fixture_boundaries":["preseeded synthetic account sessions","memory FakeVault",
+                    "usage generated separately through local Edge and controlled upstream"],
+                "inference_key_required":false,"results":results}))
+            .unwrap(),
+        )
+        .unwrap();
+    report.sync_all().unwrap();
 }
 
 async fn run_case(case: &str, stream: bool, edit: bool) {

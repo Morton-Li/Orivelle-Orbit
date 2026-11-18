@@ -95,6 +95,102 @@ function show(value: ConfigPreview) {
 }
 
 describe("configuration confirmation follows current policy", () => {
+  it.each(["codex", "claude"] as const)(
+    "keeps a %s switch open past five minutes, accepts a recovered probe, and blocks a changed target",
+    async (kind) => {
+      vi.useFakeTimers();
+      try {
+        const value = preview(kind);
+        value.expires_at = null;
+        const view = show(value);
+        const button = view.get<HTMLButtonElement>(".button.primary");
+        vi.advanceTimersByTime(45 * 60_000);
+        await nextTick();
+        expect(button.element.disabled).toBe(false);
+        useOrbitStore().state.session.status = "refreshing";
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        useOrbitStore().state.session.status = "authenticated";
+        await nextTick();
+        expect(button.element.disabled).toBe(false);
+        const client = useOrbitStore().state.clients.find(
+          (item) => item.client === kind,
+        )!;
+        client.configuration_access = "unverified";
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        client.configuration_access = "allowed";
+        await nextTick();
+        expect(button.element.disabled).toBe(false);
+        client.version = "different version";
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        expect(view.get("[role=alert]").text()).toContain(
+          kind === "codex" ? "Codex" : "Claude",
+        );
+        client.version = value.target_version;
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        expect(bridge.call).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("opens the confirmation before native checks, discards a canceled result and shows the specific save error", async () => {
+    const value = preview();
+    value.expires_at = null;
+    let finish!: (value: ConfigPreview) => void;
+    bridge.call.mockImplementation(async (command) => {
+      if (command === "preview_client_config")
+        return new Promise<ConfigPreview>((resolve) => {
+          finish = resolve;
+        });
+      if (command === "apply_client_config")
+        throw new OrbitError("configuration_conflict", "private native detail");
+      if (command === "list_models") return [model];
+    });
+    wrapper = mount(AccessPage, {
+      global: {
+        stubs: {
+          ClientRow: true,
+          OrbitSelect: orbitSelectStub,
+          OrbitDialog: {
+            props: ["open"],
+            template: '<section v-if="open" role="dialog"><slot /></section>',
+          },
+        },
+      },
+    });
+    await flushPromises();
+    const connect = wrapper
+      .findAll(".access-client")[0]!
+      .get<HTMLButtonElement>(".button.primary");
+    await connect.trigger("click");
+    const pending = wrapper.get('[role="dialog"]');
+    expect(pending.get('[role="status"]').text()).toContain("正在核对 Codex");
+    expect(pending.get<HTMLButtonElement>(".primary").element.disabled).toBe(
+      true,
+    );
+    await pending.get(".secondary").trigger("click");
+    finish(value);
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect(bridge.call).toHaveBeenCalledWith("discard_config_preview", {
+      preview_id: value.id,
+    });
+    await connect.trigger("click");
+    finish({ ...value, id: "22222222-2222-4222-8222-222222222222" });
+    await flushPromises();
+    const dialog = wrapper.get('[role="dialog"]');
+    await dialog.get(".primary").trigger("click");
+    await flushPromises();
+    expect(dialog.get('[role="alert"]').text()).toContain("已停止覆盖");
+    expect(dialog.text()).not.toContain("预览已失效");
+    expect(dialog.text()).not.toContain("private native detail");
+    expect(dialog.text()).toContain("重新检查");
+  });
   it.each(
     (["codex", "claude"] as const).flatMap((kind) =>
       (["managed", "blocked", "unverified", "changed target"] as const).map(
@@ -364,8 +460,9 @@ describe("Codex catalog confirmation", () => {
       for (const access of ["blocked", "unverified"] as const) {
         client.configuration_access = access;
         await nextTick();
-        expect(button.element.disabled).toBe(true);
-        await button.trigger("click");
+        const canRequestNativeCheck = access === "unverified";
+        expect(button.element.disabled).toBe(!canRequestNativeCheck);
+        if (!canRequestNativeCheck) await button.trigger("click");
       }
       client.configuration_access = "allowed";
       client.managed = "yes";
@@ -647,7 +744,8 @@ describe("Codex catalog confirmation", () => {
     ["codex_runtime_changed", "目标桌面应用的执行来源已变化"],
     ["codex_catalog_scope_changed", "模型目录、权限或连接状态已变化"],
     ["codex_catalog_context_unverified", "缺少可核验的恢复上下文"],
-    ["codex_config_override_unverified", "现有显式设置可能覆盖本次配置"],
+    ["codex_config_override_unverified", "profile 没有指向有效的配置表"],
+    ["codex_configuration_invalid", "请检查 config.toml 的格式"],
   ])("explains blocked previews for %s", (code, explanation) => {
     const value = preview(code!.startsWith("claude_") ? "claude" : "codex");
     value.can_apply = false;

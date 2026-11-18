@@ -141,6 +141,10 @@ pub struct ClientView {
     pub loaded_state: String,
     pub connection_state: String,
     pub configuration_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_route_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_route_revision: Option<String>,
     pub loaded_evidence: Option<ClientEvidence>,
     pub connection_evidence: Option<ClientEvidence>,
     pub manual_steps: Vec<String>,
@@ -495,6 +499,8 @@ pub enum ClaudeRestoreCoordination {
     MainPreferencesV1,
     #[serde(rename = "claude_main_settings_v2")]
     MainSettingsV2,
+    #[serde(rename = "claude_library_settings_v3")]
+    LibrarySettingsV3,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPreview {
@@ -512,7 +518,7 @@ pub struct ConfigPreview {
     pub restore_coordination: Option<ClaudeRestoreCoordination>,
     pub impact: Vec<String>,
     pub redacted_diff: String,
-    pub expires_at: String,
+    pub expires_at: Option<String>,
     pub can_apply: bool,
     pub can_export_import: bool,
     pub blocking_reason: Option<String>,

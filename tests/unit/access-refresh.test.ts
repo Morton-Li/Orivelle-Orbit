@@ -82,7 +82,7 @@ function preview(): ConfigPreview {
     restore_source: null,
     impact: [],
     redacted_diff: "Synthetic Claude configuration only",
-    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    expires_at: null,
     can_apply: true,
     can_export_import: false,
     blocking_reason: null,
@@ -96,10 +96,11 @@ beforeEach(async () => {
   setActivePinia(createPinia());
   state = claudeState();
   nextModels = () => [claudeModel()];
-  bridge.call.mockReset().mockImplementation((command) => {
+  bridge.call.mockReset().mockImplementation(async (command) => {
     if (command === "list_models") return nextModels();
     if (command === "preview_client_config") return nextPreview;
     if (command === "bootstrap") return state;
+    if (command === "discard_config_preview") return null;
     if (command === "apply_client_config")
       return {
         state: "saved",
@@ -378,9 +379,9 @@ describe("Claude preview after a Panel model refresh", () => {
       const button = await showAccess();
       await button.trigger("click");
       await flushPromises();
-      expect(wrapper!.find('[role="dialog"]').exists()).toBe(false);
-      expect(useOrbitStore().notice).not.toBeNull();
-      expect(useOrbitStore().notice?.text).not.toContain("Private response");
+      const alert = wrapper!.get('[role="dialog"] [role="alert"]');
+      expect(alert.text()).not.toContain("Private response");
+      expect(wrapper!.get('[role="dialog"] .primary').text()).toBe("重新检查");
       if (outcome === "failure") {
         expect(useOrbitStore().notice?.tone).toBe("error");
         expect(useOrbitStore().notice?.text).toContain("network_unavailable");
@@ -401,7 +402,9 @@ describe("Claude preview after a Panel model refresh", () => {
       await button.trigger("click");
       await flushPromises();
       expect(button.element.disabled).toBe(true);
-      expect(wrapper!.find('[role="dialog"]').exists()).toBe(false);
+      expect(wrapper!.get('[role="dialog"] [role="status"]').text()).toContain(
+        "正在核对 Claude",
+      );
       await button.trigger("click");
       expect(
         bridge.call.mock.calls.filter(
@@ -420,7 +423,10 @@ describe("Claude preview after a Panel model refresh", () => {
       useOrbitStore().acceptState(state);
       pending.resolve([claudeModel("R2")]);
       await flushPromises();
-      expect(wrapper!.find('[role="dialog"]').exists()).toBe(false);
+      expect(
+        wrapper!.get('[role="dialog"] [role="alert"]').text(),
+      ).not.toContain("预览已失效");
+      expect(wrapper!.get('[role="dialog"] .primary').text()).toBe("重新检查");
       expect(writes()).toHaveLength(0);
     },
   );
@@ -437,7 +443,10 @@ describe("Claude preview after a Panel model refresh", () => {
     await useOrbitStore().loadModels();
     pending.resolve([claudeModel("R2")]);
     await flushPromises();
-    expect(wrapper!.find('[role="dialog"]').exists()).toBe(false);
+    expect(wrapper!.get('[role="dialog"] [role="alert"]').text()).not.toContain(
+      "预览已失效",
+    );
+    expect(wrapper!.get('[role="dialog"] .primary').text()).toBe("重新检查");
     expect(writes()).toHaveLength(0);
   });
 
@@ -458,7 +467,10 @@ describe("Claude preview after a Panel model refresh", () => {
     expect(
       bridge.call.mock.calls.filter(([command]) => command === "list_models"),
     ).toHaveLength(reads);
-    expect(wrapper!.find('[role="dialog"]').exists()).toBe(false);
+    expect(wrapper!.get('[role="dialog"] [role="alert"]').text()).not.toContain(
+      "预览已失效",
+    );
+    expect(wrapper!.get('[role="dialog"] .primary').text()).toBe("重新检查");
     expect(writes()).toHaveLength(0);
   });
 
@@ -478,7 +490,10 @@ describe("Claude preview after a Panel model refresh", () => {
     expect(useOrbitStore().scope).toBe(oldScope);
     pending.resolve([claudeModel("R2")]);
     await flushPromises();
-    expect(wrapper!.find('[role="dialog"]').exists()).toBe(false);
+    expect(wrapper!.get('[role="dialog"] [role="alert"]').text()).not.toContain(
+      "预览已失效",
+    );
+    expect(wrapper!.get('[role="dialog"] .primary').text()).toBe("重新检查");
     expect(writes()).toHaveLength(0);
   });
 
@@ -486,6 +501,7 @@ describe("Claude preview after a Panel model refresh", () => {
     const value = preview();
     value.can_apply = false;
     value.can_export_import = true;
+    value.expires_at = new Date(Date.now() + 60_000).toISOString();
     value.claude_configuration_target = null;
     value.blocking_reason = "schema_unverified";
     nextPreview = value;

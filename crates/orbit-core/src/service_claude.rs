@@ -1,5 +1,8 @@
 use super::*;
-use crate::config::{ClaudeActiveSource, ClaudeContext, ClaudeFileDigest, ClaudeModelInput};
+use crate::config::{
+    ClaudeActiveSource, ClaudeContext, ClaudeFileDigest, ClaudeModelInput,
+    ConfigurationFileRevisions,
+};
 
 const MAPPING_UNAVAILABLE_NOTE: &str = "本机模型映射未就绪；请保持 Orbit 运行，检查账户、系统安全存储及原端口占用后重新应用接入。保存状态不代表 Claude 已载入或连接通过。";
 pub(super) const PREFERENCES_RESTORED_NOTE: &str = "上次协调恢复已还原接入配置并保留后续偏好；当前载入与连接仍待确认，失效的旧 helper 授权不会复活。";
@@ -7,6 +10,47 @@ const EXACT_RESTORED_NOTE: &str =
     "配置原字节已恢复；已退出、撤销、删除或失效的旧 helper 授权不会复活。";
 const SAVED_NOTE: &str = "三文件配置已保存；需重启，尚未证明客户端加载或连通。";
 const PENDING_NOTE: &str = "整组配置操作尚待恢复；请先协调外部修改，同客户端新应用已阻止。";
+
+// Keep the full-file fingerprint compatible with versions that stored only this value.
+fn file_revision(
+    metadata: Option<&str>,
+    active: Option<(&str, &str)>,
+    main: Option<&str>,
+) -> Result<String> {
+    Ok(sha256(
+        &serde_json::to_vec(&(metadata, active, main)).map_err(|_| fail("serialization_failed"))?,
+    ))
+}
+
+fn published_revisions(context: &ClaudeContext) -> Result<ConfigurationFileRevisions> {
+    let [profile, metadata, main] = context.files.as_slice() else {
+        return Err(fail("backup_invalid"));
+    };
+    let id = context.profile_id.as_str();
+    Ok(ConfigurationFileRevisions {
+        files: Some(file_revision(
+            Some(&metadata.after_sha256),
+            Some((id, &profile.after_sha256)),
+            Some(&main.after_sha256),
+        )?),
+        route: Some(crate::claude_config::profile_revision(
+            id,
+            &profile.after_sha256,
+        )),
+    })
+}
+
+pub(super) struct SwitchDraft {
+    pub mapping: ClaudeModelMapping,
+    source_revision: String,
+    display_names: [String; 3],
+}
+pub(super) enum Preparation<'a> {
+    Review,
+    Confirm(&'a PreviewEntry, &'a SwitchDraft),
+    #[cfg(test)]
+    Prepared,
+}
 
 pub(super) struct Plan<'a> {
     pub record: &'a ConnectionRecord,
@@ -240,35 +284,9 @@ impl Service {
         {
             return Err(fail("configuration_conflict"));
         }
-        let metadata: Value =
-            serde_json::from_slice(&metadata.ok_or_else(|| fail("configuration_conflict"))?)
-                .map_err(|_| fail("configuration_conflict"))?;
-        if metadata
-            .as_object()
-            .is_none_or(|object| object.contains_key("hybridPointer"))
-            || metadata["appliedId"].as_str() != Some(plan.profile_id.as_str())
-            || metadata["entries"].as_array().is_none_or(|entries| {
-                entries
-                    .iter()
-                    .filter(|entry| entry["id"].as_str() == Some(plan.profile_id.as_str()))
-                    .count()
-                    != 1
-            })
-        {
-            return Err(fail("configuration_conflict"));
-        }
+        let metadata = metadata.ok_or_else(|| fail("configuration_conflict"))?;
         let main = read_file(&paths[2])?.ok_or_else(|| fail("configuration_conflict"))?;
-        let main: Value =
-            serde_json::from_slice(&main).map_err(|_| fail("configuration_conflict"))?;
-        if main
-            .as_object()
-            .is_none_or(|object| object.contains_key("enterpriseConfig"))
-            || main["deploymentMode"].as_str() != Some("3p")
-        {
-            return Err(fail("configuration_conflict"));
-        }
-        // Desktop-owned preferences and index labels are not inference
-        // authority. Engine apply/restore still requires exact original bytes.
+        crate::claude_config::check_mapping_selection(&metadata, &id, &main, false)?;
         Ok(())
     }
 
@@ -499,10 +517,13 @@ impl Service {
             if pending { "1" } else { "0" },
         )
     }
-    pub(super) fn ensure_no_other_claude_recovery(&self, own_journal_id: &str) -> Result<()> {
+    pub(super) fn ensure_no_other_claude_recovery(
+        &self,
+        own_journal_id: Option<&str>,
+    ) -> Result<()> {
         for journal in self.store.list::<Journal>("journal", None)? {
             if journal.client == ClientKind::Claude
-                && journal.id != own_journal_id
+                && Some(journal.id.as_str()) != own_journal_id
                 && journal.requires_recovery()
             {
                 return Err(fail("configuration_recovery_required"));
@@ -529,14 +550,12 @@ impl Service {
     fn claude_source(&self) -> Result<(Option<Vec<u8>>, Option<(String, Vec<u8>)>)> {
         let metadata = read_file(&self.paths.claude_library.join("_meta.json"))?;
         let active = metadata
-            .as_ref()
-            .map(|bytes| {
-                let value: Value = serde_json::from_slice(bytes)
-                    .map_err(|_| fail("claude_configuration_source_unsupported"))?;
-                let id = value
-                    .get("appliedId")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| fail("claude_configuration_source_unsupported"))?;
+            .as_deref()
+            .map(crate::claude_config::selected_profile)
+            .transpose()?
+            .flatten()
+            .map(|id| {
+                let id = id.as_str();
                 validate_uuid(id).map_err(|_| fail("claude_configuration_source_unsupported"))?;
                 if uuid::Uuid::parse_str(id)
                     .map_err(|_| fail("claude_configuration_source_unsupported"))?
@@ -553,7 +572,7 @@ impl Service {
         Ok((metadata, active))
     }
 
-    pub(super) fn claude_revision(&self) -> Result<Option<String>> {
+    pub(super) fn claude_file_revisions(&self) -> Result<ConfigurationFileRevisions> {
         let (metadata, active) = self.claude_source()?;
         let main = read_file(
             &self
@@ -564,18 +583,72 @@ impl Service {
                 .join("claude_desktop_config.json"),
         )?;
         if metadata.is_none() && main.is_none() {
-            return Ok(None);
+            return Ok(Default::default());
         }
-        Ok(Some(sha256(
-            &serde_json::to_vec(&(
-                metadata.as_ref().map(|bytes| sha256(bytes)),
-                active.as_ref().map(|(id, bytes)| (id, sha256(bytes))),
-                main.as_ref().map(|bytes| sha256(bytes)),
-            ))
-            .map_err(|_| fail("serialization_failed"))?,
-        )))
+        let profile_hash = active.as_ref().map(|(_, bytes)| sha256(bytes));
+        let selected = active
+            .as_ref()
+            .zip(profile_hash.as_deref())
+            .map(|((id, _), hash)| (id.as_str(), hash));
+        let files = file_revision(
+            metadata.as_deref().map(sha256).as_deref(),
+            selected,
+            main.as_deref().map(sha256).as_deref(),
+        )?;
+        let route = match (metadata.as_deref(), selected, main.as_deref()) {
+            (Some(metadata), Some((id, hash)), Some(main))
+                if crate::claude_config::check_mapping_selection(metadata, id, main, true)
+                    .is_ok() =>
+            {
+                Some(crate::claude_config::profile_revision(id, hash))
+            }
+            _ => None,
+        };
+        Ok(ConfigurationFileRevisions {
+            files: Some(files),
+            route,
+        })
     }
 
+    /// Older saved rows only recorded a full-file fingerprint. Recover their expected route from
+    /// those same bytes or a matching published mapping, never from independently edited files.
+    pub(super) fn upgrade_claude_display_revision(&self) -> Result<()> {
+        let mut clients = self.clients.lock().map_err(|_| fail("state_unavailable"))?;
+        let Some(client) = clients.iter_mut().find(|c| {
+            c.client == ClientKind::Claude
+                && c.configuration_state == "saved"
+                && c.configuration_revision.is_some()
+                && c.claude_route_revision.is_none()
+        }) else {
+            return Ok(());
+        };
+        let mut route = self
+            .claude_file_revisions()
+            .ok()
+            .filter(|r| r.files == client.configuration_revision)
+            .and_then(|r| r.route);
+        if route.is_none() {
+            for mapping in self
+                .store
+                .list::<crate::claude_mapping::MappingRecord>("claude-mapping", None)?
+            {
+                if mapping.committed
+                    && let Ok(expected) = published_revisions(&mapping.context)
+                    && expected.files == client.configuration_revision
+                {
+                    route = expected.route;
+                    break;
+                }
+            }
+        }
+        if let Some(route) = route {
+            client.claude_route_revision = Some(route);
+            self.store.put("client-state", "claude", "local", client)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(super) fn preview_claude_config(
         &self,
         id: &str,
@@ -583,6 +656,22 @@ impl Service {
         model_id: &str,
         model_mapping: Option<&ClaudeModelMapping>,
     ) -> Result<ConfigPreview> {
+        self.remember_client_preview(
+            self.build_claude_entry(id, revision, model_id, model_mapping, Preparation::Prepared)?,
+            None,
+        )
+    }
+
+    pub(super) fn build_claude_entry(
+        &self,
+        id: &str,
+        revision: u64,
+        model_id: &str,
+        model_mapping: Option<&ClaudeModelMapping>,
+        preparation: Preparation<'_>,
+    ) -> Result<PreviewEntry> {
+        #[cfg(windows)]
+        let _verification = crate::system::InstallationVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         let observation = self.observe_configuration(ClientKind::Claude)?;
         let gate_error = self
@@ -623,7 +712,11 @@ impl Service {
                 "首次目录仅在确认后创建为用户私有目录；原字节可整组恢复，空目录可保留。".into(),
             ],
             redacted_diff: "No file mutation is permitted for this preview.".into(),
-            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+            expires_at: match preparation {
+                #[cfg(test)]
+                Preparation::Prepared => Some((chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()),
+                _ => None,
+            },
             can_apply: false, can_export_import: false, blocking_reason: None,
             codex_catalog: None, codex_runtime: None, codex_configuration_target: None,
             claude_configuration_target: target_view(&observation),
@@ -650,39 +743,75 @@ impl Service {
                 .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
             let (metadata, active) = self.claude_source()?;
             let main = read_file(&target.config_root.join("claude_desktop_config.json"))?;
-            let profile_id = uuid();
-            let binding_id = uuid();
-            let mapping =
-                if model_mapping.is_some() || crate::claude_mapping::requires_mapping(model_id) {
-                    let ids = model_mapping.map_or([model_id; 3], ClaudeModelMapping::ids);
-                    let display_name = |id: &str| {
-                        cache
-                            .models
-                            .iter()
-                            .find(|model| {
-                                model.id == id
-                                    && model.provider_id == record.view.provider_id
-                                    && model.category == "text"
-                            })
-                            .map(|model| model.label.as_str())
-                            .ok_or_else(|| fail("model_unavailable"))
-                    };
-                    let plan = self.claude_mappings.reserve(
-                        &binding_id,
-                        &profile_id,
-                        model_id,
-                        model_mapping,
-                        [
-                            display_name(ids[0])?,
-                            display_name(ids[1])?,
-                            display_name(ids[2])?,
-                        ],
-                    )?;
-                    mapping_reservation = Some(self.claude_mappings.ticket(&plan));
-                    Some(plan)
-                } else {
-                    None
-                };
+            let ids = model_mapping.map_or([model_id; 3], ClaudeModelMapping::ids);
+            let display_name = |id: &str| {
+                cache
+                    .models
+                    .iter()
+                    .find(|model| {
+                        model.id == id
+                            && model.provider_id == record.view.provider_id
+                            && model.category == "text"
+                    })
+                    .map(|model| model.label.as_str())
+                    .ok_or_else(|| fail("model_unavailable"))
+            };
+            let display_names = [
+                display_name(ids[0])?,
+                display_name(ids[1])?,
+                display_name(ids[2])?,
+            ];
+            let source_revision = crate::claude_config::review_source_revision(
+                metadata.as_deref(),
+                active.as_ref().map(|(id, b)| (id.as_str(), b.as_slice())),
+                main.as_deref(),
+            )?;
+            let prior = if let Preparation::Confirm(previous, draft) = &preparation {
+                self.require_claude_configuration(
+                    &observation,
+                    Some(&previous.policy),
+                    previous.claude_configuration_target.as_ref(),
+                )?;
+                let frozen = previous
+                    .claude_context
+                    .as_ref()
+                    .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+                self.validate_claude_authority_state(
+                    frozen,
+                    false,
+                    true,
+                    &observation.policy,
+                    false,
+                    false,
+                )?;
+                if draft.display_names != display_names {
+                    return Err(fail("model_unavailable"));
+                }
+                if draft.source_revision != source_revision {
+                    return Err(fail("configuration_conflict"));
+                }
+                Some(frozen)
+            } else {
+                None
+            };
+            let profile_id = prior.map_or_else(uuid, |p| p.profile_id.clone());
+            let binding_id = prior.map_or_else(uuid, |p| p.binding_id.clone());
+            let reviewing = matches!(preparation, Preparation::Review);
+            let mapping = if !reviewing
+                && (model_mapping.is_some() || crate::claude_mapping::requires_mapping(model_id))
+            {
+                let (plan, ticket) = self.claude_mappings.reserve(
+                    &binding_id,
+                    &profile_id,
+                    model_id,
+                    model_mapping,
+                    display_names,
+                )?;
+                mapping_reservation = Some(ticket);
+                Some(plan)
+            } else {
+                None
+            };
             // Compile the complete, bounded source before credentials or grants.
             let compiled = crate::claude_config::compile(&crate::claude_config::LibraryPlan {
                 app_version: &target.app_version,
@@ -713,19 +842,51 @@ impl Service {
                     .as_ref()
                     .map(|(id, bytes)| crate::claude_config::ActiveProfile { id, bytes }),
             })?;
-            let context = self.freeze_claude(Plan {
-                record: &record,
-                cache: &cache,
-                compiled: &compiled,
-                observation: &observation,
-                binding_id: &binding_id,
-                selected_model_id: model_id,
-            })?;
+            let context = self.freeze_claude(
+                Plan {
+                    record: &record,
+                    cache: &cache,
+                    compiled: &compiled,
+                    observation: &observation,
+                    binding_id: &binding_id,
+                    selected_model_id: model_id,
+                },
+                reviewing,
+            )?;
             view.paths = compiled
                 .files()
                 .iter()
                 .map(|file| file.path.clone())
                 .collect();
+            if reviewing {
+                let mapping = model_mapping.ok_or_else(|| fail("model_unavailable"))?;
+                view.redacted_diff = serde_json::to_string_pretty(&json!({
+                    "models": mapping, "displayNames": display_names, "credential": "Orbit helper", "gateway": "local forwarding port allocated on confirmation",
+                    "metadata": {"appliedId": profile_id}, "deploymentMode": "3p",
+                })).map_err(|_| fail("serialization_failed"))?;
+                view.impact.push(
+                    "Claude Desktop 通过本机 Orbit 转发请求，使用时请保持 Orbit 运行。".into(),
+                );
+                view.can_apply = true;
+                return Ok(PreviewEntry {
+                    view,
+                    codex_draft: None,
+                    claude_draft: Some(SwitchDraft {
+                        mapping: mapping.clone(),
+                        source_revision,
+                        display_names: display_names.map(str::to_owned),
+                    }),
+                    journal_id: None,
+                    import_candidate: None,
+                    policy: observation.policy,
+                    configuration_target: None,
+                    claude_configuration_target: observation.claude_configuration_target,
+                    claude_diagnostic_scope: None,
+                    claude_context: Some(context),
+                    catalog_context: None,
+                    _mapping_reservation: None,
+                });
+            }
             // Only owned values enter the preview; unknown metadata/main/profile
             // fields and every original credential remain solely in the journal.
             view.redacted_diff = serde_json::to_string_pretty(&json!({
@@ -845,25 +1006,20 @@ impl Service {
             view.can_apply = true;
             frozen = Some(context);
         }
-        self.previews
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .insert(
-                view.id.clone(),
-                PreviewEntry {
-                    view: view.clone(),
-                    journal_id,
-                    import_candidate: None,
-                    policy: observation.policy,
-                    configuration_target: None,
-                    claude_configuration_target: observation.claude_configuration_target,
-                    claude_diagnostic_scope: None,
-                    claude_context: frozen,
-                    catalog_context: None,
-                    _mapping_reservation: mapping_reservation,
-                },
-            );
-        Ok(view)
+        Ok(PreviewEntry {
+            view,
+            codex_draft: None,
+            claude_draft: None,
+            journal_id,
+            import_candidate: None,
+            policy: observation.policy,
+            configuration_target: None,
+            claude_configuration_target: observation.claude_configuration_target,
+            claude_diagnostic_scope: None,
+            claude_context: frozen,
+            catalog_context: None,
+            _mapping_reservation: mapping_reservation,
+        })
     }
 
     pub(super) fn apply_claude_entry(
@@ -880,11 +1036,9 @@ impl Service {
             .claude_context
             .as_ref()
             .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
-        // take_preview already accepted the explicit confirmation deadline.
-        // Claim only the socket before slow full checks; it grants no write or
-        // forwarding authority, and the entry ticket releases it on failure.
+        // The ticket releases the reserved socket on failure. Forwarding starts after commit.
         if !restore && let Some(plan) = frozen.mapping.as_ref() {
-            self.claude_mappings.claim(plan)?;
+            self.claude_mappings.check_reservation(plan)?;
         }
         let guard = || {
             self.validate_claude_engine_policy(
@@ -892,12 +1046,7 @@ impl Service {
                 entry.claude_configuration_target.as_ref(),
             )?;
             if !restore {
-                self.ensure_no_other_claude_recovery(
-                    entry
-                        .journal_id
-                        .as_deref()
-                        .ok_or_else(|| fail("preview_expired"))?,
-                )?;
+                self.ensure_no_other_claude_recovery(entry.journal_id.as_deref())?;
             }
             Ok(())
         };
@@ -939,9 +1088,9 @@ impl Service {
                     .journal_id
                     .as_deref()
                     .ok_or_else(|| fail("preview_expired"))?,
-                entry.view.restore_coordination.is_some(),
+                entry.view.restore_coordination,
             )?;
-        self.project_claude_operation(restore, true, preserved_preferences)?;
+        self.project_claude_operation(restore, true, preserved_preferences, Some(frozen))?;
         if !restore && frozen.mapping.is_some() {
             let mut record = self
                 .store
@@ -976,11 +1125,14 @@ impl Service {
         restoring: bool,
         recovered: bool,
         preserved_preferences: bool,
+        context: Option<&ClaudeContext>,
     ) -> Result<()> {
-        let revision = if recovered {
-            self.claude_revision()?
+        let revision = if recovered && !restoring {
+            published_revisions(context.ok_or_else(|| fail("backup_invalid"))?)?
+        } else if recovered {
+            self.claude_file_revisions()?
         } else {
-            None
+            Default::default()
         };
         for client in self
             .clients
@@ -998,7 +1150,12 @@ impl Service {
             }
             .into();
             if recovered {
-                client.configuration_revision = revision.clone();
+                client.configuration_revision = revision.files.clone();
+                client.claude_route_revision = if restoring {
+                    None
+                } else {
+                    revision.route.clone()
+                };
             }
             client.loaded_state = if recovered {
                 "restart_required"
@@ -1067,14 +1224,8 @@ impl Service {
         paths.reverse();
         let journal_id = if blocked.is_none() {
             let (journal, context) = if let Some(coordination) = coordination {
-                let (journal, context, mode) = match coordination {
-                    ClaudeRestoreCoordination::MainPreferencesV1 => {
-                        engine.prepare_claude_preferences_restore_details(backup_id)?
-                    }
-                    ClaudeRestoreCoordination::MainSettingsV2 => {
-                        engine.prepare_claude_main_restore_details(backup_id, true)?
-                    }
-                };
+                let (journal, context, mode) =
+                    engine.prepare_claude_settings_restore_details(backup_id, coordination)?;
                 original_mode = Some(mode);
                 (journal, context)
             } else {
@@ -1116,7 +1267,10 @@ impl Service {
                 panel_origin: backup.installation.origin,
                 installation_id: backup.installation.id,
             }),
-            impact: if coordination == Some(ClaudeRestoreCoordination::MainSettingsV2) {
+            impact: if coordination == Some(ClaudeRestoreCoordination::LibrarySettingsV3) {
+                vec!["还原接入前的模式和活动配置，移除 Orbit 的配置条目。保留之后新增的配置、偏好和 MCP 设置。".into(),
+                     "如活动配置已切换、Orbit 条目已修改，或确认前文件再次变化，将停止恢复。恢复后请重启 Claude Desktop。".into()]
+            } else if coordination == Some(ClaudeRestoreCoordination::MainSettingsV2) {
                 vec!["显式保留当前主配置的偏好、Cowork 目录和其他设置；仅还原接入前的 deploymentMode，并恢复原索引与 profile。".into(),
                     "确认后任何文件或源备份变化都会停止；未保存过主配置时也仅移除 Orbit 写入的接入模式，保留客户端新增设置。失效授权不会复活，客户端仍需重启。".into()]
             } else if coordination.is_some() {
@@ -1127,11 +1281,11 @@ impl Service {
                     "恢复不依赖当前账户会话、key、节点或 helper；外部修改时整组停止，失效授权不会复活。".into()]
             },
             redacted_diff: if coordination.is_some() {
-                serde_json::to_string_pretty(&json!({"coordination":coordination,"claude_desktop_config.json":{"deploymentMode":{"from":"3p","to":original_mode.map(|mode| mode.unwrap_or("absent".into())).unwrap_or("unverified".into())},"preserved":if coordination == Some(ClaudeRestoreCoordination::MainSettingsV2) {"all current unowned main settings as raw values"} else {"current preferences raw object or absence"}},"configLibrary":"restore authenticated original profile and metadata bytes","secrets":"redacted"})).map_err(|_| fail("serialization_failed"))?
+                serde_json::to_string_pretty(&json!({"coordination":coordination,"claude_desktop_config.json":{"deploymentMode":{"from":"3p","to":original_mode.map(|mode| mode.unwrap_or("absent".into())).unwrap_or("unverified".into())},"preserved":if coordination == Some(ClaudeRestoreCoordination::MainPreferencesV1) {"current preferences raw object or absence"} else {"all current unowned main settings as raw values"}},"configLibrary":if coordination == Some(ClaudeRestoreCoordination::LibrarySettingsV3) {"remove Orbit profile and index entry; restore previous selection; preserve unrelated entries and fields"} else {"restore authenticated original profile and metadata bytes"},"secrets":"redacted"})).map_err(|_| fail("serialization_failed"))?
             } else {
                 "Restore encrypted original configuration; original secrets stay redacted.".into()
             },
-            expires_at,
+            expires_at: Some(expires_at),
             can_apply: blocked.is_none(),
             can_export_import: false,
             blocking_reason: blocked,
@@ -1146,6 +1300,8 @@ impl Service {
             .insert(
                 view.id.clone(),
                 PreviewEntry {
+                    claude_draft: None,
+                    codex_draft: None,
                     view: view.clone(),
                     journal_id,
                     import_candidate: None,
@@ -1216,7 +1372,12 @@ impl Service {
             &observation.policy,
             observation.claude_configuration_target.as_ref(),
         )?;
-        self.project_claude_operation(restored, recovered, preserved_preferences)
+        self.project_claude_operation(
+            restored,
+            recovered,
+            preserved_preferences,
+            operation.as_ref().map(|(context, _, _)| context),
+        )
     }
 
     /// Diagnostic export has its own destination fence. Resolve the existing
@@ -1327,7 +1488,7 @@ impl Service {
             .as_ref()
             .ok_or_else(|| {
                 observation
-                    .claude_configuration_error
+                    .configuration_error
                     .clone()
                     .unwrap_or_else(|| fail("claude_configuration_target_unverified"))
             })?;
@@ -1483,7 +1644,7 @@ impl Service {
         ))
     }
 
-    pub(super) fn freeze_claude(&self, plan: Plan<'_>) -> Result<ClaudeContext> {
+    pub(super) fn freeze_claude(&self, plan: Plan<'_>, reviewing: bool) -> Result<ClaudeContext> {
         let Plan {
             record,
             cache,
@@ -1496,7 +1657,9 @@ impl Service {
             .claude_configuration_target
             .as_ref()
             .ok_or_else(|| fail("claude_configuration_target_unverified"))?;
-        self.validate_claude_configuration(&observation.policy, Some(target))?;
+        if !reviewing {
+            self.validate_claude_configuration(&observation.policy, Some(target))?;
+        }
         let node = cache
             .nodes
             .iter()
@@ -1586,7 +1749,19 @@ impl Service {
             mapping: compiled.mapping().cloned(),
         };
         context.scope_revision = scope_revision(&context)?;
-        self.validate_claude_context(&context, false)?;
+        if reviewing {
+            // This read-only plan uses the full observation already made in this operation.
+            self.validate_claude_authority_state(
+                &context,
+                false,
+                true,
+                &observation.policy,
+                false,
+                false,
+            )?;
+        } else {
+            self.validate_claude_context(&context, false)?;
+        }
         Ok(context)
     }
 
