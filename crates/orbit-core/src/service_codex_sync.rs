@@ -40,14 +40,16 @@ impl Service {
                     model_count: count,
                     error,
                 });
-                if state == "updated" {
+                // A verified no-op also upgrades receipts from clients predating field ownership.
+                if state == "updated"
+                    || (state == "current" && client.codex_route_revision.is_none())
+                {
                     client.configuration_state = "saved".into();
-                    client.configuration_revision = codex_configuration_revision(
-                        &self.paths.codex_config,
-                        &self.paths.codex_catalog(),
-                    )
-                    .ok()
-                    .flatten();
+                    let revision =
+                        codex_file_revisions(&self.paths.codex_config, &self.paths.codex_catalog())
+                            .unwrap_or_default();
+                    client.configuration_revision = revision.files;
+                    client.codex_route_revision = revision.route;
                     client.loaded_state = "restart_required".into();
                     client.loaded_evidence = None;
                     client.connection_evidence = None;
@@ -71,6 +73,8 @@ impl Service {
     }
 
     pub(super) fn sync_codex_models(&self, id: &str) -> Result<Option<(bool, usize)>> {
+        #[cfg(windows)]
+        let _verification = crate::system::CodexVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate

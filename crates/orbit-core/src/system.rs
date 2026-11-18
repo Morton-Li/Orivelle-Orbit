@@ -14,6 +14,11 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+#[cfg(any(windows, test))]
+#[path = "windows_codex_verification.rs"]
+mod windows_codex_verification;
+#[cfg(windows)]
+pub(crate) use windows_codex_verification::CodexVerificationScope;
 
 #[derive(Clone)]
 pub struct SystemPaths {
@@ -1527,6 +1532,7 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
         loaded_state: "unconfirmed".into(),
         connection_state: "not_tested".into(),
         configuration_revision: None,
+        codex_route_revision: None,
         loaded_evidence: None,
         connection_evidence: None,
         catalog_sync: None,

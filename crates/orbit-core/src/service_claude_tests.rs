@@ -2668,7 +2668,8 @@ fn claude_switch_snapshot_remains_restorable_after_its_creation_timestamp_deadli
         json!({"snapshot_id": source_id, "expires_at": old_deadline})
     );
     assert!(
-        chrono::DateTime::parse_from_rfc3339(&restore.expires_at).unwrap() > chrono::Utc::now()
+        chrono::DateTime::parse_from_rfc3339(restore.expires_at.as_deref().unwrap()).unwrap()
+            > chrono::Utc::now()
     );
     f.service.commit_logout(&f.record.view.id).unwrap();
     assert_eq!(
@@ -2706,7 +2707,7 @@ fn claude_switch_restore_expired_confirmation_refuses_before_files_or_grants() {
         .get_mut(&restore.id)
         .unwrap()
         .view
-        .expires_at = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        .expires_at = Some((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
     f.vault.calls.store(0, Ordering::SeqCst);
     f.vault.mutations.store(0, Ordering::SeqCst);
     assert_eq!(

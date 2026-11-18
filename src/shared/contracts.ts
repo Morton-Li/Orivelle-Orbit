@@ -176,6 +176,7 @@ export type ClientView = {
   loaded_state: "unconfirmed" | "restart_required" | "confirmed";
   connection_state: "not_tested" | "passed" | "failed";
   configuration_revision: string | null;
+  codex_route_revision?: string | null;
   loaded_evidence: ClientEvidence | null;
   connection_evidence: ClientEvidence | null;
   manual_steps: string[];
@@ -391,7 +392,7 @@ type ConfigPreviewBase = {
   paths: string[];
   impact: string[];
   redacted_diff: string;
-  expires_at: string;
+  expires_at: string | null;
   can_apply: boolean;
   can_export_import: boolean;
   blocking_reason: string | null;
@@ -541,6 +542,7 @@ export interface IpcCommands {
     };
     result: ConfigPreview;
   };
+  discard_config_preview: { args: { preview_id: string }; result: null };
   apply_client_config: {
     args: { preview_id: string; confirmed: true };
     result: ConfigResult;

@@ -623,7 +623,7 @@ impl Service {
                 "首次目录仅在确认后创建为用户私有目录；原字节可整组恢复，空目录可保留。".into(),
             ],
             redacted_diff: "No file mutation is permitted for this preview.".into(),
-            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+            expires_at: Some((chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()),
             can_apply: false, can_export_import: false, blocking_reason: None,
             codex_catalog: None, codex_runtime: None, codex_configuration_target: None,
             claude_configuration_target: target_view(&observation),
@@ -851,6 +851,7 @@ impl Service {
             .insert(
                 view.id.clone(),
                 PreviewEntry {
+                    codex_draft: None,
                     view: view.clone(),
                     journal_id,
                     import_candidate: None,
@@ -1131,7 +1132,7 @@ impl Service {
             } else {
                 "Restore encrypted original configuration; original secrets stay redacted.".into()
             },
-            expires_at,
+            expires_at: Some(expires_at),
             can_apply: blocked.is_none(),
             can_export_import: false,
             blocking_reason: blocked,
@@ -1146,6 +1147,7 @@ impl Service {
             .insert(
                 view.id.clone(),
                 PreviewEntry {
+                    codex_draft: None,
                     view: view.clone(),
                     journal_id,
                     import_candidate: None,

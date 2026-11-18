@@ -64,6 +64,8 @@ export function configPolicyMessage(code: string): string | null {
     return t("access.codexRestoreContextUnavailable");
   if (code === "codex_config_override_unverified")
     return t("access.codexOverrideUnavailable");
+  if (code === "codex_configuration_invalid")
+    return t("access.codexConfigInvalid");
   if (
     [
       "codex_catalog_version_unverified",

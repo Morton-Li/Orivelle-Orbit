@@ -306,11 +306,11 @@ export const useOrbitStore = defineStore("orbit", () => {
       code === "panel_origin_not_allowed"
         ? t("login.officialOnly")
         : configPolicyMessage(code);
-    notify(
+    const message =
       policyMessage ??
-        `${error instanceof OrbitError ? error.message : t("common.failed")} (${code})`,
-      "error",
-    );
+      `${error instanceof OrbitError ? error.message : t("common.failed")} (${code})`;
+    notify(message, "error");
+    return message;
   }
   function acceptError(event: ScopedErrorEvent) {
     const global =

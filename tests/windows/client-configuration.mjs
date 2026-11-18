@@ -47,6 +47,10 @@ export async function exerciseClientConfiguration(
       `${kind} native preflight failed`,
     );
     console.log(new Date().toISOString(), kind, "preview");
+    const originalCodex =
+      kind === "codex"
+        ? await Promise.all(target.config_paths.map(digest))
+        : null;
     const preview = await invoke(page, "preview_client_config", {
       connection_id: connection.id,
       expected_revision: connection.revision,
@@ -67,6 +71,15 @@ export async function exerciseClientConfiguration(
     );
     assert.equal(preview.paths.length, kind === "codex" ? 2 : 3);
     const before = await Promise.all(preview.paths.map(digest));
+    if (kind === "codex") {
+      assert.equal(preview.expires_at, null);
+      assert.deepEqual(preview.paths, target.config_paths);
+      assert.deepEqual(
+        before,
+        originalCodex,
+        "Reviewing must preserve both complete files.",
+      );
+    }
     const originalMain =
       kind === "claude"
         ? JSON.parse(
