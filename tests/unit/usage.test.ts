@@ -13,7 +13,7 @@ import UsagePage from "../../src/pages/UsagePage.vue";
 import { useOrbitStore } from "../../src/stores/orbit";
 import { bootstrap, orbitSelectStub } from "../fixtures";
 import { usageSummary, usagePage } from "../usage-fixtures";
-import { validUsageRange } from "../../src/shared/usage";
+import { usageTokenRows, validUsageRange } from "../../src/shared/usage";
 import { locale } from "../../src/shared/i18n";
 let wrapper: VueWrapper | undefined;
 beforeEach(() => {
@@ -243,4 +243,35 @@ describe("platform usage", () => {
     expect(validUsageRange("2026-01-01", "2026-04-01")).toBe(false);
     expect(validUsageRange("2026-01-01", "2026-03-31")).toBe(true);
   });
+});
+
+it("preserves legacy unspecified writes and shows separate TTL observations without adding their aggregate", () => {
+  const metrics = usagePage().data[0]!.usage.tokens;
+  const oldRows = usageTokenRows(metrics);
+  expect(oldRows.find((row) => row.key === "cacheWrite")?.quantity).toEqual(
+    metrics.cache_write,
+  );
+  expect(oldRows.some((row) => row.key === "cacheWrite30m")).toBe(false);
+  const split = usageTokenRows({
+    ...metrics,
+    cache_write: { value: 7000, status: "known" },
+    cache_write_30m: { value: 3000, status: "known" },
+    cache_write_12h: { value: 4000, status: "known" },
+  });
+  expect(
+    split.find((row) => row.key === "cacheWrite30m")?.quantity?.value,
+  ).toBe(3000);
+  expect(
+    split.find((row) => row.key === "cacheWrite12h")?.quantity?.value,
+  ).toBe(4000);
+  expect(split.some((row) => row.key === "cacheWrite")).toBe(false);
+  const missing = usageTokenRows({
+    ...metrics,
+    cache_write_30m: { value: null, status: "unknown" },
+    cache_write_12h: { value: null, status: "unknown" },
+  });
+  expect(
+    missing.find((row) => row.key === "cacheWrite30m")?.quantity?.value,
+  ).toBeNull();
+  expect(missing.some((row) => row.key === "cacheWrite")).toBe(true);
 });

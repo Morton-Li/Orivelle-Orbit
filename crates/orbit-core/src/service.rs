@@ -4790,6 +4790,8 @@ fn map_price(value: &Value, reference: bool) -> Result<Option<PriceView>> {
                 "input",
                 "cached_input",
                 "cache_write",
+                "cache_write_30m",
+                "cache_write_12h",
                 "output",
                 "reasoning",
                 "request",
@@ -10635,3 +10637,19 @@ mod tests {
 
 #[path = "service_usage.rs"]
 mod usage_queries;
+
+#[cfg(test)]
+mod cache_billing_price_tests {
+    use super::*;
+    #[test]
+    fn split_cache_price_meters_keep_their_exact_prices() {
+        let value = json!({"status":"configured", "currency":"USD", "meters":[{"meter":"cache_write_30m", "unit_size":1000000, "unit_price":"2.500000000001"}, {"meter":"cache_write_12h", "unit_size":1000000, "unit_price":"5.000000000000"}]});
+        let price = map_price(&value, false).unwrap().unwrap();
+        assert_eq!(price.rates[0].meter, "cache_write_30m");
+        assert_eq!(price.rates[0].unit_price.as_deref(), Some("2.500000000001"));
+        assert_eq!(price.rates[1].meter, "cache_write_12h");
+        let mut unknown = value;
+        unknown["meters"][0]["meter"] = json!("unrecognized_cache_meter");
+        assert!(map_price(&unknown, false).is_err());
+    }
+}

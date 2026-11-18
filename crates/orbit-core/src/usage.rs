@@ -75,6 +75,10 @@ pub struct UsageTokens {
     pub input: UsageQuantity,
     pub cached_input: UsageQuantity,
     pub cache_write: UsageQuantity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_30m: Option<UsageQuantity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_12h: Option<UsageQuantity>,
     pub output: UsageQuantity,
     pub reasoning: UsageQuantity,
 }
@@ -172,6 +176,31 @@ pub struct UsagePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cache_lifetimes_round_trip_without_fabricating_legacy_zero() {
+        let legacy = serde_json::json!({"state":"complete", "total":{"value":13000,"status":"known"}, "input":{"value":12000,"status":"known"}, "cached_input":{"value":4000,"status":"known"}, "cache_write":{"value":7000,"status":"known"}, "output":{"value":1000,"status":"known"}, "reasoning":{"value":0,"status":"known"}});
+        let old: UsageTokens = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(old.cache_write_30m.is_none());
+        assert!(old.cache_write_12h.is_none());
+        assert!(
+            serde_json::to_value(&old)
+                .unwrap()
+                .get("cache_write_30m")
+                .is_none()
+        );
+        let mut split = legacy;
+        split["cache_write_30m"] = serde_json::json!({"value":3000,"status":"known"});
+        split["cache_write_12h"] = serde_json::json!({"value":4000,"status":"known"});
+        let new: UsageTokens = serde_json::from_value(split.clone()).unwrap();
+        assert_eq!(new.cache_write_30m.as_ref().unwrap().value, Some(3000));
+        assert_eq!(new.cache_write_12h.as_ref().unwrap().value, Some(4000));
+        assert_eq!(serde_json::to_value(&new).unwrap(), split);
+        split["cache_write_12h"] = serde_json::json!({"value":null,"status":"unknown"});
+        let missing: UsageTokens = serde_json::from_value(split).unwrap();
+        let quantity = missing.cache_write_12h.unwrap();
+        assert!(quantity.value.is_none());
+        assert_eq!(quantity.status, "unknown");
+    }
     #[test]
     fn bounded_query_encodes_signed_cursors_without_changing_their_value() {
         let mut q = UsageQuery {
