@@ -10,6 +10,8 @@ export type UsageMetrics = {
     input: UsageQuantity;
     cached_input: UsageQuantity;
     cache_write: UsageQuantity;
+    cache_write_30m?: UsageQuantity;
+    cache_write_12h?: UsageQuantity;
     output: UsageQuantity;
     reasoning: UsageQuantity;
   };
@@ -99,4 +101,34 @@ export function validUsageRange(from: string, to: string): boolean {
     last >= first &&
     last - first < 90 * 86400000
   );
+}
+
+/** Old Panels provide the aggregate only; absence never means a zero TTL bucket. */
+export function usageTokenRows(tokens: UsageMetrics["tokens"]) {
+  const rows: Array<{ key: string; quantity: UsageQuantity | undefined }> = [
+    { key: "input", quantity: tokens.input },
+    { key: "cached", quantity: tokens.cached_input },
+  ];
+  if (
+    tokens.cache_write_30m !== undefined ||
+    tokens.cache_write_12h !== undefined
+  ) {
+    rows.push(
+      { key: "cacheWrite30m", quantity: tokens.cache_write_30m },
+      { key: "cacheWrite12h", quantity: tokens.cache_write_12h },
+    );
+    if (
+      tokens.cache_write_30m?.status !== "known" ||
+      tokens.cache_write_12h?.status !== "known"
+    ) {
+      rows.push({ key: "cacheWrite", quantity: tokens.cache_write });
+    }
+  } else {
+    rows.push({ key: "cacheWrite", quantity: tokens.cache_write });
+  }
+  rows.push(
+    { key: "output", quantity: tokens.output },
+    { key: "reasoning", quantity: tokens.reasoning },
+  );
+  return rows;
 }

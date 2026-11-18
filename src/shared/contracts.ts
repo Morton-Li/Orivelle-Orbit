@@ -54,6 +54,8 @@ export type PricingMeter =
   | "input"
   | "cached_input"
   | "cache_write"
+  | "cache_write_30m"
+  | "cache_write_12h"
   | "output"
   | "reasoning"
   | "request"

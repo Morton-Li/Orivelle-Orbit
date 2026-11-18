@@ -189,3 +189,35 @@ for (const width of [1280, 640]) {
     expect(navigations).toEqual([]);
   });
 }
+
+test("usage details show both lifetime writes and preserve legacy aggregate records", async ({
+  page,
+}) => {
+  const records = usagePage();
+  records.data[0]!.usage.tokens.cache_write = { value: 7000, status: "known" };
+  records.data[0]!.usage.tokens.cache_write_30m = {
+    value: 3000,
+    status: "known",
+  };
+  records.data[0]!.usage.tokens.cache_write_12h = {
+    value: 4000,
+    status: "known",
+  };
+  await fixture(page, { usageRecords: records });
+  await page.goto("/#/usage");
+  await page
+    .getByRole("button", { name: "查看详情", exact: true })
+    .first()
+    .click();
+  const detail = page.locator(".usage-detail-grid");
+  await expect(detail).toContainText("30min 缓存写入");
+  await expect(detail).toContainText("3,000");
+  await expect(detail).toContainText("12h 缓存写入");
+  await expect(detail).toContainText("4,000");
+  await expect(detail).not.toContainText("未区分时长");
+  await page
+    .getByRole("button", { name: "查看详情", exact: true })
+    .first()
+    .click();
+  await expect(page.locator(".usage-detail-grid")).toContainText("未区分时长");
+});
