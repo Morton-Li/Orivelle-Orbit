@@ -17,6 +17,8 @@ export function configPolicyMessage(code: string): string | null {
     return t("access.claudeMappingUnavailable");
   if (code === "claude_native_migration_required")
     return t("access.claudeNativeMigrationRequired");
+  if (code === "codex_signature_verification_timeout")
+    return t("access.codexVerificationTimeout");
   if (code === "claude_signature_verification_timeout")
     return t("access.claudeVerificationTimeout");
   if (code === "managed_policy_unverified") return t("access.policyUnverified");

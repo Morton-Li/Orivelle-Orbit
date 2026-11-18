@@ -158,6 +158,7 @@ fn restore_coordination_selection<'de, D: serde::Deserializer<'de>>(
     match String::deserialize(deserializer)?.as_str() {
         "claude_main_preferences_v1" => Ok(Some(ClaudeRestoreCoordination::MainPreferencesV1)),
         "claude_main_settings_v2" => Ok(Some(ClaudeRestoreCoordination::MainSettingsV2)),
+        "claude_library_settings_v3" => Ok(Some(ClaudeRestoreCoordination::LibrarySettingsV3)),
         _ => Err(serde::de::Error::custom("unsupported restore coordination")),
     }
 }

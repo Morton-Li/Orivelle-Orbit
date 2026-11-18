@@ -292,7 +292,7 @@ fn claude_preferences_restore_v1_is_explicit_encrypted_and_preserves_exact_curre
     assert_eq!(operation.source_journal_phase.as_deref(), Some("committed"));
     assert_eq!(
         engine
-            .apply_claude_with_restore_mode(&preview.id, false)
+            .apply_claude_with_restore_mode(&preview.id, None)
             .unwrap_err()
             .code,
         "backup_invalid"
@@ -301,7 +301,10 @@ fn claude_preferences_restore_v1_is_explicit_encrypted_and_preserves_exact_curre
         assert!(read_file(Path::new(&file.path)).unwrap() == *bytes);
     }
     let (saved, preserving) = engine
-        .apply_claude_with_restore_mode(&preview.id, true)
+        .apply_claude_with_restore_mode(
+            &preview.id,
+            Some(ClaudeRestoreCoordination::MainPreferencesV1),
+        )
         .unwrap();
     assert_eq!(saved.phase, "committed");
     assert!(preserving);
@@ -330,6 +333,138 @@ fn claude_preferences_restore_v1_is_explicit_encrypted_and_preserves_exact_curre
 }
 
 #[test]
+fn claude_library_restore_preserves_later_switcher_entries_and_exact_raw_settings() {
+    for existing in [false, true] {
+        let fixture = Fixture::new(existing);
+        let guard = |_: &ClaudeContext, _: bool| Ok(());
+        let engine = fixture.engine(&guard);
+        let original = fixture.prepare(&engine);
+        engine.apply(&original.id).unwrap();
+        let index_path = &fixture.files[1].path;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(index_path).unwrap()).unwrap();
+        metadata["entries"].as_array_mut().unwrap().insert(
+            0,
+            serde_json::json!({"id":"personal-slot","name":"Personal","custom":"decimal"}),
+        );
+        metadata["view"] = serde_json::json!({"sort":"name"});
+        let decimal = "1.0000000000000000000000001";
+        fs::write(
+            index_path,
+            serde_json::to_string_pretty(&metadata)
+                .unwrap()
+                .replace("\"decimal\"", decimal),
+        )
+        .unwrap();
+        fs::write(&fixture.files[2].path,br#"{"deploymentMode":"3p","mcpServers":{"personal":{"command":"mock"}},"prefs":1.0000000000000000000000001}"#).unwrap();
+        assert!(engine.prepare_restore(&original.id).is_err());
+        let mode = ClaudeRestoreCoordination::LibrarySettingsV3;
+        let (preview, _, _) = engine
+            .prepare_claude_settings_restore_details(&original.id, mode)
+            .unwrap();
+        assert_eq!(
+            engine
+                .apply_claude_with_restore_mode(
+                    &preview.id,
+                    Some(ClaudeRestoreCoordination::MainSettingsV2)
+                )
+                .unwrap_err()
+                .code,
+            "backup_invalid"
+        );
+        engine
+            .apply_claude_with_restore_mode(&preview.id, Some(mode))
+            .unwrap();
+        let raw = fs::read_to_string(index_path).unwrap();
+        assert!(raw.contains(decimal));
+        let restored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(restored["entries"][0]["id"], "personal-slot");
+        assert_eq!(
+            restored["entries"].as_array().unwrap().len(),
+            1 + usize::from(existing)
+        );
+        assert_eq!(restored["view"]["sort"], "name");
+        let active = fixture
+            .context
+            .active_source
+            .as_ref()
+            .map(|s| s.profile_id.as_str());
+        assert_eq!(restored["appliedId"].as_str(), active);
+        let raw = fs::read_to_string(&fixture.files[2].path).unwrap();
+        assert!(raw.contains(decimal));
+        let main: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(main["deploymentMode"].as_str(), existing.then_some("1p"));
+        assert_eq!(main["mcpServers"]["personal"]["command"], "mock");
+        assert!(!Path::new(&fixture.files[0].path).exists());
+        assert!(
+            !fixture
+                .binding(&fixture.context.binding_id)
+                .unwrap()
+                .enabled
+        );
+    }
+}
+
+#[test]
+fn claude_library_restore_rejects_a_replaced_selection_modified_entry_and_concurrent_edit() {
+    let fixture = Fixture::new(true);
+    let guard = |_: &ClaudeContext, _: bool| Ok(());
+    let engine = fixture.engine(&guard);
+    let original = fixture.prepare(&engine);
+    engine.apply(&original.id).unwrap();
+    let mode = ClaudeRestoreCoordination::LibrarySettingsV3;
+    let index_path = &fixture.files[1].path;
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(index_path).unwrap()).unwrap();
+    let (preview, _, _) = engine
+        .prepare_claude_settings_restore_details(&original.id, mode)
+        .unwrap();
+    for change in [
+        "appliedId",
+        "renamed",
+        "extra field",
+        "missing original selection",
+    ] {
+        let mut edited = saved.clone();
+        let entries = edited["entries"].as_array_mut().unwrap();
+        match change {
+            "renamed" => entries.last_mut().unwrap()["name"] = "renamed".into(),
+            "extra field" => entries.last_mut().unwrap()["custom"] = true.into(),
+            "missing original selection" => {
+                entries.remove(0);
+            }
+            _ => {
+                edited["appliedId"] =
+                    serde_json::json!(fixture.context.active_source.as_ref().unwrap().profile_id)
+            }
+        }
+        let bytes = serde_json::to_vec(&edited).unwrap();
+        fs::write(index_path, &bytes).unwrap();
+        assert!(
+            engine
+                .prepare_claude_settings_restore_details(&original.id, mode)
+                .is_err(),
+            "{change}"
+        );
+        assert!(
+            engine
+                .apply_claude_with_restore_mode(&preview.id, Some(mode))
+                .is_err(),
+            "{change}"
+        );
+        assert_eq!(fs::read(index_path).unwrap(), bytes);
+        for file in [&fixture.files[0], &fixture.files[2]] {
+            assert!(equal_current(file, &file.after).unwrap());
+        }
+        assert!(
+            fixture
+                .binding(&fixture.context.binding_id)
+                .unwrap()
+                .enabled
+        );
+    }
+}
+
+#[test]
 fn claude_main_settings_v2_handles_first_run_fields_and_preserves_raw_current_settings() {
     for existing in [false, true] {
         let fixture = Fixture::new(existing);
@@ -346,7 +481,10 @@ fn claude_main_settings_v2_handles_first_run_fields_and_preserves_raw_current_se
                 .is_err()
         );
         let (preview, _, mode) = engine
-            .prepare_claude_main_restore_details(&original.id, true)
+            .prepare_claude_settings_restore_details(
+                &original.id,
+                ClaudeRestoreCoordination::MainSettingsV2,
+            )
             .unwrap();
         assert_eq!(mode.as_deref(), existing.then_some("1p"));
         let frozen = engine.decrypt(&preview).unwrap();
@@ -354,7 +492,10 @@ fn claude_main_settings_v2_handles_first_run_fields_and_preserves_raw_current_se
         assert!(proof.preserve_main_settings);
         assert_eq!(proof.original_main_before.is_some(), existing);
         engine
-            .apply_claude_with_restore_mode(&preview.id, true)
+            .apply_claude_with_restore_mode(
+                &preview.id,
+                Some(ClaudeRestoreCoordination::MainSettingsV2),
+            )
             .unwrap();
         let result = fs::read(&fixture.files[2].path).unwrap();
         let result: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
@@ -412,7 +553,10 @@ fn claude_main_settings_v2_freezes_added_fields_and_rejects_deployment_mode_chan
     .unwrap();
     assert!(
         engine
-            .prepare_claude_main_restore_details(&original.id, true)
+            .prepare_claude_settings_restore_details(
+                &original.id,
+                ClaudeRestoreCoordination::MainSettingsV2
+            )
             .is_err()
     );
     fs::write(
@@ -421,13 +565,19 @@ fn claude_main_settings_v2_freezes_added_fields_and_rejects_deployment_mode_chan
     )
     .unwrap();
     let (preview, _, _) = engine
-        .prepare_claude_main_restore_details(&original.id, true)
+        .prepare_claude_settings_restore_details(
+            &original.id,
+            ClaudeRestoreCoordination::MainSettingsV2,
+        )
         .unwrap();
     let external = br#"{"deploymentMode":"3p","coworkUserFilesPath":"second"}"#;
     fs::write(&fixture.files[2].path, external).unwrap();
     assert!(
         engine
-            .apply_claude_with_restore_mode(&preview.id, true)
+            .apply_claude_with_restore_mode(
+                &preview.id,
+                Some(ClaudeRestoreCoordination::MainSettingsV2)
+            )
             .is_err()
     );
     assert_eq!(fs::read(&fixture.files[2].path).unwrap(), external);
@@ -501,7 +651,10 @@ fn claude_preferences_restore_v1_frozen_files_source_and_vault_changes_stop_befo
             .collect::<Vec<_>>();
         assert!(
             engine
-                .apply_claude_with_restore_mode(&preview.id, true)
+                .apply_claude_with_restore_mode(
+                    &preview.id,
+                    Some(ClaudeRestoreCoordination::MainPreferencesV1)
+                )
                 .is_err(),
             "{fault}"
         );
@@ -557,7 +710,10 @@ fn claude_preferences_restore_v1_each_publication_cut_recovers_its_frozen_group(
         armed.set(true);
         assert_eq!(
             engine
-                .apply_claude_with_restore_mode(&preview.id, true)
+                .apply_claude_with_restore_mode(
+                    &preview.id,
+                    Some(ClaudeRestoreCoordination::MainPreferencesV1)
+                )
                 .unwrap_err()
                 .code,
             "synthetic_restore_cut",
@@ -668,6 +824,14 @@ fn claude_helper_budget_restores_legacy_five_second_encrypted_journal_without_re
         let mut bytes = serde_json::to_vec_pretty(&profile).unwrap();
         bytes.push(b'\n');
         fixture.files[0].after = Some(bytes);
+        // Historical releases also pretty-encoded the complete index and main object.
+        for file in &mut fixture.files[1..] {
+            let value: serde_json::Value =
+                serde_json::from_slice(file.after.as_ref().unwrap()).unwrap();
+            let mut bytes = serde_json::to_vec_pretty(&value).unwrap();
+            bytes.push(b'\n');
+            file.after = Some(bytes);
+        }
         fixture.context.files = fixture
             .files
             .iter()
@@ -677,6 +841,12 @@ fn claude_helper_budget_restores_legacy_five_second_encrypted_journal_without_re
     }
 
     let mut fixture = Fixture::new(true);
+    // The old parser also accepted repeated unknown keys. Only the complete matching
+    // historical output may authorize restoring these exact bytes.
+    let historical_main =
+        br#"{"deploymentMode":"1p","unowned":false,"unowned":{"theme":"system"}}"#;
+    fixture.files[2].before = Some(historical_main.to_vec());
+    fs::write(&fixture.files[2].path, historical_main).unwrap();
     freeze_timeout(&mut fixture, 5);
     let frozen_context = serde_json::to_vec(&fixture.context).unwrap();
     let guard = |context: &ClaudeContext, _: bool| {

@@ -47,10 +47,10 @@ const selectedMapping = ref<ClaudeModelMapping>({
   haiku: "",
 });
 const preview = ref<ConfigPreview | null>(null);
-const codexReviewOpen = ref(false);
+const reviewClient = ref<ClientKind | null>(null);
 const reviewError = ref("");
 function discard(prepared: ConfigPreview | null | undefined) {
-  if (prepared?.client === "codex" && prepared.expires_at === null) {
+  if (prepared?.operation === "apply" && prepared.expires_at === null) {
     void call("discard_config_preview", { preview_id: prepared.id }).catch(
       () => {},
     );
@@ -80,7 +80,6 @@ function previewAllowed(kind: ClientKind): boolean {
   return (
     configurationAllowed(kind) ||
     !!(
-      kind === "codex" &&
       client?.installed &&
       client.platform_supported &&
       client.managed !== "yes" &&
@@ -193,10 +192,20 @@ watch(
   () => store.scope,
   () => {
     previewGeneration++;
-    if (codexReviewOpen.value) reviewError.value = t("access.scopeChanged");
     selectedMapping.value = { sonnet: "", opus: "", haiku: "" };
+    if (reviewClient.value) reviewError.value = t("access.scopeChanged");
   },
   { flush: "sync" },
+);
+watch(
+  selectedMapping,
+  () => {
+    if (reviewClient.value === "claude" && !reviewError.value) {
+      previewGeneration++;
+      reviewError.value = t("access.reviewModelsChanged");
+    }
+  },
+  { deep: true, flush: "sync" },
 );
 watch(
   claudeModels,
@@ -216,7 +225,7 @@ watch(
 );
 async function requestPreview(client: ClientKind) {
   const reason = connectReason(client);
-  if (reason && codexReviewOpen.value && client === "codex") {
+  if (reason && reviewClient.value === client) {
     reviewError.value = t(reason);
     return;
   }
@@ -244,17 +253,13 @@ async function requestPreview(client: ClientKind) {
     origin === store.activeConnection?.panel_origin;
   previewing.value[client] = true;
   let prepared: ConfigPreview | undefined;
-  if (client === "codex") {
-    discard(preview.value);
-    preview.value = null;
-    reviewError.value = "";
-    codexReviewOpen.value = true;
-  }
+  discard(preview.value);
+  preview.value = null;
+  reviewError.value = "";
+  reviewClient.value = client;
   try {
-    if (client === "codex") {
-      await nextTick();
-      if (!current()) return;
-    }
+    await nextTick();
+    if (!current()) return;
     const result = await store.perform(
       `preview-${client}`,
       "preview_client_config",
@@ -267,15 +272,14 @@ async function requestPreview(client: ClientKind) {
       {
         onError: (error) => {
           if (!current()) return;
-          const message = store.report(error);
-          if (client === "codex") reviewError.value = message;
+          reviewError.value = store.report(error);
         },
       },
     );
     prepared = result;
     if (!current()) return;
     if (!result) {
-      if (client === "codex" && !reviewError.value)
+      if (!reviewError.value)
         reviewError.value = t(
           store.state.maintenance_active
             ? "common.updateMaintenance"
@@ -287,8 +291,7 @@ async function requestPreview(client: ClientKind) {
     // model revision before the dialog can permanently retire a fresh preview.
     const noticeBeforeRead = store.notice;
     const synchronized =
-      (client === "codex" &&
-        result.expires_at === null &&
+      (result.expires_at === null &&
         matchesReviewModel(result, store.models)) ||
       (await store.loadModels());
     if (!current()) return;
@@ -297,7 +300,7 @@ async function requestPreview(client: ClientKind) {
       store.notice !== noticeBeforeRead &&
       store.notice?.tone === "error"
     ) {
-      if (client === "codex") reviewError.value = store.notice.text;
+      reviewError.value = store.notice.text;
       return;
     }
     const sameConnection = matchesReviewConnection(
@@ -308,7 +311,7 @@ async function requestPreview(client: ClientKind) {
       !synchronized ||
       result.operation !== "apply" ||
       result.client !== client ||
-      (!store.ready && (client !== "codex" || result.expires_at !== null)) ||
+      (!store.ready && result.expires_at !== null) ||
       (mapping &&
         (result.model_id !== mapping.sonnet ||
           !mappingReady.value ||
@@ -318,16 +321,11 @@ async function requestPreview(client: ClientKind) {
       !sameConnection ||
       !matchesReviewModel(result, store.models)
     ) {
-      const message =
-        client === "codex"
-          ? t(
-              sameConnection
-                ? "access.reviewModelsChanged"
-                : "access.scopeChanged",
-            )
-          : t("access.previewExpired");
-      if (client === "codex") reviewError.value = message;
-      else store.notify(message);
+      const message = t(
+        !sameConnection ? "access.scopeChanged" : "access.reviewModelsChanged",
+      );
+      reviewError.value = message;
+      if (result.expires_at !== null) store.notify(message);
       return;
     }
     preview.value = result;
@@ -371,7 +369,7 @@ async function restore(id: string, coordination?: ClaudeRestoreCoordination) {
   preview.value = result;
 }
 async function configurationApplied(result: ConfigResult) {
-  codexReviewOpen.value = false;
+  reviewClient.value = null;
   reviewError.value = "";
   preview.value = null;
   if (updatingClient.value === result.client && result.state === "restored") {
@@ -386,7 +384,7 @@ async function configurationApplied(result: ConfigResult) {
 function closePreview() {
   previewGeneration++;
   discard(preview.value);
-  codexReviewOpen.value = false;
+  reviewClient.value = null;
   reviewError.value = "";
   preview.value = null;
   updatingClient.value = null;
@@ -412,7 +410,7 @@ onMounted(async () => {
     selectedMapping.value = { ...apiKeys.updateMapping.mapping };
   await restore(
     backup.id,
-    client === "claude" ? "claude_main_settings_v2" : undefined,
+    client === "claude" ? "claude_library_settings_v3" : undefined,
   );
 });
 </script>
@@ -555,7 +553,7 @@ onMounted(async () => {
               restore(
                 switchSnapshot(client.client)!.id,
                 client.client === 'claude'
-                  ? 'claude_main_settings_v2'
+                  ? 'claude_library_settings_v3'
                   : undefined,
               )
             "
@@ -598,10 +596,10 @@ onMounted(async () => {
   </section>
   <ConfigReviewDialog
     :preview="preview"
-    :codex-review-open="codexReviewOpen"
-    :checking="previewing.codex"
+    :review-client="reviewClient"
+    :checking="reviewClient ? previewing[reviewClient] : false"
     :error="reviewError"
-    @retry="requestPreview('codex')"
+    @retry="reviewClient && requestPreview(reviewClient)"
     @close="closePreview"
     @applied="configurationApplied"
   />

@@ -357,6 +357,7 @@ const zh = {
   "access.scopeChanged": "账户、API Key 或节点已切换，请重新核对接入信息。",
   "access.reviewModelsChanged": "可用模型已变化，请重新核对接入信息。",
   "access.checkAgain": "重新检查",
+  "access.checkingClaude": "正在核对 Claude Desktop 配置、节点和模型映射…",
   "access.checkingCodex": "正在核对 Codex 配置、节点和可用模型…",
   "access.codexConfigInvalid":
     "无法解析 Codex 配置。请检查 config.toml 的格式后重新接入。",
@@ -435,6 +436,8 @@ const zh = {
     "第三方推理配置影响 Claude 整个桌面应用，包括 Chat、Code 与 Cowork。仅变更下列目标文件，保存后需完整重启；保存不证明客户端已载入或连接。",
   "access.claudeConfigurationUnavailable":
     "尚未确认当前 Claude Desktop 的配置格式，暂时无法保存或恢复。诊断候选导出不代表配置已生效。",
+  "access.codexVerificationTimeout":
+    "Codex 应用身份校验超时，请核对安装状态后重新检查。",
   "access.claudeVerificationTimeout":
     "Claude 应用身份校验超时，操作已停止。请核对状态后重新预览。",
   "access.claudeNativeMigrationRequired":
@@ -1106,6 +1109,8 @@ const en: Record<keyof typeof zh, string> = {
   "access.reviewModelsChanged":
     "Available models changed. Review the connection again.",
   "access.checkAgain": "Check again",
+  "access.checkingClaude":
+    "Checking Claude Desktop settings, node and model mappings…",
   "access.checkingCodex":
     "Checking the Codex configuration, node, and available models…",
   "access.codexConfigInvalid":
@@ -1189,6 +1194,8 @@ const en: Record<keyof typeof zh, string> = {
     "Third-party inference affects the whole Claude desktop app, including Chat, Code and Cowork. Only the listed target files will change. Restart completely after saving; saving does not confirm loading or connection.",
   "access.claudeConfigurationUnavailable":
     "The installed Claude Desktop configuration format is unconfirmed. Saving or restoring is unavailable. Exporting a diagnostic candidate does not confirm configuration activation.",
+  "access.codexVerificationTimeout":
+    "Codex app identity verification timed out. Check the installation and try again.",
   "access.claudeVerificationTimeout":
     "Claude app identity verification timed out. The operation stopped; check its status and preview again.",
   "access.claudeNativeMigrationRequired":

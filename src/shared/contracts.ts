@@ -179,6 +179,7 @@ export type ClientView = {
   connection_state: "not_tested" | "passed" | "failed";
   configuration_revision: string | null;
   codex_route_revision?: string | null;
+  claude_route_revision?: string | null;
   loaded_evidence: ClientEvidence | null;
   connection_evidence: ClientEvidence | null;
   manual_steps: string[];
@@ -426,7 +427,9 @@ type ConfigPreviewBase = {
   } | null;
 };
 export type ClaudeRestoreCoordination =
-  "claude_main_preferences_v1" | "claude_main_settings_v2";
+  | "claude_main_preferences_v1"
+  | "claude_main_settings_v2"
+  | "claude_library_settings_v3";
 export type ConfigPreview = ConfigPreviewBase &
   (
     | {

@@ -355,7 +355,8 @@ pub(crate) fn native_migration_required(bytes: &[u8], main_config: bool) -> Resu
             Ok(required)
         }
     }
-    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let mut de =
+        serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes));
     let required = Document(main_config)
         .deserialize(&mut de)
         .map_err(|_| fail("claude_configuration_target_unverified"))?;
@@ -544,7 +545,9 @@ fn object(bytes: &[u8]) -> Result<Map<String, Value>> {
     if bytes.len() > MAX_FILE_BYTES {
         return Err(fail("invalid_configuration"));
     }
-    match serde_json::from_slice(bytes).map_err(|_| fail("invalid_configuration"))? {
+    match serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+        .map_err(|_| fail("invalid_configuration"))?
+    {
         Value::Object(map) => Ok(map),
         _ => Err(fail("invalid_configuration")),
     }
@@ -616,50 +619,39 @@ fn source_profile(bytes: &[u8]) -> Result<Map<String, Value>> {
     Ok(source)
 }
 
-fn metadata(plan: &LibraryPlan<'_>) -> Result<(Map<String, Value>, Map<String, Value>)> {
-    let Some(bytes) = plan.metadata_before else {
-        if plan.active_profile.is_some() {
-            return Err(fail("claude_configuration_source_unsupported"));
-        }
-        return Ok((Map::from_iter([("entries".into(), json!([]))]), Map::new()));
-    };
-    let meta = object(bytes).map_err(|_| fail("claude_configuration_source_unsupported"))?;
-    if meta.contains_key("hybridPointer") {
-        return Err(fail("claude_configuration_source_unsupported"));
+pub(crate) fn selected_profile(bytes: &[u8]) -> Result<Option<String>> {
+    let meta = raw_object(bytes).map_err(|_| fail("claude_configuration_source_unsupported"))?;
+    selected_id(&meta)
+}
+
+fn selected_id(object: &RawObject<'_>) -> Result<Option<String>> {
+    match object.0.get("appliedId") {
+        None => Ok(None),
+        Some(raw) => serde_json::from_str::<Option<String>>(raw.get())
+            .map_err(|_| fail("claude_configuration_source_unsupported")),
     }
-    let entries = meta
-        .get("entries")
-        .and_then(Value::as_array)
-        .filter(|entries| !entries.is_empty() && entries.len() < MAX_ENTRIES)
-        .ok_or_else(|| fail("claude_configuration_source_unsupported"))?;
-    let mut ids = BTreeSet::new();
-    for entry in entries {
-        let id = entry
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| canonical_id(id))
-            .ok_or_else(|| fail("claude_configuration_source_unsupported"))?;
-        if !entry
-            .get("name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| !name.trim().is_empty() && name.len() <= 256)
-            || !ids.insert(id)
-        {
-            return Err(fail("claude_configuration_source_unsupported"));
-        }
-    }
-    if ids.contains(plan.profile_id) {
+}
+
+pub(crate) fn review_source_revision(
+    metadata: Option<&[u8]>,
+    active: Option<(&str, &[u8])>,
+    main: Option<&[u8]>,
+) -> Result<String> {
+    let selected = metadata.map(selected_profile).transpose()?.flatten();
+    if selected.as_deref() != active.map(|(id, _)| id) {
         return Err(fail("configuration_conflict"));
     }
-    let active = plan
-        .active_profile
-        .as_ref()
-        .ok_or_else(|| fail("claude_configuration_source_unsupported"))?;
-    if meta.get("appliedId").and_then(Value::as_str) != Some(active.id) || !ids.contains(active.id)
-    {
-        return Err(fail("claude_configuration_source_unsupported"));
-    }
-    Ok((meta, source_profile(active.bytes)?))
+    let mode = main
+        .map(raw_object)
+        .transpose()?
+        .and_then(|o| o.0.get("deploymentMode").copied())
+        .map(|v| serde_json::from_str::<String>(v.get()))
+        .transpose()
+        .map_err(|_| fail("claude_configuration_source_unsupported"))?;
+    Ok(sha256(
+        &serde_json::to_vec(&(mode, selected, active.map(|(_, b)| sha256(b))))
+            .map_err(|_| fail("serialization_failed"))?,
+    ))
 }
 
 struct BoundedWriter(Vec<u8>);
@@ -685,16 +677,16 @@ fn encode(value: Map<String, Value>) -> Result<Vec<u8>> {
     Ok(writer.0)
 }
 
-struct RawMainObject<'a>(BTreeMap<String, &'a RawValue>);
-impl<'de> Deserialize<'de> for RawMainObject<'de> {
+struct RawObject<'a>(BTreeMap<String, &'a RawValue>);
+impl<'de> Deserialize<'de> for RawObject<'de> {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         struct MainVisitor;
         impl<'de> Visitor<'de> for MainVisitor {
-            type Value = RawMainObject<'de>;
+            type Value = RawObject<'de>;
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a main configuration object with unique decoded keys")
+                formatter.write_str("a configuration object with unique decoded keys")
             }
             fn visit_map<A: MapAccess<'de>>(
                 self,
@@ -704,22 +696,25 @@ impl<'de> Deserialize<'de> for RawMainObject<'de> {
                 while let Some(key) = entries.next_key::<String>()? {
                     let value = entries.next_value::<&RawValue>()?;
                     if values.insert(key, value).is_some() {
-                        return Err(serde::de::Error::custom("duplicate main configuration key"));
+                        return Err(serde::de::Error::custom("duplicate configuration key"));
                     }
                 }
-                Ok(RawMainObject(values))
+                Ok(RawObject(values))
             }
         }
         deserializer.deserialize_map(MainVisitor)
     }
 }
 
-fn raw_main(bytes: &[u8]) -> Result<RawMainObject<'_>> {
+fn raw_object(bytes: &[u8]) -> Result<RawObject<'_>> {
     if bytes.len() > MAX_FILE_BYTES {
         return Err(fail("configuration_conflict"));
     }
-    let object: RawMainObject<'_> =
-        serde_json::from_slice(bytes).map_err(|_| fail("configuration_conflict"))?;
+    serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+        .map_err(|_| fail("configuration_conflict"))
+}
+fn raw_main(bytes: &[u8]) -> Result<RawObject<'_>> {
+    let object = raw_object(bytes)?;
     if object
         .0
         .get("preferences")
@@ -730,6 +725,218 @@ fn raw_main(bytes: &[u8]) -> Result<RawMainObject<'_>> {
     Ok(object)
 }
 
+// Keep unowned values as raw JSON. In particular, reserializing an arbitrary
+// preference or a foreign index row through Value can round decimal numbers.
+fn encode_raw(value: &impl serde::Serialize) -> Result<Vec<u8>> {
+    let mut writer = BoundedWriter(Vec::new());
+    serde_json::to_writer_pretty(&mut writer, value).map_err(|_| fail("configuration_conflict"))?;
+    writer
+        .write_all(b"\n")
+        .map_err(|_| fail("configuration_conflict"))?;
+    Ok(writer.0)
+}
+
+struct LibraryIndex<'a> {
+    fields: RawObject<'a>,
+    entries: Vec<&'a RawValue>,
+    ids: Vec<String>,
+}
+impl<'a> LibraryIndex<'a> {
+    fn read(bytes: Option<&'a [u8]>) -> Result<Self> {
+        let fields = raw_object(bytes.unwrap_or(br#"{"entries":[]}"#))?;
+        if fields.0.contains_key("hybridPointer") {
+            return Err(fail("claude_configuration_source_unsupported"));
+        }
+        let entries: Vec<&RawValue> = match fields.0.get("entries") {
+            Some(raw) => {
+                serde_json::from_str(raw.get()).map_err(|_| fail("configuration_conflict"))?
+            }
+            None => Vec::new(),
+        };
+        if entries.len() > MAX_ENTRIES {
+            return Err(fail("configuration_conflict"));
+        }
+        let mut ids = Vec::with_capacity(entries.len());
+        let mut seen = BTreeSet::new();
+        for row in &entries {
+            #[derive(Deserialize)]
+            struct Entry {
+                id: String,
+                name: String,
+            }
+            let entry: Entry =
+                serde_json::from_str(row.get()).map_err(|_| fail("configuration_conflict"))?;
+            if entry.id.is_empty()
+                || entry.id.len() > 256
+                || entry.id.chars().any(char::is_control)
+                || entry.name.trim().is_empty()
+                || entry.name.len() > 256
+                || !seen.insert(entry.id.clone())
+            {
+                return Err(fail("configuration_conflict"));
+            }
+            ids.push(entry.id);
+        }
+        Ok(Self {
+            fields,
+            entries,
+            ids,
+        })
+    }
+
+    fn selection(&self) -> Result<Option<String>> {
+        selected_id(&self.fields)
+    }
+
+    fn owned_entry(&self, profile_id: &str) -> Result<usize> {
+        let position = self
+            .ids
+            .iter()
+            .position(|id| id == profile_id)
+            .ok_or_else(|| fail("configuration_conflict"))?;
+        let row = raw_object(self.entries[position].get().as_bytes())?;
+        if row.0.len() != 2
+            || row
+                .0
+                .get("name")
+                .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
+                .as_deref()
+                != Some(PROFILE_NAME)
+        {
+            return Err(fail("configuration_conflict"));
+        }
+        Ok(position)
+    }
+
+    fn encode(
+        self,
+        selected: Option<&RawValue>,
+        appended: Option<&RawValue>,
+        retain_empty_entries: bool,
+    ) -> Result<Vec<u8>> {
+        let rows: Vec<_> = self.entries.into_iter().chain(appended).collect();
+        let entries =
+            serde_json::value::to_raw_value(&rows).map_err(|_| fail("configuration_conflict"))?;
+        let mut fields = self.fields.0;
+        if rows.is_empty() && !retain_empty_entries {
+            fields.remove("entries");
+        } else {
+            fields.insert("entries".into(), &entries);
+        }
+        if let Some(selected) = selected {
+            fields.insert("appliedId".into(), selected);
+        } else {
+            fields.remove("appliedId");
+        }
+        encode_raw(&fields)
+    }
+}
+
+fn apply_index(index: LibraryIndex<'_>, profile_id: &str) -> Result<Vec<u8>> {
+    let row = serde_json::value::to_raw_value(&json!({"id":profile_id,"name":PROFILE_NAME}))
+        .map_err(|_| fail("invalid_configuration"))?;
+    let selected =
+        serde_json::value::to_raw_value(profile_id).map_err(|_| fail("invalid_configuration"))?;
+    index.encode(Some(&selected), Some(&row), true)
+}
+
+/// The profile ID remains part of the route even if a switcher copies its bytes.
+pub(crate) fn profile_revision(profile_id: &str, profile_sha256: &str) -> String {
+    sha256(format!("{profile_id}\n{profile_sha256}").as_bytes())
+}
+
+pub(crate) fn check_mapping_selection(
+    metadata: &[u8],
+    profile_id: &str,
+    main: &[u8],
+    require_owned_row: bool,
+) -> Result<()> {
+    let index = LibraryIndex::read(Some(metadata))?;
+    if require_owned_row {
+        index.owned_entry(profile_id)?;
+    } else if !index.ids.iter().any(|id| id == profile_id) {
+        return Err(fail("configuration_conflict"));
+    }
+    let fields = raw_object(main)?;
+    if index.selection()?.as_deref() != Some(profile_id)
+        || fields.0.contains_key("enterpriseConfig")
+        || !fields.0.get("deploymentMode").is_some_and(|value| {
+            serde_json::from_str::<String>(value.get()).is_ok_and(|v| v == "3p")
+        })
+    {
+        return Err(fail("configuration_conflict"));
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_index(
+    original: Option<&[u8]>,
+    applied: &[u8],
+    current: Option<&[u8]>,
+    profile_id: &str,
+) -> Result<Option<Vec<u8>>> {
+    if current == Some(applied) {
+        return Ok(original.map(<[u8]>::to_vec));
+    }
+    let bytes = current.ok_or_else(|| fail("configuration_conflict"))?;
+    let mut index = LibraryIndex::read(Some(bytes))?;
+    if index.selection()?.as_deref() != Some(profile_id) {
+        return Err(fail("configuration_conflict"));
+    }
+    let position = index.owned_entry(profile_id)?;
+    index.entries.remove(position);
+    let saved = LibraryIndex::read(original)?;
+    if let Some(old_id) = saved.selection()?
+        && !index.ids.contains(&old_id)
+    {
+        return Err(fail("configuration_conflict"));
+    }
+    if original.is_none()
+        && index.entries.is_empty()
+        && index
+            .fields
+            .0
+            .keys()
+            .all(|key| matches!(key.as_str(), "entries" | "appliedId"))
+    {
+        return Ok(None);
+    }
+    Ok(Some(index.encode(
+        saved.fields.0.get("appliedId").copied(),
+        None,
+        original.is_some() && saved.fields.0.contains_key("entries"),
+    )?))
+}
+
+pub(crate) fn restore_switch_main(
+    original: Option<&[u8]>,
+    applied: &[u8],
+    current: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>> {
+    if current == Some(applied) {
+        return Ok(original.map(<[u8]>::to_vec));
+    }
+    let mut doc = raw_object(current.ok_or_else(|| fail("configuration_conflict"))?)?;
+    if doc
+        .0
+        .get("deploymentMode")
+        .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
+        .as_deref()
+        != Some("3p")
+    {
+        return Err(fail("configuration_conflict"));
+    }
+    let before = raw_object(original.unwrap_or(b"{}"))?;
+    if let Some(mode) = before.0.get("deploymentMode") {
+        doc.0.insert("deploymentMode".into(), mode);
+    } else {
+        doc.0.remove("deploymentMode");
+    }
+    if original.is_none() && doc.0.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(encode_raw(&doc.0)?))
+}
 /// Fixed, explicitly selected restoration of Claude's deployment mode. Every
 /// current raw value, including the complete optional preferences object, is
 /// retained. This is not a general JSON merge or a write authorization.
@@ -801,16 +1008,20 @@ pub(crate) fn restore_main_settings<'a>(
 
 /// Preserve the supported active local settings and plan exactly three changes.
 /// Unknown versions/sources and active profile semantics fail closed. Only an
-/// absent metadata file permits an empty starting profile. Existing profiles are
+/// absent active selection permits an empty starting profile. Existing profiles are
 /// read dependencies and never appear among the written files.
 pub fn compile(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
-    compile_with_timeout(plan, HelperTimeout::Current)
+    compile_with_timeout(plan, HelperTimeout::Current, true)
 }
 
 /// Only reconstruct the fixed historical output for strict journal validation.
 /// New user configurations always enter through `compile`.
 pub(crate) fn compile_legacy_helper_timeout(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
-    compile_with_timeout(plan, HelperTimeout::LegacyFiveSeconds)
+    compile_with_timeout(plan, HelperTimeout::LegacyFiveSeconds, false)
+}
+
+pub(crate) fn compile_legacy_json(plan: &LibraryPlan<'_>) -> Result<CompiledLibrary> {
+    compile_with_timeout(plan, HelperTimeout::Current, false)
 }
 
 enum HelperTimeout {
@@ -818,7 +1029,11 @@ enum HelperTimeout {
     LegacyFiveSeconds,
 }
 
-fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Result<CompiledLibrary> {
+fn compile_with_timeout(
+    plan: &LibraryPlan<'_>,
+    timeout: HelperTimeout,
+    preserve_json: bool,
+) -> Result<CompiledLibrary> {
     if plan.app_version.is_empty()
         || plan.app_version.len() > 128
         || plan.source_member_sha256.len() != 64
@@ -857,17 +1072,47 @@ fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Resul
             return Err(fail("invalid_configuration"));
         }
     }
-    let (mut meta, mut profile) = metadata(plan)?;
-    let mut main = plan
-        .main_before
-        .map(object)
+    // Historical snapshots used Value's decoded representation, including its duplicate-key
+    // and number handling. The journal still binds the complete original bytes.
+    let historical_json = |bytes: Option<&[u8]>| -> Result<Option<Vec<u8>>> {
+        if preserve_json {
+            return Ok(None);
+        }
+        bytes
+            .map(|raw| serde_json::to_vec(&object(raw)?).map_err(|_| fail("invalid_configuration")))
+            .transpose()
+    };
+    let legacy_meta = historical_json(plan.metadata_before)?;
+    let legacy_main = historical_json(plan.main_before)?;
+    let unsupported = || fail("claude_configuration_source_unsupported");
+    let index = LibraryIndex::read(legacy_meta.as_deref().or(plan.metadata_before))
+        .map_err(|_| unsupported())?;
+    if index.ids.len() >= MAX_ENTRIES {
+        return Err(unsupported());
+    }
+    if index.ids.iter().any(|id| id == plan.profile_id) {
+        return Err(fail("configuration_conflict"));
+    }
+    let selection = index.selection()?;
+    if selection.as_deref() != plan.active_profile.as_ref().map(|active| active.id)
+        || selection
+            .as_ref()
+            .is_some_and(|id| !canonical_id(id) || !index.ids.contains(id))
+    {
+        return Err(unsupported());
+    }
+    let mut profile = plan
+        .active_profile
+        .as_ref()
+        .map(|active| source_profile(active.bytes))
         .transpose()?
         .unwrap_or_default();
-    if main
-        .get("deploymentMode")
-        .is_some_and(|mode| !matches!(mode.as_str(), Some("1p" | "3p")))
-    {
-        return Err(fail("claude_configuration_source_unsupported"));
+    let mut main = raw_object(legacy_main.as_deref().or(plan.main_before).unwrap_or(b"{}"))
+        .map_err(|_| fail("invalid_configuration"))?;
+    if main.0.get("deploymentMode").is_some_and(|mode| {
+        !serde_json::from_str::<String>(mode.get()).is_ok_and(|v| matches!(v.as_str(), "1p" | "3p"))
+    }) {
+        return Err(unsupported());
     }
     profile.extend(Map::from_iter([
         ("inferenceProvider".into(), json!("gateway")),
@@ -918,24 +1163,31 @@ fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Resul
         "inferenceCredentialHelperWindows".into(),
         json!(plan.helper),
     );
-    meta.get_mut("entries")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| fail("invalid_configuration"))?
-        .push(json!({ "id": plan.profile_id, "name": PROFILE_NAME }));
-    meta.insert("appliedId".into(), json!(plan.profile_id));
-    main.insert("deploymentMode".into(), json!("3p"));
     let library = plan.user_root.join("configLibrary");
+    let mode = serde_json::value::to_raw_value("3p").map_err(|_| fail("invalid_configuration"))?;
+    main.0.insert("deploymentMode".into(), &mode);
+    let mut metadata_after = apply_index(index, plan.profile_id)?;
+    let mut main_after = encode_raw(&main.0).map_err(|_| fail("invalid_configuration"))?;
+    if !preserve_json {
+        // Reproduce the JSON encoding used by authenticated older snapshots.
+        metadata_after = encode(object(&metadata_after)?)?;
+        main_after = encode(object(&main_after)?)?;
+    }
     let changes = [
         (
             library.join(format!("{}.json", plan.profile_id)),
             None,
-            profile,
+            encode(profile)?,
         ),
-        (library.join("_meta.json"), plan.metadata_before, meta),
+        (
+            library.join("_meta.json"),
+            plan.metadata_before,
+            metadata_after,
+        ),
         (
             plan.user_root.join("claude_desktop_config.json"),
             plan.main_before,
-            main,
+            main_after,
         ),
     ];
     let mut files = Vec::with_capacity(3);
@@ -946,7 +1198,7 @@ fn compile_with_timeout(plan: &LibraryPlan<'_>, timeout: HelperTimeout) -> Resul
                 .ok_or_else(|| fail("invalid_configuration"))?
                 .into(),
             before: before.map(<[u8]>::to_vec),
-            after: Some(encode(after)?),
+            after: Some(after),
         });
     }
     Ok(CompiledLibrary {
@@ -1079,7 +1331,7 @@ mod tests {
     fn claude_mapping_compiler_is_explicit_and_preserves_https_authority() {
         let fixture = Fixture::new();
         let manager = crate::claude_mapping::MappingManager::default();
-        let mapping = manager
+        let (mapping, _ticket) = manager
             .reserve(BINDING, NEW_ID, "gpt-6-luna", None, ["GPT 6 Luna"; 3])
             .unwrap();
         let mut plan = fixture.plan();
@@ -1469,6 +1721,37 @@ mod tests {
     }
 
     #[test]
+    fn switcher_indexes_with_an_empty_selection_and_opaque_inactive_entries_roundtrip() {
+        let fixture = Fixture::new();
+        for metadata in [br#"{}"#.as_slice(),br#"{ "entries": [] }"#,
+            br#"{"appliedId":null,"entries":[{"name":"Archived","id":"other-1","weight":1.000000000000000000001}]}"#] {
+            let mut plan = fixture.plan();
+            plan.metadata_before = Some(metadata);
+            let result = compile(&plan).unwrap();
+            let applied = result.files()[1].after.as_deref().unwrap();
+            assert_eq!(selected_profile(applied).unwrap().as_deref(), Some(NEW_ID));
+            assert_eq!(restore_index(Some(metadata),applied,Some(applied),NEW_ID).unwrap().as_deref(),Some(metadata));
+        }
+        let switcher_id = "00000000-0000-4000-8000-000000157210";
+        let metadata = bytes(
+            json!({"appliedId":switcher_id,"entries":[{"id":"other-1","name":"Archived"},{"id":switcher_id,"name":"CC Switch"}]}),
+        );
+        let source = br#"{"inferenceProvider":"gateway","inferenceGatewayApiKey":"__sealed__:v1:synthetic","disableDeploymentModeChooser":true,"coworkEgressAllowedHosts":["corp.example"]}"#;
+        let mut plan = fixture.plan();
+        plan.metadata_before = Some(&metadata);
+        plan.active_profile = Some(ActiveProfile {
+            id: switcher_id,
+            bytes: source,
+        });
+        let result = compile(&plan).unwrap();
+        let profile = after(&result.files()[0]);
+        assert_eq!(profile["coworkEgressAllowedHosts"], json!(["corp.example"]));
+        assert_eq!(profile["disableDeploymentModeChooser"], true);
+        assert!(profile.get("inferenceGatewayApiKey").is_none());
+        assert_eq!(after(&result.files()[1])["entries"][0]["id"], "other-1");
+    }
+
+    #[test]
     fn existing_metadata_requires_exact_readable_active_source_and_fresh_id() {
         let fixture = Fixture::new();
         let meta = bytes(existing_meta());
@@ -1627,9 +1910,8 @@ mod tests {
         let too_large = vec![b' '; MAX_FILE_BYTES + 1];
         plan.main_before = Some(&too_large);
         rejected(&plan, "invalid_configuration");
-        // The input fits, but pretty serialization expands it beyond the output
-        // cap. This exercises the writer bound rather than only metadata length.
-        let value = bytes(json!({"unknownMain": vec![Value::Null; MAX_FILE_BYTES / 6]}));
+        // The input fits, but adding the owned deployment mode crosses the output cap.
+        let value = bytes(json!({"unknownMain": "x".repeat(MAX_FILE_BYTES - 24)}));
         assert!(value.len() < MAX_FILE_BYTES);
         plan.main_before = Some(&value);
         rejected(&plan, "invalid_configuration");

@@ -40,7 +40,7 @@ function preview(source: SwitchSnapshot): ConfigPreview {
     id: "restore-preview",
     client: "claude",
     operation: "restore",
-    restore_coordination: "claude_main_settings_v2",
+    restore_coordination: "claude_library_settings_v3",
     target_version: "synthetic-version",
     paths: [
       "/fixture/main.json",
@@ -223,7 +223,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
       await flushPromises();
       expect(bridge.call).toHaveBeenCalledWith("preview_restore", {
         snapshot_id: selected.id,
-        coordination: "claude_main_settings_v2",
+        coordination: "claude_library_settings_v3",
       });
       expect(
         view.findComponent(ConfigReviewDialog).props("preview"),
@@ -300,7 +300,10 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     expect(bridge.call.mock.calls).toEqual([
       [
         "preview_restore",
-        { snapshot_id: selected.id, coordination: "claude_main_settings_v2" },
+        {
+          snapshot_id: selected.id,
+          coordination: "claude_library_settings_v3",
+        },
       ],
       [
         "restore_client_config",
@@ -316,7 +319,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
     const selected = snapshot();
     useOrbitStore().state.switch_snapshots = [selected];
     const result = Object.assign(preview(selected), {
-      restore_coordination: "claude_main_settings_v2" as const,
+      restore_coordination: "claude_library_settings_v3" as const,
     });
     bridge.call.mockResolvedValueOnce(result);
     view = mount(AccessPage, {
@@ -339,7 +342,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
         "preview_restore",
         {
           snapshot_id: selected.id,
-          coordination: "claude_main_settings_v2",
+          coordination: "claude_library_settings_v3",
         },
       ],
     ]);
@@ -385,6 +388,7 @@ describe("Claude restore confirmation binds the selected snapshot", () => {
   it.each([
     ["claude_main_preferences_v1", "确认取消接入"],
     ["claude_main_settings_v2", "确认取消接入"],
+    ["claude_library_settings_v3", "确认取消接入"],
   ] as const)(
     "requires explicit %s confirmation without sending file content",
     async (mode, title) => {

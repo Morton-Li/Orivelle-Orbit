@@ -596,9 +596,9 @@ export async function fixture(
               redacted_diff:
                 "- model = old\n+ model = synthetic-text\n+ helper binding = [redacted]",
               expires_at:
-                request.client === "codex"
-                  ? null
-                  : new Date(Date.now() + 60000).toISOString(),
+                request.client === "claude" && claudeImport
+                  ? new Date(Date.now() + 60000).toISOString()
+                  : null,
               can_apply: !claudeImport || request.client !== "claude",
               can_export_import: claudeImport && request.client === "claude",
               blocking_reason:

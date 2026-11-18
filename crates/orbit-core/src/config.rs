@@ -1,5 +1,8 @@
 use crate::{
-    dto::{ClaudeModelMapping, ClientKind, CodexCatalogBindingView, ReasoningPolicyView},
+    dto::{
+        ClaudeModelMapping, ClaudeRestoreCoordination, ClientKind, CodexCatalogBindingView,
+        ReasoningPolicyView,
+    },
     error::{Result, fail},
     identity::{HelperBinding, Installation, sha256, uuid},
     store::{Store, private_file},
@@ -171,6 +174,26 @@ struct ClaudeMainPreferencesRestoreV1 {
     original_main_before: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     preserve_main_settings: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    library: Option<ClaudeLibraryRestore>,
+}
+
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+struct ClaudeLibraryRestore {
+    original_metadata_before: Option<Vec<u8>>,
+}
+
+impl ClaudeMainPreferencesRestoreV1 {
+    fn mode(&self) -> ClaudeRestoreCoordination {
+        if self.library.is_some() {
+            ClaudeRestoreCoordination::LibrarySettingsV3
+        } else if self.preserve_main_settings {
+            ClaudeRestoreCoordination::MainSettingsV2
+        } else {
+            ClaudeRestoreCoordination::MainPreferencesV1
+        }
+    }
 }
 
 struct ClaudePreferencesRestoreSeed<'a> {
@@ -525,7 +548,9 @@ impl ConfigEngine<'_> {
             .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
         let target = &context.configuration_target;
         let preferences_proof = operation.claude_main_preferences_restore_v1.as_ref();
-        if preferences_proof.is_some() && !operation.restore {
+        if preferences_proof.is_some_and(|proof| {
+            !operation.restore || (proof.library.is_some() && !proof.preserve_main_settings)
+        }) {
             return Err(fail("backup_invalid"));
         }
         let restoring = operation.restore || restoring;
@@ -643,6 +668,12 @@ impl ConfigEngine<'_> {
         for (index, file) in operation.files.iter().enumerate() {
             let expected = &context.files[if operation.restore { 2 - index } else { index }];
             let coordinated_main = preferences_proof.filter(|_| index == 0);
+            let library = preferences_proof.and_then(|proof| proof.library.as_ref());
+            let bounded = |bytes: &Option<Vec<u8>>| {
+                bytes
+                    .as_ref()
+                    .is_none_or(|b| b.len() as u64 <= MAX_CONFIG_BYTES)
+            };
             if file.path != expected.path
                 || !digest(&expected.after_sha256)
                 || expected.after_size > MAX_CONFIG_BYTES
@@ -657,14 +688,13 @@ impl ConfigEngine<'_> {
                 || if let Some(proof) = coordinated_main {
                     !expected.matches_before(proof.original_main_before.as_deref())
                         || (!proof.preserve_main_settings && proof.original_main_before.is_none())
-                        || file
-                            .before
-                            .as_ref()
-                            .is_none_or(|bytes| bytes.len() as u64 > MAX_CONFIG_BYTES)
-                        || file
-                            .after
-                            .as_ref()
-                            .is_none_or(|bytes| bytes.len() as u64 > MAX_CONFIG_BYTES)
+                        || (library.is_none() && (file.before.is_none() || file.after.is_none()))
+                        || !bounded(&file.before)
+                        || !bounded(&file.after)
+                } else if let Some(proof) = library.filter(|_| index == 1) {
+                    !expected.matches_before(proof.original_metadata_before.as_deref())
+                        || !bounded(&file.before)
+                        || !bounded(&file.after)
                 } else if operation.restore {
                     !expected.matches_before(file.after.as_deref())
                         || (!expected.matches_before(file.before.as_deref())
@@ -688,6 +718,11 @@ impl ConfigEngine<'_> {
                 && let Some(proof) = preferences_proof
             {
                 return proof.original_main_before.as_deref();
+            }
+            if index == 1
+                && let Some(library) = preferences_proof.and_then(|p| p.library.as_ref())
+            {
+                return library.original_metadata_before.as_deref();
             }
             if operation.restore {
                 operation.files[2 - index].after.as_deref()
@@ -723,34 +758,64 @@ impl ConfigEngine<'_> {
                 .collect::<Result<Vec<_>>>()?
                 == context.files)
         };
-        // Persisted operations have already been AEAD-authenticated; trusted
-        // prepare uses Service's fixed current compiler. A historical helper
-        // budget is accepted only when its entire three-file group matches.
-        let mut compiled = crate::claude_config::compile(&plan)?;
-        if !matches(&compiled)? {
-            compiled = crate::claude_config::compile_legacy_helper_timeout(&plan)?;
-            if !matches(&compiled)? {
-                return Err(fail("backup_invalid"));
+        // Restore may reconstruct an older JSON encoding or helper timeout. Only the
+        // compiler whose entire output matches the authenticated three-file group is eligible.
+        let mut verified = None;
+        for compile in [
+            crate::claude_config::compile,
+            crate::claude_config::compile_legacy_json,
+            crate::claude_config::compile_legacy_helper_timeout,
+        ] {
+            if let Ok(compiled) = compile(&plan)
+                && matches(&compiled)?
+            {
+                verified = Some(compiled);
+                break;
             }
         }
+        let compiled = verified.ok_or_else(|| fail("backup_invalid"))?;
         if let Some(proof) = preferences_proof {
             let main = &operation.files[0];
             let applied_main = compiled.files()[2]
                 .after
                 .as_deref()
                 .ok_or_else(|| fail("backup_invalid"))?;
-            let before = main
-                .before
-                .as_deref()
-                .ok_or_else(|| fail("backup_invalid"))?;
-            let derived = crate::claude_config::restore_main_settings(
-                proof.original_main_before.as_deref(),
-                applied_main,
-                before,
-                proof.preserve_main_settings,
-            )
-            .map_err(|_| fail("backup_invalid"))?;
-            if main.after.as_deref() != Some(derived.as_slice())
+            let derived = if let Some(library) = &proof.library {
+                let metadata = &operation.files[1];
+                let applied = compiled.files()[1]
+                    .after
+                    .as_deref()
+                    .ok_or_else(|| fail("backup_invalid"))?;
+                let derived_index = crate::claude_config::restore_index(
+                    library.original_metadata_before.as_deref(),
+                    applied,
+                    metadata.before.as_deref(),
+                    &context.profile_id,
+                )
+                .map_err(|_| fail("backup_invalid"))?;
+                if metadata.after != derived_index {
+                    return Err(fail("backup_invalid"));
+                }
+                crate::claude_config::restore_switch_main(
+                    proof.original_main_before.as_deref(),
+                    applied_main,
+                    main.before.as_deref(),
+                )
+                .map_err(|_| fail("backup_invalid"))?
+            } else {
+                Some(
+                    crate::claude_config::restore_main_settings(
+                        proof.original_main_before.as_deref(),
+                        applied_main,
+                        main.before
+                            .as_deref()
+                            .ok_or_else(|| fail("backup_invalid"))?,
+                        proof.preserve_main_settings,
+                    )
+                    .map_err(|_| fail("backup_invalid"))?,
+                )
+            };
+            if main.after != derived
                 || operation.source_journal_phase.as_deref() != Some("committed")
             {
                 return Err(fail("backup_invalid"));
@@ -1919,14 +1984,14 @@ impl ConfigEngine<'_> {
     pub(crate) fn apply_claude_with_restore_mode(
         &self,
         id: &str,
-        preserves_preferences: bool,
+        coordination: Option<ClaudeRestoreCoordination>,
     ) -> Result<(Journal, bool)> {
-        self.apply_with_claude_mode(id, Some(preserves_preferences))
+        self.apply_with_claude_mode(id, Some(coordination))
     }
     fn apply_with_claude_mode(
         &self,
         id: &str,
-        expected_mode: Option<bool>,
+        expected_mode: Option<Option<ClaudeRestoreCoordination>>,
     ) -> Result<(Journal, bool)> {
         self.check_policy()?;
         let mut journal = self
@@ -1937,10 +2002,13 @@ impl ConfigEngine<'_> {
             return Err(fail("configuration_conflict"));
         }
         let operation = self.decrypt(&journal)?;
-        let preserves_preferences = operation.claude_main_preferences_restore_v1.is_some();
-        if expected_mode.is_some_and(|expected| {
-            journal.client != ClientKind::Claude || expected != preserves_preferences
-        }) {
+        let mode = operation
+            .claude_main_preferences_restore_v1
+            .as_ref()
+            .map(|proof| proof.mode());
+        if expected_mode
+            .is_some_and(|expected| journal.client != ClientKind::Claude || expected != mode)
+        {
             return Err(fail("backup_invalid"));
         }
         self.check_context(&journal, &operation)?;
@@ -1951,7 +2019,7 @@ impl ConfigEngine<'_> {
             }
         }
         self.publish(&mut journal, &operation)?;
-        Ok((journal, preserves_preferences))
+        Ok((journal, mode.is_some()))
     }
     pub fn recover(&self, id: &str) -> Result<Journal> {
         self.check_policy()?;
@@ -2104,17 +2172,24 @@ impl ConfigEngine<'_> {
         Ok(self.prepare_claude_preferences_restore_details(id)?.0)
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_claude_preferences_restore_details(
         &self,
         id: &str,
     ) -> Result<(Journal, ClaudeContext, Option<String>)> {
-        self.prepare_claude_main_restore_details(id, false)
+        self.prepare_claude_settings_restore_details(
+            id,
+            ClaudeRestoreCoordination::MainPreferencesV1,
+        )
     }
-    pub(crate) fn prepare_claude_main_restore_details(
+
+    pub(crate) fn prepare_claude_settings_restore_details(
         &self,
         id: &str,
-        preserve_main_settings: bool,
+        coordination: ClaudeRestoreCoordination,
     ) -> Result<(Journal, ClaudeContext, Option<String>)> {
+        let preserve_main_settings = coordination != ClaudeRestoreCoordination::MainPreferencesV1;
+        let library = coordination == ClaudeRestoreCoordination::LibrarySettingsV3;
         self.check_policy()?;
         let selected = self
             .store
@@ -2144,15 +2219,34 @@ impl ConfigEngine<'_> {
         if !preserve_main_settings && original_main_before.is_none() {
             return Err(fail("configuration_conflict"));
         }
+        let context = original
+            .claude_context
+            .as_ref()
+            .ok_or_else(|| fail("backup_invalid"))?;
         let mut files = Vec::new();
         for (index, file) in original.files.iter().enumerate() {
             let current = read_file(Path::new(&file.path))?;
-            let after = if index == 2 {
+            let applied = file
+                .after
+                .as_deref()
+                .ok_or_else(|| fail("backup_invalid"))?;
+            let after = if library && index == 1 {
+                crate::claude_config::restore_index(
+                    file.before.as_deref(),
+                    applied,
+                    current.as_deref(),
+                    &context.profile_id,
+                )?
+            } else if library && index == 2 {
+                crate::claude_config::restore_switch_main(
+                    original_main_before.as_deref(),
+                    applied,
+                    current.as_deref(),
+                )?
+            } else if index == 2 {
                 Some(crate::claude_config::restore_main_settings(
                     original_main_before.as_deref(),
-                    file.after
-                        .as_deref()
-                        .ok_or_else(|| fail("backup_invalid"))?,
+                    applied,
                     current
                         .as_deref()
                         .ok_or_else(|| fail("configuration_conflict"))?,
@@ -2187,6 +2281,9 @@ impl ConfigEngine<'_> {
                 proof: ClaudeMainPreferencesRestoreV1 {
                     original_main_before: original_main_before.clone(),
                     preserve_main_settings,
+                    library: library.then(|| ClaudeLibraryRestore {
+                        original_metadata_before: original.files[1].before.clone(),
+                    }),
                 },
             }),
         )?;
@@ -2210,9 +2307,13 @@ impl ConfigEngine<'_> {
             .claude_main_preferences_restore_v1
             .as_ref()
             .ok_or_else(|| fail("backup_invalid"))?;
-        let original_mode: OriginalMainMode =
-            serde_json::from_slice(proof.original_main_before.as_deref().unwrap_or(b"{}"))
-                .map_err(|_| fail("backup_invalid"))?;
+        let original_main = proof.original_main_before.as_deref().unwrap_or(b"{}");
+        let original_mode: OriginalMainMode = serde_json::from_slice(
+            original_main
+                .strip_prefix(b"\xef\xbb\xbf")
+                .unwrap_or(original_main),
+        )
+        .map_err(|_| fail("backup_invalid"))?;
         let context = operation
             .claude_context
             .clone()
@@ -2248,17 +2349,20 @@ pub fn codex_catalog_patch(
     )
 }
 #[derive(Default)]
-pub(crate) struct CodexFileRevisions {
+pub(crate) struct ConfigurationFileRevisions {
     pub files: Option<String>,
     pub route: Option<String>,
 }
 pub fn codex_configuration_revision(config: &Path, catalog: &Path) -> Result<Option<String>> {
     Ok(codex_file_revisions(config, catalog)?.files)
 }
-pub(crate) fn codex_file_revisions(config: &Path, catalog: &Path) -> Result<CodexFileRevisions> {
+pub(crate) fn codex_file_revisions(
+    config: &Path,
+    catalog: &Path,
+) -> Result<ConfigurationFileRevisions> {
     let files = [(config, read_file(config)?), (catalog, read_file(catalog)?)];
     if files.iter().all(|(_, bytes)| bytes.is_none()) {
-        return Ok(CodexFileRevisions::default());
+        return Ok(ConfigurationFileRevisions::default());
     }
     let framed: Vec<_> = files
         .iter()
@@ -2281,7 +2385,7 @@ pub(crate) fn codex_file_revisions(config: &Path, catalog: &Path) -> Result<Code
         })
         .transpose()
         .map_err(|_| fail("serialization_failed"))?;
-    Ok(CodexFileRevisions {
+    Ok(ConfigurationFileRevisions {
         files: Some(full),
         route,
     })
