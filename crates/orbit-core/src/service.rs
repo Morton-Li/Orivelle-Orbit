@@ -10898,11 +10898,14 @@ mod tests {
             let expected_model = model_id.clone();
             let output = export_png(16, 16, 2);
             let returned = output.clone();
+            let request_started = Arc::new(tokio::sync::Notify::new());
+            let notify_started = request_started.clone();
             service.http.scripted(Arc::new(move |request| {
                 if request.method != Method::POST {
                     return Box::pin(async { Err(fail("synthetic_fact_not_observed")) });
                 }
                 observed.fetch_add(1, Ordering::SeqCst);
+                notify_started.notify_one();
                 assert!(request.url.ends_with("/images/edits"));
                 assert!(request.headers.iter().any(|(key, value)| key == "X-Orivelle-Images-Contract" && value == images::API_CONTRACT));
                 let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -10928,19 +10931,26 @@ mod tests {
                 }) })
             }));
             let queued = admit(&imported[1].id).unwrap();
-            let completed = tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let task: TaskView = service.store.get("task", &queued.id).unwrap().unwrap();
-                    if !["queued", "sending", "waiting", "saving"].contains(&task.state.as_str())
-                        && service.image_workers.available_permits() == 2
-                    {
-                        break task;
-                    }
-                    tokio::task::yield_now().await;
-                }
+            // The request signal proves the worker owns a permit. Acquiring both
+            // then waits for its save, reconciliation and cleanup without polling.
+            let completed = tokio::time::timeout(Duration::from_secs(30), async {
+                request_started.notified().await;
+                let _idle = service.image_workers.acquire_many(2).await.unwrap();
+                service
+                    .store
+                    .get::<TaskView>("task", &queued.id)
+                    .unwrap()
+                    .unwrap()
             })
             .await
-            .unwrap();
+            .unwrap_or_else(|_| {
+                let task = service.store.get::<TaskView>("task", &queued.id).unwrap();
+                panic!(
+                    "Image edit worker timed out (markup={markup}, requests={}, task={task:?}, permits={})",
+                    calls.load(Ordering::SeqCst),
+                    service.image_workers.available_permits(),
+                );
+            });
             assert_eq!(completed.state, "completed", "{:?}", completed.error);
             assert_eq!(completed.image_ids.len(), 2);
             for id in &completed.image_ids {
