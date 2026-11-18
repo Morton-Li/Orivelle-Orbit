@@ -18,7 +18,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{DocumentMut, Item};
 
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +205,10 @@ struct Operation {
     source_journal_phase: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     codex_catalog_sync: bool,
+    // The original file stays in files.before. Only a sync that incorporated
+    // unrelated external edits needs an additional restoration target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_restore_config: Option<Vec<u8>>,
     #[zeroize(skip)]
     #[serde(default)]
     codex_context: Option<CodexContext>,
@@ -444,10 +448,8 @@ impl ConfigEngine<'_> {
                     .after
                     .as_ref()
                     .ok_or_else(|| fail("backup_invalid"))?;
-                let document = std::str::from_utf8(bytes)
-                    .ok()
-                    .and_then(|text| text.parse::<DocumentMut>().ok())
-                    .ok_or_else(|| fail("backup_invalid"))?;
+                let document = crate::codex_config::document(Some(bytes))
+                    .map_err(|_| fail("backup_invalid"))?;
                 if document.get("model").and_then(Item::as_str)
                     != Some(context.default_alias.as_str())
                     || document.get("model_catalog_json").and_then(Item::as_str)
@@ -1173,6 +1175,7 @@ impl ConfigEngine<'_> {
             source_journal_sha256: None,
             source_journal_phase: None,
             codex_catalog_sync: false,
+            codex_restore_config: None,
             codex_context,
             claude_context,
             claude_main_preferences_restore_v1: None,
@@ -1300,14 +1303,26 @@ impl ConfigEngine<'_> {
 
     pub(crate) fn verify_codex_switch_files(&self, journal: &Journal) -> Result<()> {
         let operation = self.decrypt(journal)?;
-        if operation
-            .files
-            .iter()
-            .any(|file| !equal_current(file, &file.after).unwrap_or(false))
-        {
-            return Err(fail("configuration_conflict"));
+        for (index, file) in operation.files.iter().enumerate() {
+            let bytes = read_file(Path::new(&file.path))?;
+            Self::check_codex_switch_file(index, file, &bytes)?;
         }
         Ok(())
+    }
+
+    fn check_codex_switch_file(
+        index: usize,
+        previous: &FileChange,
+        current: &Option<Vec<u8>>,
+    ) -> Result<()> {
+        if previous.after == *current
+            || index == 1
+                && crate::codex_config::same_route(previous.after.as_deref(), current.as_deref())
+                    .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        Err(fail("configuration_conflict"))
     }
 
     pub(crate) fn prepare_codex_sync(
@@ -1390,9 +1405,12 @@ impl ConfigEngine<'_> {
                 .files
                 .iter()
                 .zip(&operation.files)
-                .any(|(old, new)| old.path != new.path || old.after != new.before)
+                .any(|(old, new)| old.path != new.path)
         {
             return Err(fail("configuration_conflict"));
+        }
+        for (index, (old, new)) in original.files.iter().zip(&operation.files).enumerate() {
+            Self::check_codex_switch_file(index, old, &new.before)?;
         }
         Ok(original)
     }
@@ -1627,6 +1645,17 @@ impl ConfigEngine<'_> {
             // and its authenticated source available for normal recovery.
             let original = self.codex_sync_original(journal, operation)?;
             let mut committed = operation.clone();
+            let config = &original.files[1];
+            let restore = crate::codex_config::restore(
+                original
+                    .codex_restore_config
+                    .as_deref()
+                    .or(config.before.as_deref()),
+                config.after.as_deref(),
+                operation.files[1].before.as_deref(),
+            )?;
+            committed.codex_restore_config =
+                restore.filter(|bytes| Some(bytes) != config.before.as_ref());
             for (file, previous) in committed.files.iter_mut().zip(&original.files) {
                 file.before = previous.before.clone();
             }
@@ -1969,15 +1998,40 @@ impl ConfigEngine<'_> {
         let original = self.decrypt(&journal)?;
         self.check_context_for(&journal, &original, true)?;
         let mut files = Vec::new();
-        for file in &original.files {
+        for (index, file) in original.files.iter().enumerate() {
             let current = read_file(Path::new(&file.path))?;
-            if current != file.after && (journal.phase == "committed" || current != file.before) {
-                return Err(fail("configuration_conflict"));
-            }
+            let after = if journal.client == ClientKind::Codex
+                && journal.purpose == JournalPurpose::Switch
+                && journal.phase == "committed"
+                && index == 1
+            {
+                crate::codex_config::restore(
+                    original
+                        .codex_restore_config
+                        .as_deref()
+                        .or(file.before.as_deref()),
+                    file.after.as_deref(),
+                    current.as_deref(),
+                )?
+            } else if journal.client == ClientKind::Codex
+                && journal.purpose == JournalPurpose::Switch
+                && journal.phase == "committed"
+                && index == 0
+                && current == file.before
+            {
+                // Another switcher may already have restored the original catalog.
+                current.clone()
+            } else {
+                if current != file.after && (journal.phase == "committed" || current != file.before)
+                {
+                    return Err(fail("configuration_conflict"));
+                }
+                file.before.clone()
+            };
             files.push(FileChange {
                 path: file.path.clone(),
                 before: current,
-                after: file.before.clone(),
+                after,
             });
         }
         if journal.client == ClientKind::Claude {
@@ -2173,60 +2227,7 @@ pub fn codex_patch(
     helper: &Path,
     binding: &str,
 ) -> Result<Vec<u8>> {
-    crate::identity::validate_uuid(binding)?;
-    if !helper.is_absolute() || model.is_empty() || model.len() > 255 {
-        return Err(fail("invalid_configuration"));
-    }
-    let url = url::Url::parse(base_url).map_err(|_| fail("invalid_configuration"))?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return Err(fail("invalid_configuration"));
-    }
-    let text = std::str::from_utf8(original.unwrap_or_default())
-        .map_err(|_| fail("invalid_configuration"))?;
-    let mut doc = text
-        .parse::<DocumentMut>()
-        .map_err(|_| fail("invalid_configuration"))?;
-    doc["model"] = value(model);
-    doc["model_provider"] = value("orivelle_orbit");
-    if !doc.as_table().contains_key("model_providers") {
-        doc["model_providers"] = Item::Table(Table::new());
-    }
-    if !doc["model_providers"].is_table() {
-        return Err(fail("invalid_configuration"));
-    }
-    if doc["model_providers"].get("orivelle_orbit").is_none() {
-        doc["model_providers"]["orivelle_orbit"] = Item::Table(Table::new());
-    }
-    let provider = doc["model_providers"]["orivelle_orbit"]
-        .as_table_mut()
-        .ok_or_else(|| fail("invalid_configuration"))?;
-    provider["name"] = value("Orivelle Orbit");
-    provider["base_url"] = value(base_url);
-    provider["wire_api"] = value("responses");
-    for key in [
-        "env_key",
-        "experimental_bearer_token",
-        "requires_openai_auth",
-    ] {
-        provider.remove(key);
-    }
-    if provider.get("auth").is_some_and(|i| !i.is_table()) {
-        return Err(fail("invalid_configuration"));
-    }
-    let mut auth = provider
-        .get("auth")
-        .and_then(Item::as_table)
-        .cloned()
-        .unwrap_or_default();
-    auth["command"] = value(helper.to_str().ok_or_else(|| fail("invalid_path"))?);
-    let mut args = toml_edit::Array::new();
-    args.push("codex");
-    args.push(binding);
-    auth["args"] = value(args);
-    auth["timeout_ms"] = value(5000);
-    auth["refresh_interval_ms"] = value(300000);
-    provider["auth"] = Item::Table(auth);
-    Ok(doc.to_string().into_bytes())
+    crate::codex_config::patch(original, base_url, model, helper, binding, None)
 }
 pub fn codex_catalog_patch(
     original: Option<&[u8]>,
@@ -2237,49 +2238,27 @@ pub fn codex_catalog_patch(
     catalog_path: &Path,
     default_effort: &str,
 ) -> Result<Vec<u8>> {
-    if !catalog_path.is_absolute()
-        || default_effort.is_empty()
-        || default_effort.len() > 128
-        || !default_effort.bytes().all(|byte| byte.is_ascii_graphic())
-    {
-        return Err(fail("invalid_configuration"));
-    }
-    let after = codex_patch(original, base_url, model, helper, binding)?;
-    let mut document = std::str::from_utf8(&after)
-        .map_err(|_| fail("invalid_configuration"))?
-        .parse::<DocumentMut>()
-        .map_err(|_| fail("invalid_configuration"))?;
-    let owned = [
-        "model",
-        "model_provider",
-        "model_catalog_json",
-        "model_reasoning_effort",
-    ];
-    if document.get("profile").is_some()
-        || document
-            .get("profiles")
-            .and_then(Item::as_table_like)
-            .is_some_and(|profiles| {
-                profiles
-                    .iter()
-                    .any(|(_, profile)| owned.iter().any(|key| profile.get(key).is_some()))
-            })
-    {
-        return Err(fail("codex_config_override_unverified"));
-    }
-    document["model_catalog_json"] =
-        value(catalog_path.to_str().ok_or_else(|| fail("invalid_path"))?);
-    document["model_reasoning_effort"] = value(default_effort);
-    let bytes = document.to_string().into_bytes();
-    if bytes.len() as u64 > MAX_CONFIG_BYTES {
-        return Err(fail("invalid_configuration"));
-    }
-    Ok(bytes)
+    crate::codex_config::patch(
+        original,
+        base_url,
+        model,
+        helper,
+        binding,
+        Some((catalog_path, default_effort)),
+    )
+}
+#[derive(Default)]
+pub(crate) struct CodexFileRevisions {
+    pub files: Option<String>,
+    pub route: Option<String>,
 }
 pub fn codex_configuration_revision(config: &Path, catalog: &Path) -> Result<Option<String>> {
+    Ok(codex_file_revisions(config, catalog)?.files)
+}
+pub(crate) fn codex_file_revisions(config: &Path, catalog: &Path) -> Result<CodexFileRevisions> {
     let files = [(config, read_file(config)?), (catalog, read_file(catalog)?)];
     if files.iter().all(|(_, bytes)| bytes.is_none()) {
-        return Ok(None);
+        return Ok(CodexFileRevisions::default());
     }
     let framed: Vec<_> = files
         .iter()
@@ -2291,9 +2270,21 @@ pub fn codex_configuration_revision(config: &Path, catalog: &Path) -> Result<Opt
             )
         })
         .collect();
-    Ok(Some(sha256(
-        &serde_json::to_vec(&(1u32, framed)).map_err(|_| fail("serialization_failed"))?,
-    )))
+    let full =
+        sha256(&serde_json::to_vec(&(1u32, &framed)).map_err(|_| fail("serialization_failed"))?);
+    let bytes = files[0].1.as_deref();
+    let route = crate::codex_config::applied_slot(bytes)
+        .and_then(|slot| crate::codex_config::routing_revision(bytes, &slot))
+        .ok()
+        .map(|route| {
+            serde_json::to_vec(&(&framed[0].0, route, &framed[1])).map(|bytes| sha256(&bytes))
+        })
+        .transpose()
+        .map_err(|_| fail("serialization_failed"))?;
+    Ok(CodexFileRevisions {
+        files: Some(full),
+        route,
+    })
 }
 pub fn claude_import_diagnostic(
     base_url: &str,
@@ -2340,18 +2331,14 @@ pub fn configuration_hash(bytes: Option<&[u8]>) -> Option<String> {
     bytes.map(sha256)
 }
 pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String> {
-    fn document(bytes: &[u8]) -> Result<DocumentMut> {
-        std::str::from_utf8(bytes)
-            .map_err(|_| fail("invalid_configuration"))?
-            .parse::<DocumentMut>()
-            .map_err(|_| fail("invalid_configuration"))
-    }
     fn field(doc: &DocumentMut, path: &[&str]) -> Option<String> {
         let mut item = doc.as_item();
         for part in path {
             item = item.get(part)?;
         }
-        Some(item.to_string().trim().to_string())
+        let mut value = item.as_value()?.clone();
+        value.decor_mut().clear();
+        Some(value.to_string())
     }
     fn safe(path: &[&str], value: Option<String>, previous: bool) -> String {
         match value {
@@ -2397,33 +2384,33 @@ pub fn codex_redacted_diff(before: Option<&[u8]>, after: &[u8]) -> Result<String
             }
         }
     }
-    let before = document(before.unwrap_or_default())?;
-    let after = document(after)?;
-    let paths: Vec<Vec<&str>> = vec![
+    let before = crate::codex_config::document(before)?;
+    let after = crate::codex_config::document(Some(after))?;
+    let slot = after
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .ok_or_else(|| fail("invalid_configuration"))?;
+    let mut paths: Vec<Vec<&str>> = vec![
         vec!["model"],
         vec!["model_provider"],
         vec!["model_catalog_json"],
         vec!["model_reasoning_effort"],
-        vec!["model_providers", "orivelle_orbit", "name"],
-        vec!["model_providers", "orivelle_orbit", "base_url"],
-        vec!["model_providers", "orivelle_orbit", "wire_api"],
-        vec!["model_providers", "orivelle_orbit", "env_key"],
-        vec![
-            "model_providers",
-            "orivelle_orbit",
-            "experimental_bearer_token",
-        ],
-        vec!["model_providers", "orivelle_orbit", "requires_openai_auth"],
-        vec!["model_providers", "orivelle_orbit", "auth", "command"],
-        vec!["model_providers", "orivelle_orbit", "auth", "args"],
-        vec!["model_providers", "orivelle_orbit", "auth", "timeout_ms"],
-        vec![
-            "model_providers",
-            "orivelle_orbit",
-            "auth",
-            "refresh_interval_ms",
-        ],
+        vec!["model_providers", slot, "name"],
+        vec!["model_providers", slot, "base_url"],
+        vec!["model_providers", slot, "wire_api"],
+        vec!["model_providers", slot, "env_key"],
+        vec!["model_providers", slot, "experimental_bearer_token"],
+        vec!["model_providers", slot, "requires_openai_auth"],
+        vec!["model_providers", slot, "auth", "command"],
+        vec!["model_providers", slot, "auth", "args"],
+        vec!["model_providers", slot, "auth", "timeout_ms"],
+        vec!["model_providers", slot, "auth", "refresh_interval_ms"],
     ];
+    if let Some(name) = after.get("profile").and_then(Item::as_str) {
+        for key in crate::codex_config::ROUTING {
+            paths.push(vec!["profiles", name, key]);
+        }
+    }
     let mut out = String::new();
     for path in paths {
         let old = field(&before, &path);
@@ -2836,15 +2823,22 @@ mod tests {
         assert!(diff.contains("auth.command"));
         assert!(diff.contains("orbit-credential-helper"));
         assert!(diff.contains("auth.args"));
-        assert!(diff.contains("experimental_bearer_token"));
+        assert!(diff.contains("model_providers.orivelle_orbit_2.auth.command"));
+        assert!(!diff.contains("experimental_bearer_token"));
         assert!(!diff.contains("original-secret"));
         let after = std::str::from_utf8(&after).unwrap();
         let document = after.parse::<DocumentMut>().unwrap();
         assert_eq!(
-            document["model_providers"]["orivelle_orbit"]["auth"]["command"].as_str(),
+            document["model_providers"]["orivelle_orbit_2"]["auth"]["command"].as_str(),
             helper.to_str(),
         );
-        assert!(after.contains("custom_unowned"));
-        assert!(after.contains("cwd"));
+        let original_document = std::str::from_utf8(original)
+            .unwrap()
+            .parse::<DocumentMut>()
+            .unwrap();
+        assert_eq!(
+            document["model_providers"]["orivelle_orbit"].to_string(),
+            original_document["model_providers"]["orivelle_orbit"].to_string()
+        );
     }
 }

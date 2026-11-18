@@ -253,6 +253,7 @@ pub fn run() {
             probe_nodes,
             cancel_node_probes,
             preview_client_config,
+            discard_config_preview,
             apply_client_config,
             export_claude_import,
             preview_restore,

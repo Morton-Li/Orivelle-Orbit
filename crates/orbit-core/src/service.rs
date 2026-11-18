@@ -2,7 +2,7 @@ use crate::{
     clipboard::{ClipboardImage, ImageClipboardSink},
     config::{
         CodexContext, CodexModelInput, ConfigEngine, FileChange, Journal, JournalPurpose,
-        codex_catalog_patch, codex_configuration_revision, read_file,
+        codex_catalog_patch, codex_file_revisions, read_file,
     },
     dto::*,
     error::{PublicError, Result, fail},
@@ -107,7 +107,21 @@ struct SessionEnvelope {
     #[zeroize(skip)]
     session: ProofSession,
 }
+struct CodexSwitchDraft {
+    binding_id: String,
+    config_revision: String,
+    catalog_before: Option<String>,
+}
+
+enum CodexPreparation<'a> {
+    #[cfg(test)]
+    Legacy,
+    Review,
+    Confirm(&'a PreviewEntry, &'a CodexSwitchDraft),
+}
+
 struct PreviewEntry {
+    codex_draft: Option<CodexSwitchDraft>,
     view: ConfigPreview,
     journal_id: Option<String>,
     import_candidate: Option<(Vec<u8>, String)>,
@@ -118,6 +132,13 @@ struct PreviewEntry {
     claude_context: Option<crate::config::ClaudeContext>,
     catalog_context: Option<CodexContext>,
     _mapping_reservation: Option<crate::claude_mapping::ReservationTicket>,
+}
+impl PreviewEntry {
+    fn is_codex_review(&self) -> bool {
+        self.view.client == ClientKind::Codex
+            && self.view.operation == "apply"
+            && self.view.expires_at.is_none()
+    }
 }
 struct ConfigObservation {
     target: ClientView,
@@ -277,6 +298,7 @@ pub struct Service {
     account_gate: Mutex<()>,
     clients: Mutex<Vec<ClientView>>,
     previews: Mutex<HashMap<String, PreviewEntry>>,
+    codex_review_generation: AtomicU64,
     diagnostics: Mutex<HashMap<String, DiagnosticsPreview>>,
     observer: Mutex<Option<Observer>>,
     authorization_observer: Mutex<Option<AuthorizationObserver>>,
@@ -316,6 +338,7 @@ impl Service {
             if let Some(old) = store.get::<ClientView>("client-state", client.client.as_str())? {
                 client.configuration_state = old.configuration_state;
                 client.configuration_revision = old.configuration_revision;
+                client.codex_route_revision = old.codex_route_revision;
                 client.catalog_sync = old.catalog_sync;
                 client.loaded_state = if client.configuration_state == "saved" {
                     "restart_required"
@@ -375,6 +398,7 @@ impl Service {
             account_gate: Mutex::new(()),
             clients: Mutex::new(clients),
             previews: Mutex::new(HashMap::new()),
+            codex_review_generation: AtomicU64::new(0),
             diagnostics: Mutex::new(HashMap::new()),
             observer: Mutex::new(None),
             authorization_observer: Mutex::new(None),
@@ -2600,20 +2624,24 @@ impl Service {
             self.paths.codex_catalog().display().to_string(),
             self.paths.codex_config.display().to_string(),
         ];
-        let observed =
-            codex_configuration_revision(&self.paths.codex_config, &self.paths.codex_catalog());
+        let observed = codex_file_revisions(&self.paths.codex_config, &self.paths.codex_catalog());
         if observed.as_ref().is_err()
-            || target.configuration_revision != observed.as_ref().ok().cloned().flatten()
+            || target.configuration_revision.as_ref()
+                != observed.as_ref().ok().and_then(|r| r.files.as_ref())
         {
             target.loaded_evidence = None;
             target.connection_evidence = None;
             target.loaded_state = "unconfirmed".into();
             target.connection_state = "not_tested".into();
-            if target.configuration_state == "saved" {
+            if target.configuration_state == "saved"
+                && (target.codex_route_revision.is_none()
+                    || target.codex_route_revision.as_ref()
+                        != observed.as_ref().ok().and_then(|r| r.route.as_ref()))
+            {
                 target.configuration_state = "conflict".into();
             }
         }
-        target.configuration_revision = observed.ok().flatten();
+        target.configuration_revision = observed.ok().and_then(|r| r.files);
     }
     fn client_policy(&self, client: ClientKind) -> Result<(ClientView, crate::policy::Snapshot)> {
         let target = self
@@ -2733,9 +2761,9 @@ impl Service {
                     .is_ok();
             guard()?;
             let revision = if recovered {
-                codex_configuration_revision(&self.paths.codex_config, &self.paths.codex_catalog())?
+                codex_file_revisions(&self.paths.codex_config, &self.paths.codex_catalog())?
             } else {
-                None
+                Default::default()
             };
             for client in self
                 .clients
@@ -2753,7 +2781,8 @@ impl Service {
                 }
                 .into();
                 if recovered {
-                    client.configuration_revision = revision.clone();
+                    client.configuration_revision = revision.files.clone();
+                    client.codex_route_revision = revision.route.clone();
                 }
                 client.loaded_evidence = None;
                 client.connection_evidence = None;
@@ -2807,14 +2836,20 @@ impl Service {
         client: ClientKind,
         model_mapping: Option<&ClaudeModelMapping>,
     ) -> Result<ConfigPreview> {
+        let generation = (client == ClientKind::Codex && model_mapping.is_none()).then(|| {
+            self.codex_review_generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1)
+        });
         self.configuration_preflight(client)?;
         self.refresh_account_cache(id, false).await?;
         self.configuration_preflight(client)?;
         let _ = self.list_models(id).await?;
         match (client, model_mapping) {
-            (ClientKind::Codex, None) => {
-                self.preview_client_config_legacy(id, revision, client, "")
-            }
+            (ClientKind::Codex, None) => self.remember_client_preview(
+                self.build_client_preview(id, revision, client, "", CodexPreparation::Review)?,
+                generation,
+            ),
             (ClientKind::Claude, Some(model_mapping)) => {
                 self.preview_claude_config(id, revision, &model_mapping.sonnet, Some(model_mapping))
             }
@@ -2872,6 +2907,7 @@ impl Service {
     ) -> Result<ConfigPreview> {
         self.preview_client_config_legacy(id, revision, ClientKind::Claude, model_id)
     }
+    #[cfg(test)]
     fn preview_client_config_legacy(
         &self,
         id: &str,
@@ -2879,6 +2915,52 @@ impl Service {
         client: ClientKind,
         model_id: &str,
     ) -> Result<ConfigPreview> {
+        self.remember_client_preview(
+            self.build_client_preview(id, revision, client, model_id, CodexPreparation::Legacy)?,
+            None,
+        )
+    }
+    fn remember_client_preview(
+        &self,
+        entry: PreviewEntry,
+        generation: Option<u64>,
+    ) -> Result<ConfigPreview> {
+        let view = entry.view.clone();
+        let mut pending = self
+            .previews
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        if let Some(generation) = generation {
+            // A canceled window can finish checking after its replacement.
+            if self.codex_review_generation.load(Ordering::Acquire) != generation {
+                return Err(fail("preview_expired"));
+            }
+            pending.retain(|_, old| !old.is_codex_review());
+        }
+        pending.insert(view.id.clone(), entry);
+        Ok(view)
+    }
+    pub fn discard_config_preview(&self, id: &str) -> Result<()> {
+        validate_uuid(id)?;
+        let mut pending = self
+            .previews
+            .lock()
+            .map_err(|_| fail("state_unavailable"))?;
+        if pending.get(id).is_some_and(PreviewEntry::is_codex_review) {
+            pending.remove(id);
+        }
+        Ok(())
+    }
+    fn build_client_preview(
+        &self,
+        id: &str,
+        revision: u64,
+        client: ClientKind,
+        model_id: &str,
+        mode: CodexPreparation<'_>,
+    ) -> Result<PreviewEntry> {
+        #[cfg(windows)]
+        let _verification = crate::system::CodexVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         let observation = self.observe_configuration(client)?;
         let gate_error = self.require_configuration(&observation, None, None).err();
@@ -2914,6 +2996,16 @@ impl Service {
                 self.freeze_codex(&record, &cache, planned, configuration_target)
             })
             .transpose()?;
+        if let CodexPreparation::Confirm(previous, _) = &mode {
+            self.require_configuration(
+                &observation,
+                Some(&previous.policy),
+                previous.configuration_target.as_ref(),
+            )?;
+            if previous.catalog_context != catalog_context {
+                return Err(fail("codex_catalog_scope_changed"));
+            }
+        }
         let target = &observation.target;
         let policy = &observation.policy;
         let configuration_target = observation.configuration_target.as_ref();
@@ -2934,6 +3026,11 @@ impl Service {
             self.validate_codex_context(current, false)
         };
         let now = chrono::Utc::now();
+        let expires_at = match mode {
+            #[cfg(test)]
+            CodexPreparation::Legacy => Some((now + chrono::Duration::minutes(5)).to_rfc3339()),
+            _ => None,
+        };
         let mut preview = ConfigPreview {
             id: uuid(), client, operation: "apply".into(), target_version: target.version.clone(),
             paths: target.config_paths.clone(), model_id: Some(model_id.into()), context: Some(context), restore_owner: None, restore_source: None, restore_coordination: None,
@@ -2949,7 +3046,7 @@ impl Service {
                 ],
             },
             redacted_diff: "No file mutation is permitted for this preview.".into(),
-            expires_at: (now + chrono::Duration::minutes(5)).to_rfc3339(), can_apply: false,
+            expires_at, can_apply: false,
             can_export_import: false, blocking_reason: None,
             codex_catalog: planned.as_ref().map(|planned| CodexCatalogPreview {
                 profile_id: crate::codex_binding::PROFILE_ID.into(), cli_version: crate::codex_catalog::SUPPORTED_CLI_VERSION.into(),
@@ -2964,6 +3061,7 @@ impl Service {
             codex_configuration_target: configuration_target_view(&observation),
             claude_configuration_target: claude::target_view(&observation),
         };
+        let mut codex_draft = None;
         let mut journal_id = None;
         let mut import_candidate = None;
         let mut claude_diagnostic_scope = None;
@@ -2988,7 +3086,10 @@ impl Service {
                     Some(self.claude_diagnostic_scope(id, revision, model_id)?);
             }
             let install = self.installation(&record)?;
-            let binding_id = uuid();
+            let binding_id = match &mode {
+                CodexPreparation::Confirm(_, draft) => draft.binding_id.clone(),
+                _ => uuid(),
+            };
             // Finish the catalog/owned patch before any helper credential or durable mutation.
             let changes = if let Some(planned) = &planned {
                 self.validate_codex_context(catalog_context.as_ref(), false)?;
@@ -3008,10 +3109,33 @@ impl Service {
                 )?;
                 preview.redacted_diff =
                     crate::config::codex_redacted_diff(before.as_deref(), &after)?;
+                let catalog_before = read_file(&self.paths.codex_catalog())?;
+                if preview.expires_at.is_none() {
+                    let slot = crate::codex_config::applied_slot(Some(&after))?;
+                    let config_revision =
+                        crate::codex_config::routing_revision(before.as_deref(), &slot)?;
+                    let catalog_hash = catalog_before.as_deref().map(sha256);
+                    match &mode {
+                        CodexPreparation::Review => {
+                            codex_draft = Some(CodexSwitchDraft {
+                                binding_id: binding_id.clone(),
+                                config_revision,
+                                catalog_before: catalog_hash,
+                            });
+                        }
+                        CodexPreparation::Confirm(_, draft)
+                            if draft.config_revision != config_revision
+                                || draft.catalog_before != catalog_hash =>
+                        {
+                            return Err(fail("configuration_conflict"));
+                        }
+                        _ => {}
+                    }
+                }
                 Some(vec![
                     FileChange {
                         path: self.paths.codex_catalog().display().to_string(),
-                        before: read_file(&self.paths.codex_catalog())?,
+                        before: catalog_before,
                         after: Some(planned.catalog().bytes().to_vec()),
                     },
                     FileChange {
@@ -3023,126 +3147,126 @@ impl Service {
             } else {
                 None
             };
-            let binding = HelperBinding {
-                id: binding_id.clone(),
-                client,
-                origin: record.view.panel_origin.clone(),
-                account_id: record.view.account_id.clone(),
-                installation_id: record.installation_id.clone(),
-                provider_id: record.view.provider_id.clone(),
-                credential_revision: record
-                    .view
-                    .credential_revision
-                    .clone()
-                    .ok_or_else(|| fail("credential_missing"))?,
-                secret_reference: record
-                    .credential_reference
-                    .clone()
-                    .ok_or_else(|| fail("credential_missing"))?,
-                enabled: false,
-                expires_at: record.credential_expires_at,
-                authorization_epoch: record.authorization_epoch,
-            };
-            let mut checked = binding.clone();
-            checked.enabled = true;
-            guard()?;
-            if client == ClientKind::Codex {
-                self.validate_codex_context(catalog_context.as_ref(), false)?;
-            }
-            let _ = bound_helper_token(
-                &checked,
-                client,
-                &binding_id,
-                &self.store,
-                self.vault.as_ref(),
-                now.timestamp(),
-            )?;
-            guard()?;
-            if client == ClientKind::Codex {
-                self.validate_codex_context(catalog_context.as_ref(), false)?;
-            }
-            self.store
-                .put("binding", &binding_id, &record.view.account_id, &binding)?;
-            if client == ClientKind::Claude {
-                let base = cache
-                    .claude_endpoints
-                    .get(
-                        record
-                            .view
-                            .node_id
-                            .as_ref()
-                            .ok_or_else(|| fail("node_unavailable"))?,
-                    )
-                    .ok_or_else(|| fail("node_unavailable"))?;
-                let body = crate::config::claude_import_diagnostic(
-                    base,
-                    &self.paths.helper,
-                    &binding_id,
-                    model_id,
-                )?;
-                let bytes =
-                    serde_json::to_vec_pretty(&body).map_err(|_| fail("serialization_failed"))?;
-                preview.redacted_diff = std::str::from_utf8(&bytes)
-                    .map_err(|_| fail("serialization_failed"))?
-                    .into();
-                preview.can_export_import = true;
-                preview.blocking_reason = Some("schema_unverified".into());
-                import_candidate = Some((bytes, binding_id));
-            } else {
-                let previous = self
-                    .store
-                    .list::<HelperBinding>("binding", None)?
-                    .into_iter()
-                    .filter(|b| b.client == client && b.enabled)
-                    .map(|b| b.id)
-                    .collect();
-                let engine = self.codex_engine(&guard, &context_guard);
-                let mut journal = engine.prepare_codex(
-                    &record.view.account_id,
-                    &install,
-                    changes.ok_or_else(|| fail("codex_catalog_context_unverified"))?,
-                    Some(binding_id),
-                    previous,
-                    catalog_context
-                        .clone()
-                        .ok_or_else(|| fail("codex_catalog_context_unverified"))?,
-                )?;
-                journal.account_label = cache.account.label.clone();
-                engine.freeze_target(
-                    &mut journal,
-                    target.version.clone(),
-                    target.bundle_id.clone(),
-                )?;
-                engine.freeze_policy(&mut journal, &policy.revision)?;
-                if switching {
-                    engine.mark_switch(&mut journal)?;
-                }
-                journal_id = Some(journal.id);
+            if codex_draft.is_some() {
+                // Only a fingerprint and a future binding ID survive the review. The
+                // full-file backup and helper binding are created after confirmation.
                 preview.can_apply = true;
+            } else {
+                let binding = HelperBinding {
+                    id: binding_id.clone(),
+                    client,
+                    origin: record.view.panel_origin.clone(),
+                    account_id: record.view.account_id.clone(),
+                    installation_id: record.installation_id.clone(),
+                    provider_id: record.view.provider_id.clone(),
+                    credential_revision: record
+                        .view
+                        .credential_revision
+                        .clone()
+                        .ok_or_else(|| fail("credential_missing"))?,
+                    secret_reference: record
+                        .credential_reference
+                        .clone()
+                        .ok_or_else(|| fail("credential_missing"))?,
+                    enabled: false,
+                    expires_at: record.credential_expires_at,
+                    authorization_epoch: record.authorization_epoch,
+                };
+                let mut checked = binding.clone();
+                checked.enabled = true;
+                guard()?;
+                if client == ClientKind::Codex {
+                    self.validate_codex_context(catalog_context.as_ref(), false)?;
+                }
+                let _ = bound_helper_token(
+                    &checked,
+                    client,
+                    &binding_id,
+                    &self.store,
+                    self.vault.as_ref(),
+                    now.timestamp(),
+                )?;
+                guard()?;
+                if client == ClientKind::Codex {
+                    self.validate_codex_context(catalog_context.as_ref(), false)?;
+                }
+                self.store
+                    .put("binding", &binding_id, &record.view.account_id, &binding)?;
+                if client == ClientKind::Claude {
+                    let base = cache
+                        .claude_endpoints
+                        .get(
+                            record
+                                .view
+                                .node_id
+                                .as_ref()
+                                .ok_or_else(|| fail("node_unavailable"))?,
+                        )
+                        .ok_or_else(|| fail("node_unavailable"))?;
+                    let body = crate::config::claude_import_diagnostic(
+                        base,
+                        &self.paths.helper,
+                        &binding_id,
+                        model_id,
+                    )?;
+                    let bytes = serde_json::to_vec_pretty(&body)
+                        .map_err(|_| fail("serialization_failed"))?;
+                    preview.redacted_diff = std::str::from_utf8(&bytes)
+                        .map_err(|_| fail("serialization_failed"))?
+                        .into();
+                    preview.can_export_import = true;
+                    preview.blocking_reason = Some("schema_unverified".into());
+                    import_candidate = Some((bytes, binding_id));
+                } else {
+                    let previous = self
+                        .store
+                        .list::<HelperBinding>("binding", None)?
+                        .into_iter()
+                        .filter(|b| b.client == client && b.enabled)
+                        .map(|b| b.id)
+                        .collect();
+                    let engine = self.codex_engine(&guard, &context_guard);
+                    let mut journal = engine.prepare_codex(
+                        &record.view.account_id,
+                        &install,
+                        changes.ok_or_else(|| fail("codex_catalog_context_unverified"))?,
+                        Some(binding_id),
+                        previous,
+                        catalog_context
+                            .clone()
+                            .ok_or_else(|| fail("codex_catalog_context_unverified"))?,
+                    )?;
+                    journal.account_label = cache.account.label.clone();
+                    engine.freeze_target(
+                        &mut journal,
+                        target.version.clone(),
+                        target.bundle_id.clone(),
+                    )?;
+                    engine.freeze_policy(&mut journal, &policy.revision)?;
+                    if switching {
+                        engine.mark_switch(&mut journal)?;
+                    }
+                    journal_id = Some(journal.id);
+                    preview.can_apply = true;
+                }
             }
         }
         if client == ClientKind::Claude {
             preview.impact.push("仅生成官方 V2 正文诊断候选供核查；不承诺该候选可导入，不写配置库，尚无真实加载或连通证据。".into());
         }
-        self.previews
-            .lock()
-            .map_err(|_| fail("state_unavailable"))?
-            .insert(
-                preview.id.clone(),
-                PreviewEntry {
-                    view: preview.clone(),
-                    journal_id,
-                    import_candidate,
-                    policy: observation.policy,
-                    configuration_target: observation.configuration_target,
-                    claude_configuration_target: observation.claude_configuration_target,
-                    claude_diagnostic_scope,
-                    claude_context: None,
-                    catalog_context,
-                    _mapping_reservation: None,
-                },
-            );
-        Ok(preview)
+        Ok(PreviewEntry {
+            view: preview,
+            codex_draft,
+            journal_id,
+            import_candidate,
+            policy: observation.policy,
+            configuration_target: observation.configuration_target,
+            claude_configuration_target: observation.claude_configuration_target,
+            claude_diagnostic_scope,
+            claude_context: None,
+            catalog_context,
+            _mapping_reservation: None,
+        })
     }
     fn take_preview(&self, id: &str, operation: &str) -> Result<PreviewEntry> {
         validate_uuid(id)?;
@@ -3152,9 +3276,13 @@ impl Service {
             .map_err(|_| fail("state_unavailable"))?;
         let entry = previews.remove(id).ok_or_else(|| fail("preview_expired"))?;
         if entry.view.operation != operation
-            || chrono::DateTime::parse_from_rfc3339(&entry.view.expires_at)
-                .map_err(|_| fail("preview_expired"))?
-                <= chrono::Utc::now()
+            || entry
+                .view
+                .expires_at
+                .as_deref()
+                .map(parse_timestamp)
+                .transpose()?
+                .is_some_and(|deadline| deadline <= chrono::Utc::now().timestamp())
         {
             return Err(fail("preview_expired"));
         }
@@ -3245,7 +3373,12 @@ impl Service {
         let result = async {
             if view.operation != "apply"
                 || !view.can_apply
-                || parse_timestamp(&view.expires_at)? <= chrono::Utc::now().timestamp()
+                || view
+                    .expires_at
+                    .as_deref()
+                    .map(parse_timestamp)
+                    .transpose()?
+                    .is_some_and(|deadline| deadline <= chrono::Utc::now().timestamp())
             {
                 return Err(fail(
                     view.blocking_reason.as_deref().unwrap_or("preview_expired"),
@@ -3315,6 +3448,8 @@ impl Service {
         confirmed: bool,
         restore: bool,
     ) -> Result<ConfigResult> {
+        #[cfg(windows)]
+        let _verification = crate::system::CodexVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         if !confirmed {
             return Err(fail("confirmation_required"));
@@ -3322,7 +3457,30 @@ impl Service {
         if !self.paths.writes_authorized {
             return Err(fail("integration_authorization_required"));
         }
-        let entry = self.take_preview(id, if restore { "restore" } else { "apply" })?;
+        let mut entry = self.take_preview(id, if restore { "restore" } else { "apply" })?;
+        if let Some(draft) = &entry.codex_draft {
+            let scope = entry
+                .view
+                .context
+                .as_ref()
+                .ok_or_else(|| fail("codex_catalog_context_unverified"))?;
+            entry = self.build_client_preview(
+                &scope.connection_id,
+                scope.connection_revision,
+                ClientKind::Codex,
+                "",
+                CodexPreparation::Confirm(&entry, draft),
+            )?;
+            if !entry.view.can_apply {
+                return Err(fail(
+                    entry
+                        .view
+                        .blocking_reason
+                        .as_deref()
+                        .unwrap_or("configuration_unavailable"),
+                ));
+            }
+        }
         if entry.view.client == ClientKind::Claude {
             return self.apply_claude_entry(entry, restore);
         }
@@ -3382,8 +3540,7 @@ impl Service {
                 .as_deref()
                 .ok_or_else(|| fail("preview_expired"))?,
         )?;
-        let revision =
-            codex_configuration_revision(&self.paths.codex_config, &self.paths.codex_catalog())?;
+        let revision = codex_file_revisions(&self.paths.codex_config, &self.paths.codex_catalog())?;
         for client in self
             .clients
             .lock()
@@ -3393,7 +3550,8 @@ impl Service {
             if client.client == journal.client {
                 client.configuration_state =
                     if restore { "not_configured" } else { "saved" }.into();
-                client.configuration_revision = revision.clone();
+                client.configuration_revision = revision.files.clone();
+                client.codex_route_revision = revision.route.clone();
                 client.loaded_state = "restart_required".into();
                 client.loaded_evidence = None;
                 client.connection_evidence = None;
@@ -3431,7 +3589,13 @@ impl Service {
         if entry.view.client != ClientKind::Claude
             || entry.view.operation != "apply"
             || !entry.view.can_export_import
-            || parse_timestamp(&entry.view.expires_at)? <= chrono::Utc::now().timestamp()
+            || parse_timestamp(
+                entry
+                    .view
+                    .expires_at
+                    .as_deref()
+                    .ok_or_else(|| fail("preview_expired"))?,
+            )? <= chrono::Utc::now().timestamp()
         {
             return Err(fail("preview_expired"));
         }
@@ -3517,6 +3681,8 @@ impl Service {
         backup_id: &str,
         coordination: Option<ClaudeRestoreCoordination>,
     ) -> Result<ConfigPreview> {
+        #[cfg(windows)]
+        let _verification = crate::system::CodexVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         validate_uuid(backup_id)?;
         let backup = self
@@ -3619,7 +3785,7 @@ impl Service {
             ],
             redacted_diff:
                 "Restore encrypted original configuration; original secrets stay redacted.".into(),
-            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+            expires_at: Some((chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()),
             can_apply: blocked.is_none(),
             can_export_import: false,
             codex_catalog: None,
@@ -3634,6 +3800,7 @@ impl Service {
             .insert(
                 preview.id.clone(),
                 PreviewEntry {
+                    codex_draft: None,
                     view: preview.clone(),
                     journal_id,
                     import_candidate: None,
@@ -5219,6 +5386,24 @@ mod tests {
         pub(super) target: Arc<AtomicU64>,
     }
     impl PolicyFixture {
+        fn codex_switch_review(&self) -> ConfigPreview {
+            let review = self
+                .service
+                .build_client_preview(
+                    &self.record.view.id,
+                    self.record.view.revision,
+                    ClientKind::Codex,
+                    "",
+                    CodexPreparation::Review,
+                )
+                .unwrap();
+            self.service
+                .remember_client_preview(
+                    review,
+                    Some(self.service.codex_review_generation.load(Ordering::Acquire)),
+                )
+                .unwrap()
+        }
         fn preview(&self) -> ConfigPreview {
             self.service
                 .preview_client_config(
@@ -6273,19 +6458,153 @@ mod tests {
     }
     #[cfg(not(windows))]
     #[test]
+    fn codex_switch_review_backs_up_the_latest_files_only_on_confirmation() {
+        let f = policy_fixture(ClientKind::Codex);
+        let path = &f.service.paths.codex_config;
+        let catalog = f.service.paths.codex_catalog();
+        let auth = path.with_file_name("auth.json");
+        let original = "\u{feff}# my switcher\r\nmodel_provider = 'custom'\r\n[model_providers.custom]\r\nname = 'existing'\r\n";
+        let latest = format!("{original}\r\n[features]\r\nmy_preference = true\r\n");
+        std::fs::write(path, original).unwrap();
+        std::fs::write(&catalog, b"user catalogue\r\n").unwrap();
+        std::fs::write(&auth, b"externally managed credentials").unwrap();
+        let original_bindings = f.bindings();
+        let revision = f.service.store.snapshot().unwrap().revision;
+        f.reset();
+        let canceled = f.codex_switch_review();
+        assert!(canceled.expires_at.is_none());
+        f.service.discard_config_preview(&canceled.id).unwrap();
+        assert_eq!(
+            f.service
+                .apply_client_config(&canceled.id, true, false)
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+        let preview = f.codex_switch_review();
+        assert!(preview.can_apply && preview.expires_at.is_none());
+        assert_eq!(f.bindings(), original_bindings);
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+        assert_eq!(std::fs::read(path).unwrap(), original.as_bytes());
+        std::fs::write(path, &latest).unwrap();
+        let saved = f
+            .service
+            .apply_client_config(&preview.id, true, false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&auth).unwrap(),
+            b"externally managed credentials"
+        );
+        assert_eq!(
+            f.service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap_err()
+                .code,
+            "preview_expired"
+        );
+        let restore = f
+            .service
+            .preview_restore(&saved.snapshot_id.unwrap())
+            .unwrap();
+        f.service
+            .apply_client_config(&restore.id, true, true)
+            .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), latest.as_bytes());
+        assert_eq!(std::fs::read(catalog).unwrap(), b"user catalogue\r\n");
+        assert_eq!(
+            std::fs::read(auth).unwrap(),
+            b"externally managed credentials"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_disconnect_revokes_the_binding_when_another_switcher_already_restored_both_files() {
+        let f = policy_fixture(ClientKind::Codex);
+        let config = &f.service.paths.codex_config;
+        let original = std::fs::read(config).unwrap();
+        let review = f.codex_switch_review();
+        let saved = f
+            .service
+            .apply_client_config(&review.id, true, false)
+            .unwrap();
+        std::fs::write(config, &original).unwrap();
+        std::fs::remove_file(f.service.paths.codex_catalog()).unwrap();
+        let restore = f
+            .service
+            .preview_restore(&saved.snapshot_id.unwrap())
+            .unwrap();
+        assert_eq!(
+            f.service
+                .apply_client_config(&restore.id, true, true)
+                .unwrap()
+                .state,
+            "restored"
+        );
+        assert_eq!(std::fs::read(config).unwrap(), original);
+        assert!(!f.service.paths.codex_catalog().exists());
+        assert!(f.service.bootstrap().unwrap().switch_snapshots.is_empty());
+        assert!(
+            f.service
+                .store
+                .list::<HelperBinding>("binding", None)
+                .unwrap()
+                .iter()
+                .all(|b| !b.enabled)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_switch_review_refuses_changed_routes_collisions_and_catalogs_before_preparing() {
+        for change in ["route", "new-slot", "catalog", "policy"] {
+            let f = policy_fixture(ClientKind::Codex);
+            let preview = f.codex_switch_review();
+            let path = &f.service.paths.codex_config;
+            let catalog = f.service.paths.codex_catalog();
+            match change {
+                "route" => std::fs::write(path, "model='another'\n").unwrap(),
+                "new-slot" => std::fs::write(
+                    path,
+                    "model='old'\n[model_providers.orivelle_orbit]\nname='mine'\n",
+                )
+                .unwrap(),
+                "catalog" => std::fs::write(&catalog, b"externally changed").unwrap(),
+                _ => f.epoch.store(2, Ordering::SeqCst),
+            }
+            let config_before = read_file(path).unwrap();
+            let catalog_before = read_file(&catalog).unwrap();
+            let bindings = f.bindings();
+            f.reset();
+            let error = f
+                .service
+                .apply_client_config(&preview.id, true, false)
+                .unwrap_err();
+            if change != "policy" {
+                assert_eq!(error.code, "configuration_conflict");
+            }
+            assert_eq!(read_file(path).unwrap(), config_before);
+            assert_eq!(read_file(&catalog).unwrap(), catalog_before);
+            assert_eq!(f.bindings(), bindings);
+            assert_eq!(f.vault.mutations.load(Ordering::SeqCst), 0);
+            assert!(
+                f.service
+                    .store
+                    .list::<Journal>("journal", None)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
     fn codex_catalog_sync_updates_all_aliases_and_restores_the_original_external_platform() {
         let f = policy_fixture(ClientKind::Codex);
         let original = b"model='external/model'\nmodel_provider='external'\n[model_providers.external]\nbase_url='https://other.example/v1'\nwire_api='responses'\n";
         std::fs::write(&f.service.paths.codex_config, original).unwrap();
-        let preview = f
-            .service
-            .preview_client_config_legacy(
-                &f.record.view.id,
-                f.record.view.revision,
-                ClientKind::Codex,
-                "",
-            )
-            .unwrap();
+        let preview = f.codex_switch_review();
         f.service
             .apply_client_config(&preview.id, true, false)
             .unwrap();
@@ -6295,6 +6614,22 @@ mod tests {
             Some((false, 1))
         );
         assert_eq!(f.service.store.snapshot().unwrap().revision, before_noop);
+        let personal = b"\n[mcp_servers.personal]\ncommand = 'my-tool'\n";
+        let saved = std::fs::read(&f.service.paths.codex_config).unwrap();
+        std::fs::write(
+            &f.service.paths.codex_config,
+            [saved.as_slice(), personal].concat(),
+        )
+        .unwrap();
+        let state = f
+            .service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|c| c.client == ClientKind::Codex)
+            .unwrap();
+        assert_eq!(state.configuration_state, "saved");
         let mut cache = f.service.account_cache(&f.record).unwrap();
         cache.models[0].reasoning.as_mut().unwrap().default_effort = None;
         let mut alias = cache.models[0].clone();
@@ -6349,9 +6684,16 @@ mod tests {
         f.service
             .apply_client_config(&restore.id, true, true)
             .unwrap();
+        let restored = crate::codex_config::document(Some(
+            &std::fs::read(&f.service.paths.codex_config).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(restored["model_provider"].as_str(), Some("external"));
+        assert_eq!(restored["model"].as_str(), Some("external/model"));
+        assert!(restored["model_providers"].get("orivelle_orbit").is_none());
         assert_eq!(
-            std::fs::read(&f.service.paths.codex_config).unwrap(),
-            original
+            restored["mcp_servers"]["personal"]["command"].as_str(),
+            Some("my-tool")
         );
         assert!(!f.service.paths.codex_catalog().exists());
         assert!(
@@ -6756,9 +7098,78 @@ mod tests {
     }
 
     #[cfg(not(windows))]
+    #[tokio::test]
+    async fn codex_public_switch_commands_refresh_authority_at_open_and_at_confirmation() {
+        for change_models in [false, true] {
+            let f = policy_fixture(ClientKind::Codex);
+            let mut wire = golden()["bootstrap_reply"].clone();
+            let model = &f.service.account_cache(&f.record).unwrap().models[0];
+            wire["data"]["models"][0]["codex_catalog_binding"] = json!(model.codex_catalog_binding);
+            wire["data"]["models"][0]["reasoning"] = json!(model.reasoning);
+            wire["data"]["meta"]["catalog_revision"] = json!("review");
+            let calls = Arc::new(AtomicU64::new(0));
+            let requests = calls.clone();
+            f.service.http.scripted(Arc::new(move |request| {
+                let index = requests.fetch_add(1, Ordering::SeqCst);
+                let mut response = wire.clone();
+                if change_models && index >= 2 {
+                    response["data"]["meta"]["catalog_revision"] = json!("updated");
+                }
+                if request.url.contains("/api/v1/orbit/models?node_id=") {
+                    response = json!({"data": response["data"]["models"], "meta":{"revision": response["data"]["meta"]["catalog_revision"]}});
+                } else { assert!(request.url.ends_with("/api/v1/orbit/bootstrap")); }
+                Box::pin(async move {
+                    Ok(crate::network::RemoteResponse { status: 200, request_id: None, bytes: serde_json::to_vec(&response).unwrap() })
+                })
+            }));
+            let preview = f
+                .service
+                .preview_switch_config(
+                    &f.record.view.id,
+                    f.record.view.revision,
+                    ClientKind::Codex,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert!(preview.expires_at.is_none() && preview.can_apply);
+            assert!(
+                f.service
+                    .store
+                    .list::<Journal>("journal", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            let result = f
+                .service
+                .apply_client_config_refreshed(&preview.id, true)
+                .await;
+            assert_eq!(calls.load(Ordering::SeqCst), 4);
+            if change_models {
+                assert_eq!(result.unwrap_err().code, "codex_catalog_scope_changed");
+                assert_eq!(
+                    std::fs::read(&f.service.paths.codex_config).unwrap(),
+                    b"model='old'\n"
+                );
+                assert!(!f.service.paths.codex_catalog().exists());
+                assert!(
+                    f.service
+                        .store
+                        .list::<Journal>("journal", None)
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                assert_eq!(result.unwrap().state, "saved");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
     #[test]
-    fn codex_config_old_null_declaration_and_profile_overrides_have_no_credential_side_effects() {
-        for mode in ["old-null", "profile", "profile-table"] {
+    fn codex_config_old_null_declaration_and_invalid_profile_have_no_credential_side_effects() {
+        for mode in ["old-null", "missing-profile", "malformed-profile"] {
             let f = policy_fixture(ClientKind::Codex);
             if mode == "old-null" {
                 let mut cache = f.service.account_cache(&f.record).unwrap();
@@ -6775,10 +7186,10 @@ mod tests {
             } else {
                 std::fs::write(
                     &f.service.paths.codex_config,
-                    if mode == "profile" {
-                        "profile='custom'\n[profiles.custom]\nmodel='other'\n"
+                    if mode == "missing-profile" {
+                        "profile='missing'\n[profiles.custom]\nmodel='other'\n"
                     } else {
-                        "[profiles.custom]\nmodel_reasoning_effort='ultra'\n"
+                        "profile='custom'\n[profiles]\ncustom=42\n"
                     },
                 )
                 .unwrap();

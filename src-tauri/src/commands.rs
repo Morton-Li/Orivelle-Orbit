@@ -136,6 +136,11 @@ pub struct Preview {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PreviewId {
+    preview_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Confirmation {
     preview_id: String,
     confirmed: bool,
@@ -384,6 +389,10 @@ pub async fn preview_client_config(
             request.claude_mapping.as_ref(),
         )
         .await
+}
+#[tauri::command]
+pub fn discard_config_preview(native: State<'_, Native>, request: PreviewId) -> Result<()> {
+    native.service.discard_config_preview(&request.preview_id)
 }
 #[tauri::command]
 pub async fn apply_client_config(

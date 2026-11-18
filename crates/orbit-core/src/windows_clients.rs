@@ -225,7 +225,22 @@ pub(super) fn refresh(paths: &SystemPaths, target: &mut ClientView) {
     }
 }
 pub(super) fn verify(target: &ClientView, cli_version: Option<&str>) -> Result<()> {
-    let _locks = lock_installation(target)?;
+    if target.client == ClientKind::Codex
+        && let (Some(path), Some(app), Some(cli)) = (
+            target.app_path.as_deref(),
+            target.version.as_deref(),
+            cli_version,
+        )
+    {
+        return CodexVerificationScope::verify(path, app, cli, || {
+            verify_installation(target, cli_version)
+        });
+    }
+    verify_installation(target, cli_version).map(drop)
+}
+
+fn verify_installation(target: &ClientView, cli_version: Option<&str>) -> Result<Vec<fs::File>> {
+    let locks = lock_installation(target)?;
     let root = std::env::var_os("SystemRoot")
         .ok_or_else(|| fail("codex_configuration_target_unverified"))?;
     let mut command =
@@ -286,7 +301,7 @@ if($codex){$actual=(& $files[1] --version 2>$null | Out-String).Trim(); if($actu
             1024 * 1024 * 1024,
         )?;
     }
-    Ok(())
+    Ok(locks)
 }
 fn qualify(paths: &SystemPaths, target: &ClientView) -> Result<Installation> {
     let installed = metadata(paths, target.client, target.app_path.as_deref())
@@ -341,7 +356,7 @@ fn lock_installation(target: &ClientView) -> Result<Vec<fs::File>> {
             .as_deref()
             .ok_or_else(|| fail("codex_configuration_target_unverified"))?,
     );
-    let mut locks = crate::windows_fs::lock_directory(root)?;
+    let mut locks = crate::windows_fs::lock_directory(&root.join("resources"))?;
     for relative in [
         if target.client == ClientKind::Codex {
             "Codex.exe"

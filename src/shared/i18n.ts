@@ -351,6 +351,12 @@ const zh = {
     "当前账户和节点没有兼容模型，请检查模型权限或切换节点。",
   "access.completeMapping": "请为 Sonnet、Opus、Haiku 分别选择实际调用的模型。",
   "access.waitConnection": "正在刷新连接状态，请稍候。",
+  "access.scopeChanged": "账户、API Key 或节点已切换，请重新核对接入信息。",
+  "access.reviewModelsChanged": "可用模型已变化，请重新核对接入信息。",
+  "access.checkAgain": "重新检查",
+  "access.checkingCodex": "正在核对 Codex 配置、节点和可用模型…",
+  "access.codexConfigInvalid":
+    "无法解析 Codex 配置。请检查 config.toml 的格式后重新接入。",
   "access.preparingPreview": "正在准备配置预览。",
   "access.description":
     "为 Codex 和 Claude Desktop 接入 Orivelle，也可以切回各自的原配置。",
@@ -466,7 +472,7 @@ const zh = {
   "access.codexRestoreContextUnavailable":
     "此原配置记录缺少可核验的恢复上下文，无法自动恢复。请手动核对原配置。",
   "access.codexOverrideUnavailable":
-    "现有显式设置可能覆盖本次配置，暂时不能自动应用。请先手动核对后重新预览。",
+    "config.toml 的 profile 没有指向有效的配置表。请核对 profile 和 profiles 后重新检查。",
   "access.codexEvidenceBoundary":
     "已安装版本的配置合同、模板声明和目录生成不代表客户端已载入或连接通过。保存配置后仍需重启并分别确认。",
   "access.codexBindingUnavailable":
@@ -1087,6 +1093,15 @@ const en: Record<keyof typeof zh, string> = {
   "access.completeMapping":
     "Choose the actual model for Sonnet, Opus and Haiku.",
   "access.waitConnection": "Refreshing the connection. Please wait.",
+  "access.scopeChanged":
+    "The account, API key, or node changed. Review the connection again.",
+  "access.reviewModelsChanged":
+    "Available models changed. Review the connection again.",
+  "access.checkAgain": "Check again",
+  "access.checkingCodex":
+    "Checking the Codex configuration, node, and available models…",
+  "access.codexConfigInvalid":
+    "Codex configuration could not be read. Check the format of config.toml and try again.",
   "access.preparingPreview": "Preparing the configuration preview…",
   "access.description":
     "Connect Codex and Claude Desktop to Orivelle or switch each tool back to its original configuration.",
@@ -1207,7 +1222,7 @@ const en: Record<keyof typeof zh, string> = {
   "access.codexRestoreContextUnavailable":
     "This configuration record has no verifiable recovery context and cannot be restored automatically. Check the original configuration manually.",
   "access.codexOverrideUnavailable":
-    "Existing explicit settings may override this configuration, so it cannot be applied automatically. Check the settings manually before creating a new preview.",
+    "The active profile in config.toml does not identify a valid table. Check profile and profiles, then try again.",
   "access.codexEvidenceBoundary":
     "An installed version's configuration contract, template declaration and generated catalog do not confirm client loading or connectivity. Restart after saving and confirm them separately.",
   "access.codexBindingUnavailable":
