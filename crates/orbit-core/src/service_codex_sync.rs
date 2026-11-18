@@ -74,7 +74,7 @@ impl Service {
 
     pub(super) fn sync_codex_models(&self, id: &str) -> Result<Option<(bool, usize)>> {
         #[cfg(windows)]
-        let _verification = crate::system::CodexVerificationScope::enter();
+        let _verification = crate::system::InstallationVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         let _gate = self
             .account_gate

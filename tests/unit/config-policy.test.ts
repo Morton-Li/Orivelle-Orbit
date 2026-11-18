@@ -95,41 +95,48 @@ function show(value: ConfigPreview) {
 }
 
 describe("configuration confirmation follows current policy", () => {
-  it("keeps a Codex switch open past five minutes, accepts a recovered probe, and blocks a changed target", async () => {
-    vi.useFakeTimers();
-    try {
-      const value = preview();
-      value.expires_at = null;
-      const view = show(value);
-      const button = view.get<HTMLButtonElement>(".button.primary");
-      vi.advanceTimersByTime(45 * 60_000);
-      await nextTick();
-      expect(button.element.disabled).toBe(false);
-      useOrbitStore().state.session.status = "refreshing";
-      await nextTick();
-      expect(button.element.disabled).toBe(true);
-      useOrbitStore().state.session.status = "authenticated";
-      await nextTick();
-      expect(button.element.disabled).toBe(false);
-      const client = useOrbitStore().state.clients[0]!;
-      client.configuration_access = "unverified";
-      await nextTick();
-      expect(button.element.disabled).toBe(true);
-      client.configuration_access = "allowed";
-      await nextTick();
-      expect(button.element.disabled).toBe(false);
-      client.version = "different version";
-      await nextTick();
-      expect(button.element.disabled).toBe(true);
-      expect(view.get("[role=alert]").text()).toContain("Codex");
-      client.version = value.target_version;
-      await nextTick();
-      expect(button.element.disabled).toBe(true);
-      expect(bridge.call).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  it.each(["codex", "claude"] as const)(
+    "keeps a %s switch open past five minutes, accepts a recovered probe, and blocks a changed target",
+    async (kind) => {
+      vi.useFakeTimers();
+      try {
+        const value = preview(kind);
+        value.expires_at = null;
+        const view = show(value);
+        const button = view.get<HTMLButtonElement>(".button.primary");
+        vi.advanceTimersByTime(45 * 60_000);
+        await nextTick();
+        expect(button.element.disabled).toBe(false);
+        useOrbitStore().state.session.status = "refreshing";
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        useOrbitStore().state.session.status = "authenticated";
+        await nextTick();
+        expect(button.element.disabled).toBe(false);
+        const client = useOrbitStore().state.clients.find(
+          (item) => item.client === kind,
+        )!;
+        client.configuration_access = "unverified";
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        client.configuration_access = "allowed";
+        await nextTick();
+        expect(button.element.disabled).toBe(false);
+        client.version = "different version";
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        expect(view.get("[role=alert]").text()).toContain(
+          kind === "codex" ? "Codex" : "Claude",
+        );
+        client.version = value.target_version;
+        await nextTick();
+        expect(button.element.disabled).toBe(true);
+        expect(bridge.call).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("opens the confirmation before native checks, discards a canceled result and shows the specific save error", async () => {
     const value = preview();
@@ -453,8 +460,7 @@ describe("Codex catalog confirmation", () => {
       for (const access of ["blocked", "unverified"] as const) {
         client.configuration_access = access;
         await nextTick();
-        const canRequestNativeCheck =
-          kind === "codex" && access === "unverified";
+        const canRequestNativeCheck = access === "unverified";
         expect(button.element.disabled).toBe(!canRequestNativeCheck);
         if (!canRequestNativeCheck) await button.trigger("click");
       }

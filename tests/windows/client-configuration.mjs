@@ -71,8 +71,8 @@ export async function exerciseClientConfiguration(
     );
     assert.equal(preview.paths.length, kind === "codex" ? 2 : 3);
     const before = await Promise.all(preview.paths.map(digest));
+    assert.equal(preview.expires_at, null);
     if (kind === "codex") {
-      assert.equal(preview.expires_at, null);
       assert.deepEqual(preview.paths, target.config_paths);
       assert.deepEqual(
         before,
@@ -230,7 +230,7 @@ export async function exerciseClientConfiguration(
         : undefined;
       const restore = await invoke(page, "preview_restore", {
         snapshot_id: applied.snapshot_id,
-        ...(openedClient ? { coordination: "claude_main_settings_v2" } : {}),
+        ...(openedClient ? { coordination: "claude_library_settings_v3" } : {}),
       });
       assert(
         restore.can_apply,
@@ -251,7 +251,12 @@ export async function exerciseClientConfiguration(
         "Restore must preserve the exact original bytes/absence.",
       );
       if (openedClient) {
-        const retained = JSON.parse(await readFile(preview.paths[2], "utf8"));
+        const retained = JSON.parse(
+          await readFile(preview.paths[2], "utf8").catch((error) => {
+            if (error.code === "ENOENT" && before[2] === null) return "{}";
+            throw error;
+          }),
+        );
         assert.equal(retained.deploymentMode, originalMain.deploymentMode);
         delete retained.deploymentMode;
         delete currentMain.deploymentMode;
@@ -420,7 +425,7 @@ if (
         const preview = await invoke(page, "preview_restore", {
           snapshot_id: recoveryId,
           ...(recoveryBefore.client === "claude"
-            ? { coordination: "claude_main_settings_v2" }
+            ? { coordination: "claude_library_settings_v3" }
             : {}),
         });
         console.log(

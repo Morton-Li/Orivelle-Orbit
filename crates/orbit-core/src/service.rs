@@ -121,6 +121,7 @@ enum CodexPreparation<'a> {
 }
 
 struct PreviewEntry {
+    claude_draft: Option<claude::SwitchDraft>,
     codex_draft: Option<CodexSwitchDraft>,
     view: ConfigPreview,
     journal_id: Option<String>,
@@ -134,10 +135,8 @@ struct PreviewEntry {
     _mapping_reservation: Option<crate::claude_mapping::ReservationTicket>,
 }
 impl PreviewEntry {
-    fn is_codex_review(&self) -> bool {
-        self.view.client == ClientKind::Codex
-            && self.view.operation == "apply"
-            && self.view.expires_at.is_none()
+    fn is_switch_review(&self) -> bool {
+        self.view.operation == "apply" && self.view.expires_at.is_none()
     }
 }
 struct ConfigObservation {
@@ -145,7 +144,7 @@ struct ConfigObservation {
     policy: crate::policy::Snapshot,
     configuration_target: Option<CodexConfigurationTarget>,
     claude_configuration_target: Option<ClaudeConfigurationTarget>,
-    claude_configuration_error: Option<PublicError>,
+    configuration_error: Option<PublicError>,
     runtime_view: Option<CodexRuntimeView>,
 }
 fn configuration_access_revision(target_revision: &str, local_policy_revision: &str) -> String {
@@ -298,7 +297,7 @@ pub struct Service {
     account_gate: Mutex<()>,
     clients: Mutex<Vec<ClientView>>,
     previews: Mutex<HashMap<String, PreviewEntry>>,
-    codex_review_generation: AtomicU64,
+    review_generation: AtomicU64,
     diagnostics: Mutex<HashMap<String, DiagnosticsPreview>>,
     observer: Mutex<Option<Observer>>,
     authorization_observer: Mutex<Option<AuthorizationObserver>>,
@@ -339,6 +338,7 @@ impl Service {
                 client.configuration_state = old.configuration_state;
                 client.configuration_revision = old.configuration_revision;
                 client.codex_route_revision = old.codex_route_revision;
+                client.claude_route_revision = old.claude_route_revision;
                 client.catalog_sync = old.catalog_sync;
                 client.loaded_state = if client.configuration_state == "saved" {
                     "restart_required"
@@ -398,7 +398,7 @@ impl Service {
             account_gate: Mutex::new(()),
             clients: Mutex::new(clients),
             previews: Mutex::new(HashMap::new()),
-            codex_review_generation: AtomicU64::new(0),
+            review_generation: AtomicU64::new(0),
             diagnostics: Mutex::new(HashMap::new()),
             observer: Mutex::new(None),
             authorization_observer: Mutex::new(None),
@@ -417,6 +417,7 @@ impl Service {
                 let _ = service.retire_account(record)?;
             }
         }
+        service.upgrade_claude_display_revision()?;
         service.coordinate_configuration_recovery()?;
         Ok(service)
     }
@@ -925,7 +926,7 @@ impl Service {
                 && observed.configuration_state == "unsupported"
                 && observed.configuration_access == ConfigurationAccess::Allowed
                 && !self.pending_configuration_recovery(ClientKind::Claude)?
-                && self.claude_revision().is_ok()
+                && self.claude_file_revisions().is_ok()
                 && let Ok(observation) = self.observe_configuration(ClientKind::Claude)
                 && self
                     .require_claude_configuration(&observation, Some(&policy), None)
@@ -2291,24 +2292,26 @@ impl Service {
     }
     fn observe_configuration(&self, client: ClientKind) -> Result<ConfigObservation> {
         let (mut target, mut policy) = self.client_policy(client)?;
-        let (configuration_target, runtime_view) = if client == ClientKind::Codex {
-            let snapshot = self.paths.codex_runtime();
-            (
-                self.paths.codex_configuration_target(&target).ok(),
-                Some(snapshot.view()),
-            )
-        } else {
-            (None, None)
+        let mut configuration_error = None;
+        let (configuration_target, claude_configuration_target, runtime_view) = match client {
+            ClientKind::Codex => {
+                let snapshot = self.paths.codex_runtime();
+                let receipt = self
+                    .paths
+                    .codex_configuration_target(&target)
+                    .inspect_err(|error| configuration_error = Some(error.clone()))
+                    .ok();
+                (receipt, None, Some(snapshot.view()))
+            }
+            ClientKind::Claude => {
+                let receipt = self
+                    .paths
+                    .claude_configuration_target(&target)
+                    .inspect_err(|error| configuration_error = Some(error.clone()))
+                    .ok();
+                (None, receipt, None)
+            }
         };
-        let (claude_configuration_target, claude_configuration_error) =
-            if client == ClientKind::Claude {
-                match self.paths.claude_configuration_target(&target) {
-                    Ok(target) => (Some(target), None),
-                    Err(error) => (None, Some(error)),
-                }
-            } else {
-                (None, None)
-            };
         if claude_configuration_target.is_some() {
             let (after_target, after_policy) = self.client_policy(client)?;
             if policy.revision != after_policy.revision
@@ -2324,7 +2327,7 @@ impl Service {
             policy,
             configuration_target,
             claude_configuration_target,
-            claude_configuration_error,
+            configuration_error,
             runtime_view,
         })
     }
@@ -2341,10 +2344,16 @@ impl Service {
             return self.require_claude_configuration(observation, expected_policy, None);
         }
         if observation.target.client == ClientKind::Codex {
-            let current = observation
-                .configuration_target
-                .as_ref()
-                .ok_or_else(|| fail("codex_configuration_target_unverified"))?;
+            let current = observation.configuration_target.as_ref().ok_or_else(|| {
+                observation
+                    .configuration_error
+                    .clone()
+                    .filter(|e| {
+                        e.code == "codex_signature_verification_timeout"
+                            || e.code == "codex_configuration_target_changed"
+                    })
+                    .unwrap_or_else(|| fail("codex_configuration_target_unverified"))
+            })?;
             current.validate_root()?;
             if self.paths.codex_config != current.config_root.join("config.toml") {
                 return Err(fail("codex_configuration_target_unverified"));
@@ -2535,6 +2544,9 @@ impl Service {
         } {
             return Err(fail("codex_configuration_target_changed"));
         }
+        self.validate_codex_authority_state(context, restore)
+    }
+    fn validate_codex_authority_state(&self, context: &CodexContext, restore: bool) -> Result<()> {
         let installation = self
             .store
             .installation(&context.panel_origin)?
@@ -2601,30 +2613,19 @@ impl Service {
         Ok(())
     }
     fn project_configuration_revision(&self, target: &mut ClientView) {
-        if target.client == ClientKind::Claude {
-            let current = self.claude_revision();
-            if current.as_ref().is_err()
-                || target.configuration_revision != current.as_ref().ok().cloned().flatten()
-            {
-                target.loaded_evidence = None;
-                target.connection_evidence = None;
-                target.loaded_state = "unconfirmed".into();
-                target.connection_state = "not_tested".into();
-                if target.configuration_state == "saved" {
-                    target.configuration_state = "conflict".into();
-                }
+        let (observed, saved_route) = match target.client {
+            ClientKind::Claude => (self.claude_file_revisions(), &target.claude_route_revision),
+            ClientKind::Codex => {
+                target.config_paths = vec![
+                    self.paths.codex_catalog().display().to_string(),
+                    self.paths.codex_config.display().to_string(),
+                ];
+                (
+                    codex_file_revisions(&self.paths.codex_config, &self.paths.codex_catalog()),
+                    &target.codex_route_revision,
+                )
             }
-            target.configuration_revision = current.ok().flatten();
-            return;
-        }
-        if target.client != ClientKind::Codex {
-            return;
-        }
-        target.config_paths = vec![
-            self.paths.codex_catalog().display().to_string(),
-            self.paths.codex_config.display().to_string(),
-        ];
-        let observed = codex_file_revisions(&self.paths.codex_config, &self.paths.codex_catalog());
+        };
         if observed.as_ref().is_err()
             || target.configuration_revision.as_ref()
                 != observed.as_ref().ok().and_then(|r| r.files.as_ref())
@@ -2634,8 +2635,8 @@ impl Service {
             target.loaded_state = "unconfirmed".into();
             target.connection_state = "not_tested".into();
             if target.configuration_state == "saved"
-                && (target.codex_route_revision.is_none()
-                    || target.codex_route_revision.as_ref()
+                && (saved_route.is_none()
+                    || saved_route.as_ref()
                         != observed.as_ref().ok().and_then(|r| r.route.as_ref()))
             {
                 target.configuration_state = "conflict".into();
@@ -2836,25 +2837,28 @@ impl Service {
         client: ClientKind,
         model_mapping: Option<&ClaudeModelMapping>,
     ) -> Result<ConfigPreview> {
-        let generation = (client == ClientKind::Codex && model_mapping.is_none()).then(|| {
-            self.codex_review_generation
-                .fetch_add(1, Ordering::AcqRel)
-                .wrapping_add(1)
-        });
+        let generation = self
+            .review_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         self.configuration_preflight(client)?;
         self.refresh_account_cache(id, false).await?;
         self.configuration_preflight(client)?;
         let _ = self.list_models(id).await?;
-        match (client, model_mapping) {
-            (ClientKind::Codex, None) => self.remember_client_preview(
-                self.build_client_preview(id, revision, client, "", CodexPreparation::Review)?,
-                generation,
-            ),
-            (ClientKind::Claude, Some(model_mapping)) => {
-                self.preview_claude_config(id, revision, &model_mapping.sonnet, Some(model_mapping))
+        let entry = match (client, model_mapping) {
+            (ClientKind::Codex, None) => {
+                self.build_client_preview(id, revision, client, "", CodexPreparation::Review)?
             }
-            _ => Err(fail("model_unavailable")),
-        }
+            (ClientKind::Claude, Some(mapping)) => self.build_claude_entry(
+                id,
+                revision,
+                &mapping.sonnet,
+                Some(mapping),
+                claude::Preparation::Review,
+            )?,
+            _ => return Err(fail("model_unavailable")),
+        };
+        self.remember_client_preview(entry, Some(generation))
     }
     fn has_switch_snapshot(&self, client: ClientKind) -> Result<bool> {
         Ok(self
@@ -2932,10 +2936,10 @@ impl Service {
             .map_err(|_| fail("state_unavailable"))?;
         if let Some(generation) = generation {
             // A canceled window can finish checking after its replacement.
-            if self.codex_review_generation.load(Ordering::Acquire) != generation {
+            if self.review_generation.load(Ordering::Acquire) != generation {
                 return Err(fail("preview_expired"));
             }
-            pending.retain(|_, old| !old.is_codex_review());
+            pending.retain(|_, old| !old.is_switch_review());
         }
         pending.insert(view.id.clone(), entry);
         Ok(view)
@@ -2946,7 +2950,7 @@ impl Service {
             .previews
             .lock()
             .map_err(|_| fail("state_unavailable"))?;
-        if pending.get(id).is_some_and(PreviewEntry::is_codex_review) {
+        if pending.get(id).is_some_and(PreviewEntry::is_switch_review) {
             pending.remove(id);
         }
         Ok(())
@@ -2960,7 +2964,7 @@ impl Service {
         mode: CodexPreparation<'_>,
     ) -> Result<PreviewEntry> {
         #[cfg(windows)]
-        let _verification = crate::system::CodexVerificationScope::enter();
+        let _verification = crate::system::InstallationVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         let observation = self.observe_configuration(client)?;
         let gate_error = self.require_configuration(&observation, None, None).err();
@@ -3080,7 +3084,9 @@ impl Service {
         }) {
             preview.blocking_reason = Some("model_unsupported".into());
         } else {
-            guard()?;
+            if !matches!(mode, CodexPreparation::Review) {
+                guard()?;
+            }
             if client == ClientKind::Claude {
                 claude_diagnostic_scope =
                     Some(self.claude_diagnostic_scope(id, revision, model_id)?);
@@ -3092,7 +3098,17 @@ impl Service {
             };
             // Finish the catalog/owned patch before any helper credential or durable mutation.
             let changes = if let Some(planned) = &planned {
-                self.validate_codex_context(catalog_context.as_ref(), false)?;
+                if matches!(mode, CodexPreparation::Review) {
+                    // The read-only review already has a full observation. No grant or file is prepared here.
+                    self.validate_codex_authority_state(
+                        catalog_context
+                            .as_ref()
+                            .ok_or_else(|| fail("codex_catalog_context_unverified"))?,
+                        false,
+                    )?;
+                } else {
+                    self.validate_codex_context(catalog_context.as_ref(), false)?;
+                }
                 let before = read_file(&self.paths.codex_config)?;
                 let after = codex_catalog_patch(
                     before.as_deref(),
@@ -3257,6 +3273,7 @@ impl Service {
         Ok(PreviewEntry {
             view: preview,
             codex_draft,
+            claude_draft: None,
             journal_id,
             import_candidate,
             policy: observation.policy,
@@ -3393,11 +3410,7 @@ impl Service {
                             .ok_or_else(|| fail("claude_configuration_context_unverified"))?,
                         false,
                     )?;
-                    self.ensure_no_other_claude_recovery(
-                        journal_id
-                            .as_deref()
-                            .ok_or_else(|| fail("preview_expired"))?,
-                    )
+                    self.ensure_no_other_claude_recovery(journal_id.as_deref())
                 } else {
                     self.validate_configuration(view.client, &policy, configuration_target.as_ref())
                 }
@@ -3415,11 +3428,7 @@ impl Service {
                         .as_ref()
                         .ok_or_else(|| fail("claude_configuration_context_unverified"))?,
                 )?;
-                self.ensure_no_other_claude_recovery(
-                    journal_id
-                        .as_deref()
-                        .ok_or_else(|| fail("preview_expired"))?,
-                )?;
+                self.ensure_no_other_claude_recovery(journal_id.as_deref())?;
             } else {
                 authority()?;
             }
@@ -3449,7 +3458,7 @@ impl Service {
         restore: bool,
     ) -> Result<ConfigResult> {
         #[cfg(windows)]
-        let _verification = crate::system::CodexVerificationScope::enter();
+        let _verification = crate::system::InstallationVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         if !confirmed {
             return Err(fail("confirmation_required"));
@@ -3470,6 +3479,28 @@ impl Service {
                 ClientKind::Codex,
                 "",
                 CodexPreparation::Confirm(&entry, draft),
+            )?;
+            if !entry.view.can_apply {
+                return Err(fail(
+                    entry
+                        .view
+                        .blocking_reason
+                        .as_deref()
+                        .unwrap_or("configuration_unavailable"),
+                ));
+            }
+        }
+        if let Some(draft) = &entry.claude_draft {
+            let frozen = entry
+                .claude_context
+                .as_ref()
+                .ok_or_else(|| fail("claude_configuration_context_unverified"))?;
+            entry = self.build_claude_entry(
+                &frozen.connection_id,
+                frozen.connection_revision,
+                &draft.mapping.sonnet,
+                Some(&draft.mapping),
+                claude::Preparation::Confirm(&entry, draft),
             )?;
             if !entry.view.can_apply {
                 return Err(fail(
@@ -3682,7 +3713,7 @@ impl Service {
         coordination: Option<ClaudeRestoreCoordination>,
     ) -> Result<ConfigPreview> {
         #[cfg(windows)]
-        let _verification = crate::system::CodexVerificationScope::enter();
+        let _verification = crate::system::InstallationVerificationScope::enter();
         let _operation = self.begin_mutation()?;
         validate_uuid(backup_id)?;
         let backup = self
@@ -3800,6 +3831,7 @@ impl Service {
             .insert(
                 preview.id.clone(),
                 PreviewEntry {
+                    claude_draft: None,
                     codex_draft: None,
                     view: preview.clone(),
                     journal_id,
@@ -5402,7 +5434,7 @@ mod tests {
             self.service
                 .remember_client_preview(
                     review,
-                    Some(self.service.codex_review_generation.load(Ordering::Acquire)),
+                    Some(self.service.review_generation.load(Ordering::Acquire)),
                 )
                 .unwrap()
         }

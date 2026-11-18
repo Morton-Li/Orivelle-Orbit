@@ -15,10 +15,10 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(any(windows, test))]
-#[path = "windows_codex_verification.rs"]
-mod windows_codex_verification;
+#[path = "windows_installation_verification.rs"]
+mod windows_installation_verification;
 #[cfg(windows)]
-pub(crate) use windows_codex_verification::CodexVerificationScope;
+pub(crate) use windows_installation_verification::InstallationVerificationScope;
 
 #[derive(Clone)]
 pub struct SystemPaths {
@@ -1014,7 +1014,7 @@ impl SystemPaths {
                         "--verify", "--strict", "--deep", "-R",
                         "=identifier \"com.anthropic.claudefordesktop\" and anchor apple generic and certificate leaf[subject.OU] = \"Q6L2SF6YDW\"",
                     ]).arg(app);
-                    claude_signature_verification(command)
+                    macos_signature_verification(command, ClientKind::Claude)
                 },
                 || {
                     let app = Path::new(
@@ -1272,14 +1272,10 @@ impl SystemPaths {
             command
                 .args(["--verify", "--strict", "--deep", "-R", requirement])
                 .arg(app);
-            if bounded_command(command).is_none() {
-                return Err(fail("codex_configuration_target_unverified"));
-            }
+            macos_signature_verification(command, ClientKind::Codex)?;
             let mut command = Command::new("/usr/bin/codesign");
             command.args(["--verify", "--strict", "-R", "=identifier \"codex\" and anchor apple generic and certificate leaf[subject.OU] = \"2DC432GLL2\""]).arg(app.join(CONFIGURATION_CLI));
-            if bounded_command(command).is_none() {
-                return Err(fail("codex_configuration_target_unverified"));
-            }
+            macos_signature_verification(command, ClientKind::Codex)?;
         }
         let (after, materials) = self.configuration_draft(target)?;
         if receipt != after || before != materials {
@@ -1533,6 +1529,7 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
         connection_state: "not_tested".into(),
         configuration_revision: None,
         codex_route_revision: None,
+        claude_route_revision: None,
         loaded_evidence: None,
         connection_evidence: None,
         catalog_sync: None,
@@ -1544,23 +1541,33 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
     }
 }
 #[cfg(target_os = "macos")]
-fn claude_signature_verification(mut command: Command) -> Result<()> {
+fn signature_unverified(client: ClientKind) -> crate::error::PublicError {
+    fail(match client {
+        ClientKind::Codex => "codex_configuration_target_unverified",
+        ClientKind::Claude => "claude_configuration_target_unverified",
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_signature_verification(mut command: Command, client: ClientKind) -> Result<()> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| fail("claude_configuration_target_unverified"))?;
-    claude_signature_wait(
+        .map_err(|_| signature_unverified(client))?;
+    macos_signature_wait(
         &mut child,
+        client,
         #[cfg(test)]
         None,
     )
 }
 
 #[cfg(target_os = "macos")]
-fn claude_signature_wait(
+fn macos_signature_wait(
     child: &mut std::process::Child,
+    client: ClientKind,
     #[cfg(test)] timeout_override: Option<Duration>,
 ) -> Result<()> {
     let timeout = Duration::from_secs(30);
@@ -1574,35 +1581,33 @@ fn claude_signature_wait(
                 return if status.success() {
                     Ok(())
                 } else {
-                    Err(fail("claude_configuration_target_unverified"))
+                    Err(signature_unverified(client))
                 };
             }
             Ok(None) => {}
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(fail("claude_configuration_target_unverified"));
+                return Err(signature_unverified(client));
             }
         }
         if Instant::now() >= until {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(fail("claude_signature_verification_timeout"));
+            return Err(fail(match client {
+                ClientKind::Codex => "codex_signature_verification_timeout",
+                ClientKind::Claude => "claude_signature_verification_timeout",
+            }));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn bounded_command(command: Command) -> Option<Vec<u8>> {
-    bounded_command_with_timeout(command, Duration::from_secs(3))
-}
+#[cfg(windows)]
 fn bounded_command_with_timeout(mut command: Command, timeout: Duration) -> Option<Vec<u8>> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW keeps read-only PowerShell probes off the desktop.
-        command.creation_flags(0x0800_0000);
-    }
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW keeps read-only PowerShell probes off the desktop.
+    command.creation_flags(0x0800_0000);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1697,7 +1702,7 @@ pub fn detect_clients(paths: &SystemPaths) -> Vec<ClientView> {
                     verify
                         .args(["--verify", "--strict", "--deep", "-R", &requirement])
                         .arg(&app);
-                    if bounded_command(verify).is_none() {
+                    if macos_signature_verification(verify, client.client).is_err() {
                         continue;
                     }
                     client.installed = true;
@@ -1979,17 +1984,49 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore = "requires both signed macOS installations; uses a temporary configuration home"]
+    fn macos_installed_clients_qualify_review_and_confirmation_in_a_fixture_home() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        fs::create_dir_all(home.join("Library/Application Support")).unwrap();
+        let paths = SystemPaths::native(&directory.path().join("orbit"), &home).unwrap();
+        for client in detect_clients(&paths) {
+            assert!(client.installed, "{:?} discovery failed", client.client);
+            match client.client {
+                ClientKind::Codex => {
+                    let reviewed = paths.codex_configuration_target(&client).unwrap();
+                    assert_eq!(reviewed, paths.codex_configuration_target(&client).unwrap());
+                }
+                ClientKind::Claude => {
+                    let reviewed = paths.claude_configuration_target(&client).unwrap();
+                    assert_eq!(
+                        reviewed,
+                        paths.claude_configuration_target(&client).unwrap()
+                    );
+                }
+            }
+            println!(
+                "{:?} {} qualified",
+                client.client,
+                client.version.as_deref().unwrap()
+            );
+        }
+        assert!(!paths.codex_config.exists() && !paths.claude_library.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn claude_signature_process_success_and_failure_use_static_safe_results() {
         let mut success = Command::new("/bin/sh");
         success.args(["-c", "exit 0"]);
-        claude_signature_verification(success).unwrap();
+        macos_signature_verification(success, ClientKind::Claude).unwrap();
 
         let mut rejected = Command::new("/bin/sh");
         rejected.args([
             "-c",
             "printf 'synthetic-stdout'; printf 'synthetic-stderr' >&2; exit 7",
         ]);
-        let error = claude_signature_verification(rejected).unwrap_err();
+        let error = macos_signature_verification(rejected, ClientKind::Claude).unwrap_err();
         assert_eq!(error, fail("claude_configuration_target_unverified"));
         let serialized = serde_json::to_string(&error).unwrap();
         assert!(
@@ -1998,38 +2035,47 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let absent = Command::new(dir.path().join("absent-verifier"));
-        assert_eq!(claude_signature_verification(absent).unwrap_err(), error);
+        assert_eq!(
+            macos_signature_verification(absent, ClientKind::Claude).unwrap_err(),
+            error
+        );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn claude_signature_process_timeout_terminates_and_reaps_only_its_owned_child() {
+    fn macos_signature_process_timeout_terminates_and_reaps_only_its_owned_child() {
         use std::os::unix::process::ExitStatusExt;
-        let mut child = Command::new("/bin/sleep")
-            .arg("1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        assert_eq!(
-            claude_signature_wait(&mut child, Some(Duration::from_millis(40))).unwrap_err(),
-            fail("claude_signature_verification_timeout")
-        );
-        let mut raw_status = 0;
-        let waited =
-            unsafe { libc::waitpid(child.id() as libc::pid_t, &mut raw_status, libc::WNOHANG) };
-        let wait_error = std::io::Error::last_os_error().raw_os_error();
-        assert_eq!(waited, -1);
-        assert_eq!(
-            wait_error,
-            Some(libc::ECHILD),
-            "the verifier already reaped its child"
-        );
-        assert_eq!(
-            child.try_wait().unwrap().unwrap().signal(),
-            Some(libc::SIGKILL)
-        );
+        for (kind, code) in [
+            (ClientKind::Codex, "codex_signature_verification_timeout"),
+            (ClientKind::Claude, "claude_signature_verification_timeout"),
+        ] {
+            let mut child = Command::new("/bin/sleep")
+                .arg("1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            assert_eq!(
+                macos_signature_wait(&mut child, kind, Some(Duration::from_millis(40)))
+                    .unwrap_err(),
+                fail(code)
+            );
+            let mut raw_status = 0;
+            let waited =
+                unsafe { libc::waitpid(child.id() as libc::pid_t, &mut raw_status, libc::WNOHANG) };
+            let wait_error = std::io::Error::last_os_error().raw_os_error();
+            assert_eq!(waited, -1);
+            assert_eq!(
+                wait_error,
+                Some(libc::ECHILD),
+                "the verifier already reaped its child"
+            );
+            assert_eq!(
+                child.try_wait().unwrap().unwrap().signal(),
+                Some(libc::SIGKILL)
+            );
+        }
     }
 
     fn claude_receipt(root: PathBuf) -> ClaudeConfigurationTarget {

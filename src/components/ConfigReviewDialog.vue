@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useOrbitStore } from "../stores/orbit";
-import type { ConfigPreview, ConfigResult } from "../shared/contracts";
+import type {
+  ClientKind,
+  ConfigPreview,
+  ConfigResult,
+} from "../shared/contracts";
 import { t, type MessageKey } from "../shared/i18n";
 import {
   matchesReviewConnection,
@@ -12,7 +16,7 @@ import OrbitDialog from "./OrbitDialog.vue";
 import OrbitIcon from "./OrbitIcon.vue";
 const props = defineProps<{
   preview: ConfigPreview | null;
-  codexReviewOpen?: boolean;
+  reviewClient?: ClientKind | null;
   checking?: boolean;
   error?: string;
 }>();
@@ -50,16 +54,14 @@ watch(
   { immediate: true },
 );
 
-const codexReview = computed(() => {
+const switchReview = computed(() => {
   const preview = props.preview;
-  return preview?.client === "codex" &&
-    preview.operation === "apply" &&
-    preview.expires_at === null
+  return preview?.operation === "apply" && preview.expires_at === null
     ? preview
     : null;
 });
-const codexIssue = computed<MessageKey | null>(() => {
-  const preview = codexReview.value;
+const reviewIssue = computed<MessageKey | null>(() => {
+  const preview = switchReview.value;
   if (!preview) return null;
   if (!matchesReviewConnection(preview, store.activeConnection))
     return "access.scopeChanged";
@@ -79,24 +81,32 @@ const codexIssue = computed<MessageKey | null>(() => {
   if (client?.configuration_access === "unverified")
     return "access.checkConfiguration";
   if (!client?.installed) return "access.installClientFirst";
+  const codex = preview.client === "codex";
+  const changed = codex
+    ? "access.codexConfigurationChanged"
+    : "access.claudeConfigurationChanged";
   if (!client.platform_supported || client.version !== preview.target_version)
-    return "access.codexConfigurationChanged";
+    return changed;
+  const target = codex
+    ? preview.codex_configuration_target
+    : preview.claude_configuration_target;
   if (
-    !preview.codex_catalog ||
-    !preview.codex_configuration_target?.cli_version ||
-    !preview.codex_configuration_target.revision
+    !target?.revision ||
+    (codex
+      ? !preview.codex_catalog ||
+        !preview.codex_configuration_target?.cli_version
+      : !preview.claude_configuration_target?.app_version ||
+        preview.claude_configuration_target.app_version !== client.version)
   )
-    return "access.codexConfigurationUnavailable";
+    return codex
+      ? "access.codexConfigurationUnavailable"
+      : "access.claudeConfigurationUnavailable";
   if (
     client.configuration_access !== "allowed" ||
     !client.configuration_access_revision
   )
     return "access.checkConfiguration";
-  if (
-    client.configuration_access_revision !==
-    preview.codex_configuration_target.revision
-  )
-    return "access.codexConfigurationChanged";
+  if (client.configuration_access_revision !== target.revision) return changed;
   if (!matchesReviewModel(preview, store.models))
     return store.modelsLoading
       ? "access.waitModels"
@@ -107,7 +117,7 @@ const codexIssue = computed<MessageKey | null>(() => {
 const current = computed(() => {
   const preview = props.preview;
   if (!preview || rejectedPreviewIds.value.has(preview.id)) return false;
-  if (codexReview.value) return codexIssue.value === null;
+  if (switchReview.value) return reviewIssue.value === null;
   const client = targetClient.value;
   const expiresAt = preview.expires_at ? Date.parse(preview.expires_at) : NaN;
   if (
@@ -154,9 +164,11 @@ const current = computed(() => {
     if (
       preview.restore_coordination != null &&
       (preview.client !== "claude" ||
-        !["claude_main_preferences_v1", "claude_main_settings_v2"].includes(
-          preview.restore_coordination,
-        ))
+        ![
+          "claude_main_preferences_v1",
+          "claude_main_settings_v2",
+          "claude_library_settings_v3",
+        ].includes(preview.restore_coordination))
     )
       return false;
     const source = preview.restore_source;
@@ -180,10 +192,10 @@ const current = computed(() => {
   );
 });
 watch(
-  () => [props.preview?.id, current.value, codexIssue.value] as const,
+  () => [props.preview?.id, current.value, reviewIssue.value] as const,
   ([id, valid, issue]) => {
     if (!id || valid || rejectedPreviewIds.value.has(id)) return;
-    if (codexReview.value) {
+    if (switchReview.value) {
       if (
         !issue ||
         issue === "access.checkConfiguration" ||
@@ -256,7 +268,7 @@ async function confirm() {
     },
   );
   if (!result) {
-    if (preview.client === "codex")
+    if (preview.expires_at === null || preview.client === "codex")
       failure.value = {
         id: preview.id,
         message:
@@ -268,7 +280,8 @@ async function confirm() {
           ),
       };
     rejectedPreviewIds.value.add(preview.id);
-    if (preview.client === "claude") await store.refresh();
+    if (preview.client === "claude" && preview.expires_at !== null)
+      await store.refresh();
   }
   if (result) {
     await store.refresh();
@@ -288,7 +301,7 @@ async function confirm() {
 </script>
 <template>
   <OrbitDialog
-    :open="!!codexReviewOpen || preview !== null"
+    :open="!!reviewClient || preview !== null"
     :title="
       t(
         preview?.operation === 'restore'
@@ -309,9 +322,17 @@ async function confirm() {
       }
     "
   >
-    <template v-if="codexReviewOpen && (!preview || error)">
+    <template v-if="reviewClient && (!preview || error)">
       <p v-if="error" class="error-text" role="alert">{{ error }}</p>
-      <p v-else role="status">{{ t("access.checkingCodex") }}</p>
+      <p v-else role="status">
+        {{
+          t(
+            reviewClient === "claude"
+              ? "access.checkingClaude"
+              : "access.checkingCodex",
+          )
+        }}
+      </p>
       <div class="dialog-actions">
         <button class="button secondary" @click="emit('close')">
           {{ t("action.cancel") }}
@@ -351,8 +372,8 @@ async function confirm() {
         {{
           failure?.id === preview.id
             ? failure.message
-            : codexIssue
-              ? t(codexIssue)
+            : reviewIssue
+              ? t(reviewIssue)
               : t(
                   preview.operation === "restore"
                     ? "access.restorePreviewExpired"
@@ -384,9 +405,7 @@ async function confirm() {
         </button>
         <button
           v-if="
-            codexReviewOpen &&
-            (!current || preview.blocking_reason) &&
-            !configBusy
+            reviewClient && (!current || preview.blocking_reason) && !configBusy
           "
           class="button secondary"
           @click="emit('retry')"

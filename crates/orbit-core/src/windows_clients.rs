@@ -225,16 +225,14 @@ pub(super) fn refresh(paths: &SystemPaths, target: &mut ClientView) {
     }
 }
 pub(super) fn verify(target: &ClientView, cli_version: Option<&str>) -> Result<()> {
-    if target.client == ClientKind::Codex
-        && let (Some(path), Some(app), Some(cli)) = (
-            target.app_path.as_deref(),
-            target.version.as_deref(),
+    if let (Some(path), Some(app)) = (target.app_path.as_deref(), target.version.as_deref()) {
+        return InstallationVerificationScope::verify(
+            target.client,
+            path,
+            app,
             cli_version,
-        )
-    {
-        return CodexVerificationScope::verify(path, app, cli, || {
-            verify_installation(target, cli_version)
-        });
+            || verify_installation(target, cli_version),
+        );
     }
     verify_installation(target, cli_version).map(drop)
 }

@@ -352,7 +352,7 @@ impl Store {
             };
             tx.execute(
                 "UPDATE records SET payload=json_set(payload,'$.configuration_state',?2,
-                 '$.configuration_revision',NULL,'$.codex_route_revision',NULL,'$.loaded_state','restart_required',
+                 '$.configuration_revision',NULL,'$.codex_route_revision',NULL,'$.claude_route_revision',NULL,'$.loaded_state','restart_required',
                  '$.connection_state','not_tested','$.loaded_evidence',NULL,'$.connection_evidence',NULL)
                  WHERE kind='client-state' AND id=?1",
                 params![journal.client.as_str(), state],
