@@ -61,7 +61,7 @@ npm run test:e2e
 | `bundle`         | macOS 生成 `.app` 与候选 ZIP；Windows 生成 NSIS，要求预先准备完整本地 NSIS 缓存并校验插件摘要，跳过 WebView2 引导安装 |
 | `github-bundle`  | 未签名候选；macOS 同 `.app`/ZIP，Windows 使用 bundler 工具下载及 WebView2 downloadBootstrapper，输出标准 NSIS 文件    |
 | `github-dmg`     | macOS 候选 `.app`/DMG，保留 Finder 安装布局；不启用正式 updater 发布                                                  |
-| `github-release` | GitHub-hosted macOS arm64 / Windows x64 的 updater 签名产物；macOS 另验证应用代码签名，要求下节对应平台的输入          |
+| `github-release` | GitHub-hosted macOS arm64 / Windows x64 的 updater 签名产物；macOS 另验证应用代码签名，要求下节对应平台的输入         |
 
 candidate/bundle 系列在构建前后冻结 HEAD/tree，要求已提交且 tracked 工作树干净；中途源码变化即拒绝。helper 来自本项目，构建脚本核对架构并嵌入摘要，[候选清单](../../scripts/candidate-evidence.mjs)保存主程序、helper、包及来源证据。清单中的 `actual_native_integration_verified=false` 明确表示构建不等于实机验收。
 
@@ -86,7 +86,7 @@ Codex 原始 `NOTICE` 中的 Ratatui 归属行来自上游完整声明，不代�
 
 prepare-native 在临时 hosted runner 准备锁定工具/依赖。`validate=true` 执行前端、宿主构建脚本及原生检查，Windows 另解析 PowerShell 脚本并运行浏览器流程测试；develop 和发布 tag 使用同一检查入口。普通候选、自签名打包和原生验收设置 `validate=false`，避免同一平台重复常规回归，不能由“包成功”反推所有回归已跑。只有验收脚本/指定工作流改动时，集成入口才允许在同仓库祖先关系、应用源码未变和摘要匹配后复用旧 artifacts；保留实际 build source/run，不能称其为当前源码重建。
 
-Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测试包；只有断言、fixture/reuse 脚本或文档变化时才允许复用，并再次核对包摘要及版本签名。生产源码、构建器、锁文件或 updater 工作流变化均重新构建。复用运行检查当前脚本与 PowerShell 语法，回执分别记录构建 source/run 和验收 source/run；[验收结果](../testing/validation.md#2026-11-15-windows-应用内更新)绑定具体产物。
+Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测试包；只有断言、fixture/reuse 脚本或文档变化时才允许复用，并再次核对包摘要及版本签名。生产源码、构建器、锁文件或 updater 工作流变化均重新构建。复用运行检查当前脚本与 PowerShell 语法，回执分别记录构建 source/run 和验收 source/run；[验收结果](../testing/validation.md#windows-应用内更新2026-11-15)绑定具体产物。
 
 ## 安装包证据
 
@@ -102,10 +102,10 @@ Windows updater 的独立入口会在同仓库祖先运行中寻找已归档测�
 
 codesign 环境所需公开变量和 secrets：
 
-| 输入                                                                | 用途                                                                                     |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `ORBIT_RELEASE_UPDATER_PUBLIC_KEY`                                  | 仓库变量，编入 app/updater 配置并用于发布前验签                                          |
-| `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`  | updater 签名 secrets，仅传给构建完成后的 bundler                                         |
+| 输入                                                                | 用途                                                                                                  |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `ORBIT_RELEASE_UPDATER_PUBLIC_KEY`                                  | 仓库变量，编入 app/updater 配置并用于发布前验签                                                       |
+| `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`  | updater 签名 secrets，仅传给构建完成后的 bundler                                                      |
 | `CODESIGN_CERTIFICATE_P12_BASE64` / `CODESIGN_CERTIFICATE_PASSWORD` | 仅 macOS 需要的代码签名 secrets，须匹配[固定证书指纹](../../scripts/macos-signing-certificate.sha256) |
 
 签名公开配置还包括由构建仓库身份 `GITHUB_REPOSITORY` 生成的 GitHub latest.json 地址和固定 macOS 证书摘要；macOS 与 Windows 正式构建均使用当前仓库的更新频道，基础 Tauri 配置为空频道/占位公钥。普通候选不会继承正式签名环境。代码签名由 [package-self-signed-macos.sh](../../scripts/package-self-signed-macos.sh)在 hosted Mac 临时 Keychain 内完成并清理，核对证书有效期、私钥及嵌入证书；自签名不表示 Apple 公证已完成。
