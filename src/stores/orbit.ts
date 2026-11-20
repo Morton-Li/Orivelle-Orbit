@@ -121,6 +121,7 @@ export const useOrbitStore = defineStore("orbit", () => {
   const update = ref<UpdateView | null>(null);
   const updateOperation = ref<"check" | "download" | "install" | null>(null);
   const updateCheckFailed = ref(false);
+  const updateInstallError = ref<string | null>(null);
   const updateProgress = ref<UpdateProgress | null>(null);
   const updateCancelling = ref(false);
   let updateDownloadId: string | null = null;
@@ -655,6 +656,7 @@ export const useOrbitStore = defineStore("orbit", () => {
       return undefined;
     updateOperation.value = "check";
     updateCheckFailed.value = false;
+    updateInstallError.value = null;
     try {
       const result = await perform(
         "update",
@@ -692,6 +694,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     const requestId = crypto.randomUUID();
     clearNotice();
     updateOperation.value = "download";
+    updateInstallError.value = null;
     busy.value.add("update");
     updateDownloadId = requestId;
     updateCancelling.value = false;
@@ -756,14 +759,17 @@ export const useOrbitStore = defineStore("orbit", () => {
     )
       return undefined;
     updateOperation.value = "install";
+    updateInstallError.value = null;
     try {
       const result = await perform(
         "update",
         "install_update",
         { version: update.value.version, confirmed: true },
         {
-          onError: (error) =>
-            notify(updateFailureMessage(error, "install"), "error"),
+          onError: (error) => {
+            updateInstallError.value = updateFailureMessage(error, "install");
+            notify(updateInstallError.value, "error");
+          },
         },
       );
       if (result) update.value = result;
@@ -812,6 +818,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     update,
     updateOperation,
     updateCheckFailed,
+    updateInstallError,
     updateProgress,
     updateCancelling,
     inAppUpdates,

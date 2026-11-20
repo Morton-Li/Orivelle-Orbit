@@ -51,6 +51,7 @@ const updateMessage = computed(() => {
   }
   if (store.updateOperation === "install")
     return t("settings.installingUpdate");
+  if (store.updateInstallError) return store.updateInstallError;
   if (store.updateCheckFailed) return t("settings.updateCheckFailed");
   if (update.value?.status === "up_to_date") return t("settings.upToDate");
   if (update.value?.status === "available")
@@ -271,7 +272,12 @@ async function downloadUpdate() {
           "
         />{{ t("settings.autoCheck") }}</label
       >
-      <p class="muted update-status" role="status" aria-live="polite">
+      <p
+        class="update-status"
+        :class="store.updateInstallError ? 'error-text' : 'muted'"
+        role="status"
+        aria-live="polite"
+      >
         {{ updateMessage }}
       </p>
       <div v-if="store.updateOperation === 'download'" class="update-progress">
@@ -402,7 +408,10 @@ async function downloadUpdate() {
     v-model:open="installOpen"
     :title="t('settings.install')"
     :description="t('settings.installHint')"
-    ><div class="dialog-actions">
+    ><p v-if="store.updateInstallError" class="error-text" role="alert">
+      {{ store.updateInstallError }}
+    </p>
+    <div class="dialog-actions">
       <button class="button secondary" @click="installOpen = false">
         {{ t("action.cancel") }}</button
       ><button

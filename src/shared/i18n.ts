@@ -689,6 +689,8 @@ const zh = {
   "settings.downloadingUpdate": "正在下载更新…",
   "settings.installingUpdate": "正在安装更新…",
   "settings.updateBlocked": "当前暂时无法安装更新，请稍后重试",
+  "settings.updateConfigurationPending":
+    "客户端配置尚未完成，请先在接入页面处理配置冲突，再安装更新",
   "settings.updateFailed": "更新失败，请重试",
   "settings.upToDate": "当前已是最新版本",
   "settings.updateAvailable": "发现新版本",
@@ -1490,6 +1492,8 @@ const en: Record<keyof typeof zh, string> = {
   "settings.installingUpdate": "Installing the update…",
   "settings.updateBlocked":
     "The update cannot be installed right now. Try again later.",
+  "settings.updateConfigurationPending":
+    "Client configuration is unfinished. Resolve the configuration conflict on the Access page, then install the update.",
   "settings.updateFailed": "The update failed. Try again.",
   "settings.upToDate": "Up to date",
   "settings.updateAvailable": "Update available",

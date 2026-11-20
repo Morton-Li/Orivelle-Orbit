@@ -924,6 +924,54 @@ test("update download shows progress, cancels, retries and asks before restartin
   expect(await calls(page, "install_update")).toBe(0);
 });
 
+test("unfinished configuration stays visible in the install dialog and settings after failure", async ({
+  page,
+}) => {
+  await fixture(page, { updateAvailable: true });
+  await page.goto("/#/settings");
+  await page.evaluate(() => {
+    const native = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (command: string, ...args: unknown[]) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    const invoke = native.invoke;
+    native.invoke = (command, ...args) =>
+      command === "install_update"
+        ? Promise.reject({ code: "update_configuration_pending" })
+        : invoke(command, ...args);
+  });
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await page.getByRole("button", { name: "下载并更新", exact: true }).click();
+  await expect.poll(() => calls(page, "download_update")).toBe(1);
+  await page.evaluate(() =>
+    (
+      window as unknown as { __ORBIT_TEST__: FixtureControl }
+    ).__ORBIT_TEST__.finishUpdateDownload(),
+  );
+  const dialog = page.getByRole("dialog", { name: "安装并重启", exact: true });
+  await dialog.getByRole("button", { name: "确认", exact: true }).click();
+  const message = "客户端配置尚未完成，请先在接入页面处理配置冲突，再安装更新";
+  await expect(dialog.getByRole("alert")).toHaveText(message);
+  await expect(
+    dialog.getByRole("button", { name: "确认", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await page
+    .locator(".toast")
+    .getByRole("button", { name: "关闭", exact: true })
+    .click();
+  await expect(page.locator(".toast")).toHaveCount(0);
+  await expect(page.locator(".update-status")).toHaveText(message);
+  await expect(
+    page.getByRole("button", { name: "安装并重启", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "安装并重启", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(message);
+});
+
 test("update timeout is readable and leaves download available", async ({
   page,
 }) => {

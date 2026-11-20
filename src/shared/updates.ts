@@ -9,6 +9,8 @@ export function updateFailureMessage(
   if (code === "update_download_cancelled")
     return t("settings.downloadCancelled");
   if (code === "update_busy") return t("settings.updateBlocked");
+  if (code === "update_configuration_pending")
+    return t("settings.updateConfigurationPending");
   if (code === "update_request_timeout" || code === "result_unconfirmed")
     return t(
       operation === "check"
