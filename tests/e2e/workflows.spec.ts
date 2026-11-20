@@ -93,9 +93,7 @@ test("real capability names populate client models and image edit options", asyn
   await expect(
     page.getByText("合成测试数据 · 不代表真实接入或结算"),
   ).toBeVisible();
-  await expect(
-    page.getByText("待重启 / 载入未确认", { exact: true }),
-  ).toHaveCount(2);
+  await expect(page.getByText("待重启", { exact: true })).toHaveCount(2);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: ".cache/evidence/access-light.png",
@@ -476,9 +474,7 @@ test("Claude local configuration save uses basic confirmation without claiming l
   });
   await expect(row.getByText("配置已保存", { exact: true })).toBeVisible();
   await expect(
-    row
-      .locator(".client-stages")
-      .getByText("待重启 / 载入未确认", { exact: true }),
+    row.locator(".client-stages").getByText("待重启", { exact: true }),
   ).toBeVisible();
   await expect(row.getByText("连接未验证", { exact: true })).toBeVisible();
   await expect(row.getByText("客户端载入已确认", { exact: true })).toHaveCount(

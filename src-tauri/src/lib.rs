@@ -101,6 +101,21 @@ fn prepare_native(
     })
 }
 fn observe_native(app: &tauri::AppHandle, service: Arc<Service>) -> orbit_core::error::Result<()> {
+    let activation = Arc::downgrade(&service);
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let Some(service) = activation.upgrade() else {
+                break;
+            };
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                service.reconcile_client_activations()
+            })
+            .await;
+        }
+    });
     let model_sync = Arc::downgrade(&service);
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
