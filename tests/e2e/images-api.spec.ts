@@ -43,7 +43,7 @@ function input(id: string): ImageInput {
   };
 }
 
-test("API catalog keeps only background open without changing subscription defaults", async ({
+test("API catalog exposes advanced controls inside the collapsed section without changing subscription defaults", async ({
   page,
 }) => {
   await fixture(page, { models: [model] });
@@ -52,24 +52,49 @@ test("API catalog keeps only background open without changing subscription defau
   await expect(page.locator(".image-route-hint")).toHaveText(
     "本次使用订阅图片服务",
   );
-  await page.getByRole("button", { name: "高级选项" }).click();
+  const advanced = page.getByRole("button", { name: "高级选项" });
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#image-parameters")).toHaveCount(0);
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("#image-parameters .field-label")).toHaveText([
+    "结果数量",
+    "请求尺寸",
+    "质量",
     "背景",
+    "输出格式",
+    "画面规划复杂度",
+    "内容审核",
   ]);
-  await expect(page.locator("#image-parameters input")).toHaveCount(0);
+  await choose(page, "image-n", "1");
+  await choose(page, "image-size", "自动");
+  await choose(page, "image-quality", "自动");
+  await choose(page, "image-output_format", "PNG");
   await expect(page.locator("#image-background")).toContainText("不透明");
   await choose(page, "image-background", "透明");
+  await page.locator("#image-stream").check();
+  await expect(page.locator("#image-partials")).toHaveValue("1");
+  await expect(page.locator(".image-route-hint")).toContainText("高级图像 API");
+  await page.locator("#image-stream").uncheck();
   await expect(page.locator(".image-route-hint")).toHaveText(
     "本次使用订阅图片服务",
   );
   await page.locator(".parameter-details").screenshot({
     path: ".cache/evidence/images-api-options.png",
   });
-  await page.getByRole("button", { name: "高级选项" }).click();
+  await advanced.click();
+  await expect(advanced).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#image-parameters")).toHaveCount(0);
   await page.locator("#image-prompt").fill("Synthetic explicit defaults");
   await page.getByRole("button", { name: "生成图片", exact: true }).click();
   expect((await request(page))?.parameters).toEqual({
     background: "transparent",
+    n: 1,
+    size: "auto",
+    quality: "auto",
+    output_format: "png",
+    stream: false,
+    partial_images: 0,
   });
   expect(await calls(page, "create_image_task")).toBe(1);
 });
@@ -100,7 +125,7 @@ test("Unicode prompt counts keep the subscription byte boundary and API characte
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
-test("editing keeps background available while mask and markup remain closed", async ({
+test("editing selects scoped PNG mask or markup and clears it when the reference changes", async ({
   page,
 }) => {
   await fixture(page, {
@@ -112,25 +137,65 @@ test("editing keeps background available while mask and markup remain closed", a
   await choose(page, "image-model", "synthetic-image");
   await page.getByRole("button", { name: "添加参考图", exact: true }).click();
   await page.getByRole("button", { name: "高级选项" }).click();
-  await expect(page.locator("#image-parameters .field-label")).toHaveText([
-    "背景",
-  ]);
-  await expect(page.locator(".image-materials")).toHaveCount(0);
-  await choose(page, "image-background", "透明");
+  await page.getByRole("button", { name: "选择蒙版 PNG" }).click();
+  await expect(page.locator(".image-materials")).toContainText("mask.png");
+  await expect(page.locator(".image-route-hint")).toContainText("高级图像 API");
+  await page.getByRole("button", { name: "选择标注 PNG" }).click();
+  await expect(page.locator(".image-materials")).toContainText("markup.png");
+  await expect(page.locator(".image-materials")).not.toContainText("mask.png");
   await page.locator(".input-images .icon-button").click();
+  await expect(page.locator(".image-materials")).toHaveCount(0);
   await expect(page.locator(".image-route-hint")).toHaveText(
     "本次使用订阅图片服务",
   );
   await page.getByRole("button", { name: "添加参考图", exact: true }).click();
+  await page.getByRole("button", { name: "选择标注 PNG" }).click();
+  await page.getByRole("button", { name: "高级选项" }).click();
   await page.locator("#image-prompt").fill("Synthetic edit");
   await page.getByRole("button", { name: "编辑图片", exact: true }).click();
   expect(await request(page)).toMatchObject({
     input_ids: ["reference"],
-    parameters: { background: "transparent" },
+    markup_input_id: "markup",
   });
   expect(await request(page)).not.toHaveProperty("mask_input_id");
-  expect(await request(page)).not.toHaveProperty("markup_input_id");
-  expect(await calls(page, "select_image_inputs")).toBe(2);
+  expect(await calls(page, "select_image_inputs")).toBe(5);
+});
+
+test("format controls expose custom sizes, compression, SVG and GIF options and validate combinations", async ({
+  page,
+}) => {
+  await fixture(page, { models: [model] });
+  await page.goto("/#/images");
+  await choose(page, "image-model", "synthetic-image");
+  await page.getByRole("button", { name: "高级选项" }).click();
+  await choose(page, "image-size", "自定义尺寸");
+  await expect(page.locator("#image-custom-width")).toBeVisible();
+  await expect(page.locator("#image-custom-height")).toBeVisible();
+  await page.locator("#image-custom-width").fill("1536");
+  await page.locator("#image-custom-height").fill("864");
+  await choose(page, "image-output_format", "JPEG");
+  await expect(page.locator("#image-compression")).toHaveValue("100");
+  await page.locator("#image-compression").fill("80");
+  await choose(page, "image-output_format", "GIF");
+  await expect(page.locator("#image-compression")).toHaveCount(0);
+  await expect(page.locator("#image-stream")).toHaveCount(0);
+  await expect(page.locator("#image-frame-count")).toHaveValue("9");
+  await page.locator("#image-frame-count").fill("16");
+  await page.locator("#image-frame-duration").fill("200");
+  await choose(page, "image-output_format", "SVG");
+  await expect(page.locator("#image-frame-count")).toHaveCount(0);
+  await choose(page, "image-n", "2");
+  await page.locator("#image-prompt").fill("Synthetic vector");
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeDisabled();
+  await choose(page, "image-n", "1");
+  await page.locator("#image-svg-model").fill("synthetic-vector-author");
+  await choose(page, "image-svg-reasoning", "高");
+  await expect(
+    page.getByRole("button", { name: "生成图片", exact: true }),
+  ).toBeEnabled();
+  expect(await calls(page, "create_image_task")).toBe(0);
 });
 
 test("partial stream previews never become saved results and missing-pool errors name only adjusted parameters", async ({
