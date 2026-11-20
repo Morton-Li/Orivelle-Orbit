@@ -547,7 +547,7 @@ impl Service {
         }
     }
 
-    fn claude_source(&self) -> Result<(Option<Vec<u8>>, Option<(String, Vec<u8>)>)> {
+    pub(super) fn claude_source(&self) -> Result<(Option<Vec<u8>>, Option<(String, Vec<u8>)>)> {
         let metadata = read_file(&self.paths.claude_library.join("_meta.json"))?;
         let active = metadata
             .as_deref()
@@ -1106,6 +1106,7 @@ impl Service {
         }
         drop(_gate);
         let mapping_result = self.reconcile_claude_mappings();
+        let _ = self.refresh_client_activations();
         self.changed();
         // Restoring authenticated original bytes deliberately has no live
         // actor, model or listener prerequisite. Its runtime status is separate.

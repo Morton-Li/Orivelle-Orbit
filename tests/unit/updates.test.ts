@@ -244,6 +244,77 @@ function button(page: VueWrapper, label: string) {
     );
   })!;
 }
+describe("update installation failures", () => {
+  it.each([
+    ["zh-CN", "客户端配置尚未完成，请先在接入页面处理配置冲突，再安装更新"],
+    [
+      "en",
+      "Client configuration is unfinished. Resolve the configuration conflict on the Access page, then install the update.",
+    ],
+  ] as const)(
+    "keeps a configuration blocker visible after the toast disappears in %s and allows retry",
+    async (language, message) => {
+      vi.useFakeTimers();
+      const store = useOrbitStore();
+      const initial = state();
+      initial.settings.locale = language;
+      store.acceptState(initial);
+      store.update = { ...available(), status: "verified" };
+      bridge.call.mockRejectedValueOnce(
+        new OrbitError("update_configuration_pending", "private native detail"),
+      );
+
+      await store.installUpdate();
+      const page = show();
+      expect(bridge.call).toHaveBeenCalledWith("install_update", {
+        version: "0.2.0",
+        confirmed: true,
+      });
+      expect(page.get(".update-status").text()).toBe(message);
+      expect(store.update?.status).toBe("verified");
+      expect(store.busy.has("update")).toBe(false);
+      expect(store.updateOperation).toBeNull();
+      vi.advanceTimersByTime(6000);
+      expect(store.notice).toBeNull();
+      expect(page.get(".update-status").text()).toBe(message);
+      expect(page.text()).not.toContain("private native detail");
+      view!.unmount();
+      expect(show().get(".update-status").text()).toBe(message);
+
+      let finish!: (value: UpdateView) => void;
+      bridge.call.mockReturnValueOnce(
+        new Promise<UpdateView>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const retry = store.installUpdate();
+      await nextTick();
+      expect(store.updateInstallError).toBeNull();
+      expect(store.busy.has("update")).toBe(true);
+      expect(store.updateOperation).toBe("install");
+      finish(latest());
+      await retry;
+      expect(store.updateInstallError).toBeNull();
+      expect(store.update?.status).toBe("up_to_date");
+    },
+  );
+
+  it("clears an old installation failure when checking a new update", async () => {
+    const store = useOrbitStore();
+    store.acceptState(state());
+    store.update = { ...available(), status: "verified" };
+    bridge.call.mockRejectedValueOnce(
+      new OrbitError("update_install_failed", "private native detail"),
+    );
+    await store.installUpdate();
+    expect(store.updateInstallError).toBe("更新失败，请重试");
+    bridge.call.mockResolvedValueOnce(latest());
+    await store.checkUpdates();
+    expect(store.updateInstallError).toBeNull();
+    expect(show().get(".update-status").text()).toBe("当前已是最新版本");
+  });
+});
+
 describe("update downloads", () => {
   it("announces a new version, shows native progress and opens install confirmation after download", async () => {
     const store = useOrbitStore();

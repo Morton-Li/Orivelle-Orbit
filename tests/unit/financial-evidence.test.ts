@@ -100,7 +100,7 @@ describe("client evidence does not become a false success", () => {
     installed.loaded_state = "confirmed";
     installed.connection_state = "passed";
     expect(clientStatus(installed, bootstrap().connections[0]!, true)).toEqual({
-      text: "待重启 / 载入未确认",
+      text: "待重启",
       tone: "warning",
     });
   });

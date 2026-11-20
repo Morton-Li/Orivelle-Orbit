@@ -177,6 +177,13 @@ export type ClientView = {
   configuration_state: "not_configured" | "saved" | "conflict" | "unsupported";
   loaded_state: "unconfirmed" | "restart_required" | "confirmed";
   connection_state: "not_tested" | "passed" | "failed";
+  activation_state?:
+    | "waiting_restart"
+    | "waiting_start"
+    | "connected"
+    | "unverified"
+    | "unavailable"
+    | null;
   configuration_revision: string | null;
   codex_route_revision?: string | null;
   claude_route_revision?: string | null;
@@ -527,7 +534,10 @@ export interface IpcCommands {
     args: { connection_id: string; node_id: string; expected_revision: number };
     result: BootstrapView;
   };
-  list_models: { args: { connection_id: string }; result: ModelView[] };
+  list_models: {
+    args: { connection_id: string; cached?: boolean };
+    result: ModelView[];
+  };
   probe_nodes: {
     args: {
       connection_id: string;

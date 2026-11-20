@@ -47,6 +47,12 @@ pub struct SystemPaths {
     pub(crate) fixture_codex_runtime:
         Option<std::sync::Arc<dyn Fn() -> CodexRuntimeSnapshot + Send + Sync>>,
     #[cfg(test)]
+    pub(crate) fixture_client_processes: Option<
+        std::sync::Arc<
+            dyn Fn(&ClientView) -> Option<Vec<crate::client_process::Process>> + Send + Sync,
+        >,
+    >,
+    #[cfg(test)]
     pub(crate) fixture_configuration_target: Option<
         std::sync::Arc<dyn Fn(&ClientView, bool) -> Result<CodexConfigurationTarget> + Send + Sync>,
     >,
@@ -1419,6 +1425,8 @@ impl SystemPaths {
             #[cfg(test)]
             fixture_codex_runtime: None,
             #[cfg(test)]
+            fixture_client_processes: None,
+            #[cfg(test)]
             fixture_configuration_target: None,
             #[cfg(test)]
             fixture_claude_configuration_target: None,
@@ -1460,6 +1468,8 @@ impl SystemPaths {
             fixture_policy: None,
             #[cfg(test)]
             fixture_codex_runtime: None,
+            #[cfg(test)]
+            fixture_client_processes: None,
             #[cfg(test)]
             fixture_configuration_target: None,
             #[cfg(test)]
@@ -1527,6 +1537,7 @@ fn base_view(client: ClientKind, paths: &SystemPaths) -> ClientView {
         .into(),
         loaded_state: "unconfirmed".into(),
         connection_state: "not_tested".into(),
+        activation_state: None,
         configuration_revision: None,
         codex_route_revision: None,
         claude_route_revision: None,

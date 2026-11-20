@@ -33,11 +33,13 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::Semaphore,
 };
 use zeroize::Zeroizing;
 
+#[path = "service_activation.rs"]
+mod activation;
 #[path = "service_api_keys.rs"]
 mod api_keys;
 #[path = "service_claude.rs"]
@@ -327,6 +329,7 @@ impl Service {
         let _ = store.list::<InputRecord>("input", None)?;
         let _ = store.list::<Journal>("journal", None)?;
         Self::validate_api_key_store(store)?;
+        Self::validate_client_activation_store(store)?;
         Ok(())
     }
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
@@ -419,6 +422,7 @@ impl Service {
         }
         service.upgrade_claude_display_revision()?;
         service.coordinate_configuration_recovery()?;
+        let _ = service.refresh_client_activations();
         Ok(service)
     }
     pub fn observe(&self, observer: Observer) -> Result<()> {
@@ -947,6 +951,7 @@ impl Service {
                     observed.manual_steps.push(instruction.into());
                 }
             }
+            self.project_activation(&mut observed, active.as_ref(), &snapshot)?;
             *client = observed;
         }
         Ok(BootstrapView {
@@ -1130,6 +1135,39 @@ impl Service {
         if !peer.ip().is_loopback() {
             return Err(fail("invalid_callback"));
         }
+        let result = self
+            .finish_login_callback(
+                &mut socket,
+                installation,
+                request_id,
+                nonce,
+                state,
+                verifier,
+                redirect_uri,
+                epoch,
+            )
+            .await;
+        let response = crate::authorization_callback::response(&result);
+        // A browser that stops reading must not delay the desktop's terminal event.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            socket.write_all(response.as_bytes()),
+        )
+        .await;
+        result
+    }
+
+    async fn finish_login_callback(
+        self: &Arc<Self>,
+        socket: &mut TcpStream,
+        installation: Installation,
+        request_id: String,
+        nonce: String,
+        state: String,
+        verifier: Zeroizing<String>,
+        redirect_uri: String,
+        epoch: u64,
+    ) -> Result<()> {
         let mut request = vec![0u8; 8193];
         let count = tokio::time::timeout(Duration::from_secs(5), async {
             let mut count = 0;
@@ -1276,12 +1314,6 @@ impl Service {
         // Only restore the actor/installation-bound ID after a fresh explicit use
         // grant. A remembered choice never revives an old vault authorization.
         let _ = self.restore_local_key_selection(&id).await;
-        let text = "Orbit authorization completed. You may close this window.";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-            text.len()
-        );
-        let _ = socket.write_all(response.as_bytes()).await;
         Ok(())
     }
     fn commit_authorization(
@@ -2028,6 +2060,19 @@ impl Service {
         self.invalidate_evidence()?;
         self.changed();
         self.bootstrap()
+    }
+    /// Read the last synchronized catalog without refreshing the session or contacting Panel.
+    pub fn cached_models(&self, id: &str) -> Result<Vec<ModelView>> {
+        let record = self.record(id)?;
+        self.ensure_installation_available(&record.installation_id)?;
+        if record.session_status != "authenticated"
+            || record
+                .session_expires_at
+                .is_none_or(|at| at <= chrono::Utc::now().timestamp())
+        {
+            return Err(fail("session_expired"));
+        }
+        Ok(self.account_cache(&record)?.models)
     }
     pub async fn list_models(&self, id: &str) -> Result<Vec<ModelView>> {
         let _operation = self.begin_mutation()?;
@@ -2830,7 +2875,8 @@ impl Service {
         }
         self.preview_client_config_legacy(id, revision, client, model_id)
     }
-    pub async fn preview_switch_config(
+    /// Review cached authority and local configuration; refresh authority only on confirmation.
+    pub fn preview_switch_config(
         &self,
         id: &str,
         revision: u64,
@@ -2841,10 +2887,6 @@ impl Service {
             .review_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        self.configuration_preflight(client)?;
-        self.refresh_account_cache(id, false).await?;
-        self.configuration_preflight(client)?;
-        let _ = self.list_models(id).await?;
         let entry = match (client, model_mapping) {
             (ClientKind::Codex, None) => {
                 self.build_client_preview(id, revision, client, "", CodexPreparation::Review)?
@@ -3594,6 +3636,8 @@ impl Service {
                     .put("client-state", client.client.as_str(), "local", client)?;
             }
         }
+        drop(_gate);
+        let _ = self.refresh_client_activations();
         self.changed();
         Ok(ConfigResult {
             client: journal.client,
@@ -5339,6 +5383,7 @@ fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod authorization_callback;
     mod image_live_demo;
     mod image_workbench;
     #[cfg(target_os = "macos")]
@@ -7132,21 +7177,65 @@ mod tests {
     }
 
     #[cfg(not(windows))]
+    #[test]
+    fn cached_models_are_read_only_and_require_a_live_session() {
+        let f = policy_fixture(ClientKind::Codex);
+        f.service.http.scripted(Arc::new(|_| {
+            panic!("cached model reads must not reach the network")
+        }));
+        f.reset();
+        let revision = f.service.store.snapshot().unwrap().revision;
+        let models = f.service.cached_models(&f.record.view.id).unwrap();
+        assert_eq!(models[0].id, f.model);
+        assert_eq!(f.service.store.snapshot().unwrap().revision, revision);
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+        let mut record = f.service.record(&f.record.view.id).unwrap();
+        record.session_expires_at = Some(chrono::Utc::now().timestamp() - 1);
+        f.service
+            .store
+            .put(
+                "connection",
+                &record.view.id,
+                &record.view.account_id,
+                &record,
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.cached_models(&record.view.id).unwrap_err().code,
+            "session_expired"
+        );
+        assert_eq!(f.vault.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(not(windows))]
     #[tokio::test]
-    async fn codex_public_switch_commands_refresh_authority_at_open_and_at_confirmation() {
-        for change_models in [false, true] {
+    async fn codex_public_switch_reviews_cache_and_refreshes_only_at_confirmation() {
+        for change in ["unchanged", "models", "offline"] {
             let f = policy_fixture(ClientKind::Codex);
             let mut wire = golden()["bootstrap_reply"].clone();
             let model = &f.service.account_cache(&f.record).unwrap().models[0];
             wire["data"]["models"][0]["codex_catalog_binding"] = json!(model.codex_catalog_binding);
             wire["data"]["models"][0]["reasoning"] = json!(model.reasoning);
             wire["data"]["meta"]["catalog_revision"] = json!("review");
+            let cache = map_account_cache(&wire["data"], &f.record).unwrap();
+            f.service
+                .store
+                .put(
+                    "account-cache",
+                    &f.record.view.id,
+                    &f.record.view.account_id,
+                    &cache,
+                )
+                .unwrap();
             let calls = Arc::new(AtomicU64::new(0));
             let requests = calls.clone();
             f.service.http.scripted(Arc::new(move |request| {
-                let index = requests.fetch_add(1, Ordering::SeqCst);
+                requests.fetch_add(1, Ordering::SeqCst);
+                if change == "offline" {
+                    return Box::pin(async { Err(fail("network_unavailable")) });
+                }
                 let mut response = wire.clone();
-                if change_models && index >= 2 {
+                if change == "models" {
                     response["data"]["meta"]["catalog_revision"] = json!("updated");
                 }
                 if request.url.contains("/api/v1/orbit/models?node_id=") {
@@ -7164,9 +7253,13 @@ mod tests {
                     ClientKind::Codex,
                     None,
                 )
-                .await
                 .unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                f.service.cached_models(&f.record.view.id).unwrap().len(),
+                cache.models.len()
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert!(preview.expires_at.is_none() && preview.can_apply);
             assert!(
                 f.service
@@ -7179,9 +7272,19 @@ mod tests {
                 .service
                 .apply_client_config_refreshed(&preview.id, true)
                 .await;
-            assert_eq!(calls.load(Ordering::SeqCst), 4);
-            if change_models {
-                assert_eq!(result.unwrap_err().code, "codex_catalog_scope_changed");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if change == "offline" { 1 } else { 2 }
+            );
+            if change != "unchanged" {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    if change == "offline" {
+                        "network_unavailable"
+                    } else {
+                        "codex_catalog_scope_changed"
+                    }
+                );
                 assert_eq!(
                     std::fs::read(&f.service.paths.codex_config).unwrap(),
                     b"model='old'\n"

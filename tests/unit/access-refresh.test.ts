@@ -51,7 +51,7 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function preview(): ConfigPreview {
+function preview(modelRevision = "R2"): ConfigPreview {
   const connection = useOrbitStore().activeConnection!;
   return {
     id: "synthetic-claude-preview",
@@ -76,7 +76,7 @@ function preview(): ConfigPreview {
       credential_revision: connection.credential_revision!,
       node_id: connection.node_id!,
       node_label: "Synthetic node",
-      model_revision: "R2",
+      model_revision: modelRevision,
     },
     restore_owner: null,
     restore_source: null,
@@ -342,8 +342,28 @@ describe("Explicit data refresh feedback", () => {
   });
 });
 
-describe("Claude preview after a Panel model refresh", () => {
-  it("synchronizes R2 before first displaying its confirmation and keeps saved distinct from loaded", async () => {
+describe("Claude preview uses synchronized local model data", () => {
+  it("shows matching cached data without requesting models again", async () => {
+    nextPreview = preview("R1");
+    nextModels = () => {
+      throw new Error("Preview must not refresh models");
+    };
+    const button = await showAccess();
+    await flushPromises();
+    bridge.call.mockClear();
+    await button.trigger("click");
+    await flushPromises();
+    expect(bridge.call.mock.calls.map(([command]) => command)).toEqual([
+      "preview_client_config",
+    ]);
+    expect(
+      wrapper!.get<HTMLButtonElement>('[role="dialog"] .button.primary').element
+        .disabled,
+    ).toBe(false);
+    expect(writes()).toHaveLength(0);
+  });
+
+  it("synchronizes R2 from native cache before displaying its confirmation and keeps saved distinct from loaded", async () => {
     const button = await showAccess();
     await button.trigger("click");
     await flushPromises();
@@ -351,6 +371,14 @@ describe("Claude preview after a Panel model refresh", () => {
       '[role="dialog"] .button.primary',
     );
     expect(useOrbitStore().models[0]?.revision).toBe("R2");
+    expect(
+      bridge.call.mock.calls.filter(([command]) => command === "list_models"),
+    ).toEqual([
+      [
+        "list_models",
+        { connection_id: "connection-synthetic-account-a", cached: true },
+      ],
+    ]);
     expect(confirm.element.disabled).toBe(false);
     expect(writes()).toHaveLength(0);
     await confirm.trigger("click");
@@ -363,6 +391,58 @@ describe("Claude preview after a Panel model refresh", () => {
     ]);
     expect(useOrbitStore().notice?.text).toContain("配置已保存");
     expect(useOrbitStore().notice?.text).not.toContain("连接验证通过");
+  });
+
+  it("reads the refreshed native cache after a rejected confirmation and requires a new review", async () => {
+    nextPreview = preview("R1");
+    const button = await showAccess();
+    await button.trigger("click");
+    await flushPromises();
+    const apply = bridge.call.getMockImplementation()!;
+    bridge.call.mockImplementation(async (command, request) => {
+      if (command === "apply_client_config")
+        throw publicFailure({ code: "claude_configuration_context_changed" });
+      return apply(command, request);
+    });
+    await wrapper!.get('[role="dialog"] .button.primary').trigger("click");
+    await flushPromises();
+    expect(writes()).toHaveLength(1);
+    expect(useOrbitStore().models[0]?.revision).toBe("R2");
+    expect(
+      bridge.call.mock.calls.filter(([command]) => command === "list_models"),
+    ).toEqual([
+      [
+        "list_models",
+        { connection_id: "connection-synthetic-account-a", cached: true },
+      ],
+    ]);
+    expect(
+      wrapper!.get<HTMLButtonElement>('[role="dialog"] .button.primary').element
+        .disabled,
+    ).toBe(true);
+    const retry = wrapper!
+      .findAll('[role="dialog"] button')
+      .find((button) => button.text() === "重新检查")!;
+    expect(retry.text()).toBe("重新检查");
+    nextPreview = { ...preview(), id: "synthetic-rechecked-preview" };
+    await retry.trigger("click");
+    await flushPromises();
+    expect(writes()).toHaveLength(1);
+    expect(wrapper!.get('[role="dialog"] .button.primary').text()).toBe(
+      "确认接入",
+    );
+    expect(
+      bridge.call.mock.calls.filter(([command]) => command === "list_models"),
+    ).toHaveLength(1);
+    bridge.call.mockImplementation(apply);
+    await wrapper!.get('[role="dialog"] .button.primary').trigger("click");
+    await flushPromises();
+    expect(writes()).toHaveLength(2);
+    expect(writes()[1]).toEqual([
+      "apply_client_config",
+      { preview_id: "synthetic-rechecked-preview", confirmed: true },
+    ]);
+    expect(useOrbitStore().notice?.text).toContain("配置已保存");
   });
 
   it.each(["failure", "changed", "removed"] as const)(

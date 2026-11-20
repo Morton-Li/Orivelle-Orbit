@@ -58,6 +58,7 @@ impl Service {
                 let _ = self.store.put("client-state", "codex", "local", client);
             }
         }
+        let _ = self.refresh_client_activations();
         self.changed();
     }
 

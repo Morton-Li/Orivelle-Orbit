@@ -435,6 +435,10 @@ impl MappingManager {
             );
         Ok(())
     }
+    pub(crate) fn is_running(&self, binding_id: &str) -> bool {
+        self.slots.lock().is_ok_and(|slots| matches!(slots.get(binding_id), Some(Slot::Running { server, .. }) if server.is_running()))
+    }
+
     pub(crate) fn stop(&self, binding_id: &str) {
         if let Ok(mut slots) = self.slots.lock()
             && let Some(Slot::Running { server, .. }) = slots.remove(binding_id)

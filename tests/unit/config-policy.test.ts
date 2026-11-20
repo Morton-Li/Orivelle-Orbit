@@ -425,8 +425,8 @@ describe("Codex catalog confirmation", () => {
     expect(wrapper.text()).not.toContain("可预览本地用户配置");
     expect(wrapper.text()).toContain("远端组织策略未确认");
     expect(wrapper.text()).toContain("配置已保存");
-    expect(wrapper.text()).toContain("待重启 / 载入未确认");
-    expect(wrapper.text()).toContain("连接未验证");
+    expect(wrapper.text()).toContain("待重启");
+    expect(wrapper.text()).not.toContain("连接未验证");
     expect(wrapper.text()).not.toContain("客户端载入已确认");
     expect(wrapper.text()).not.toContain("连接验证通过");
     expect(bridge.call).not.toHaveBeenCalled();
