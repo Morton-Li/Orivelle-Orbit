@@ -33,7 +33,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::Semaphore,
 };
 use zeroize::Zeroizing;
@@ -1135,6 +1135,39 @@ impl Service {
         if !peer.ip().is_loopback() {
             return Err(fail("invalid_callback"));
         }
+        let result = self
+            .finish_login_callback(
+                &mut socket,
+                installation,
+                request_id,
+                nonce,
+                state,
+                verifier,
+                redirect_uri,
+                epoch,
+            )
+            .await;
+        let response = crate::authorization_callback::response(&result);
+        // A browser that stops reading must not delay the desktop's terminal event.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            socket.write_all(response.as_bytes()),
+        )
+        .await;
+        result
+    }
+
+    async fn finish_login_callback(
+        self: &Arc<Self>,
+        socket: &mut TcpStream,
+        installation: Installation,
+        request_id: String,
+        nonce: String,
+        state: String,
+        verifier: Zeroizing<String>,
+        redirect_uri: String,
+        epoch: u64,
+    ) -> Result<()> {
         let mut request = vec![0u8; 8193];
         let count = tokio::time::timeout(Duration::from_secs(5), async {
             let mut count = 0;
@@ -1281,12 +1314,6 @@ impl Service {
         // Only restore the actor/installation-bound ID after a fresh explicit use
         // grant. A remembered choice never revives an old vault authorization.
         let _ = self.restore_local_key_selection(&id).await;
-        let text = "Orbit authorization completed. You may close this window.";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-            text.len()
-        );
-        let _ = socket.write_all(response.as_bytes()).await;
         Ok(())
     }
     fn commit_authorization(
@@ -5356,6 +5383,7 @@ fn apply_server_fact(task: &mut TaskView, fact: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod authorization_callback;
     mod image_live_demo;
     mod image_workbench;
     #[cfg(target_os = "macos")]
