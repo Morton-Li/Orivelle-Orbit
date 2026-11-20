@@ -1,245 +1,125 @@
-# 验证入口与历史结果
+# 验证方法与证据索引
 
-当前产品操作见[用户说明](../../README.md)，架构与数据边界见[运行机制](../architecture/runtime.md)，日常命令和发布要求见[开发、构建与发布](../development/build-and-release.md)。本页集中维护原生验收和历史关键结论；旧记录仅描述当时验收，新增结果按日期单列，不自动延伸至当前发布包。
+用户操作见 [README](../../README.md)，当前职责与安全边界见[运行机制](../architecture/runtime.md)，命令、构建和发布合同见[开发指南](../development/build-and-release.md)。本页先说明如何验证，再保留关键历史结果；固定日期的通过不延伸到当前版本、其他平台或真实上游。
 
 ## 按变更选择验证
 
-### 2026-11-18 正式 v1.0.8 后的本地上线检查
+| 变更                               | 入口与边界                                                                                                                                                                                                                                               |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vue、状态与 typed IPC              | `npm run check`，页面流程按需运行 `npm run test:e2e`；合成 bridge 不代替 Tauri、系统凭据或平台网络                                                                                                                                                       |
+| Rust/core/helper、持久化和配置事务 | [native-workflow](../../scripts/native-workflow.mjs)及受影响测试；预览失效、文件冲突、应用/恢复、迟到响应、幂等与恢复状态                                                                                                                                |
+| 账户、API Key 与用量               | [Panel 夹具](../../tests/acceptance/panel/)、[真实消费者](../../crates/orbit-core/src/service/tests/panel_acceptance.rs)及[本地发布检查](../../crates/orbit-core/src/service/tests/release_check.rs)；独立数据库和内存 Vault 不代表系统 Vault 或真实钱包 |
+| 图片网络与本地保存                 | [发布检查](../../crates/orbit-core/src/service/tests/release_check.rs)的独立合成链路，真实上游另走[显式入口](../../crates/orbit-core/src/service/tests/image_live_demo.rs)；草稿权限与提交资格分别检查，结果不确定不重发                                 |
+| 托盘、窗口和文件系统               | 目标 OS 的真实 app、系统控件、普通用户令牌和实际窗口事件；浏览器 UA、纯几何测试、快捷键不代替真实托盘鼠标事件                                                                                                                                            |
+| 安装、更新和发布                   | 双平台 package evidence、NSIS/DMG 与 updater 签名；包可创建、签名通过、安装/重启成功分别记账                                                                                                                                                             |
 
-范围固定为 GitHub 正式稳定发布 `v1.0.8`（`54212e3dcc7fd56beffb7fa5e5563450a9958814`）到
-本地 `develop` 候选 `acc3d4f408bcabc1616429e5c748708b055dce9d`，覆盖 Codex/Claude
-接入确认、取消与迟到预览、外部配置与最初配置恢复、账户和凭据作用域、五项缓存用量展示，
-以及由构建仓库身份生成的 updater 频道。origin 的同名标签指向
-`2f0377967a4c54ad03f108ffcd2267fdeb4e7811`，与正式 GitHub 标签只有一条浏览器 matcher
-差异，产品树一致；没有移动标签或以 main 代替发布基线。本轮未确认 Orbit 产品逻辑阻塞，
-仅新增下述显式 opt-in 验收与本记录。
+运行前固定完整源码、依赖锁、数据目录和实际包摘要，明确 peer、HTTP、Vault 与资金的替换组件。生产构建排除 demo/fixture；独立标识、数据库和非持久 WebView 的演示应用不证明正式数据迁移或登录链路。
 
-完整 `npm run check` 通过 208 项单元测试、格式、ESLint、类型、生产构建和夹具排除；
-宿主构建脚本 85 项、真实 Chrome 的完整浏览器分组 74 项通过。接入页、紧凑确认框和
-用量宽/窄窗口截图保存在本次 Git 外证据。浏览器采用合成 typed IPC，不代表真实客户端
-配置或系统 Vault。首轮构建脚本因尚未准备 `runtime/tmp` 失败、Chrome 沙箱启动即失败，
-均保留原日志；按已有 preflight 准备目录并获准在宿主使用项目临时目录运行后通过。
-锁定 Rust 1.97.1 的完整 `native-workflow check` 通过 329 项 core、2 项 helper 和
-macOS arm64 Tauri 编译；该完整分组的 7 项核心外部验收，以及独立真实 Keychain 和
-签名 CLI probe 各 1 项均显式 ignored，不计通过。后续新增的 opt-in 按实际独立结果记账，
-没有重复运行不受影响的完整分组。随后显式运行已有的临时配置 home 原生安装资格验收，
-真实 Codex `26.1111.21308` 与 Claude `4.4212.0` 均通过签名与配置目标复核；没有创建
-实际客户端配置文件，也没有访问真实系统 Vault。所有依赖来自项目已有缓存，未安装依赖或修改宿主配置。
+以下外部入口保持显式 opt-in，具体保护以当前源码为准：
 
-新增 [`local_release_check_cache_usage_readonly`](../../crates/orbit-core/src/service/tests/release_check.rs)
-使用真实 Orbit `read_usage_summary` / `list_usage_records`，经严格 TLS、Ed25519 安装
-proof、真实 Panel Session 鉴权与 MySQL 用户范围查询，读取此前由本地真实 Edge 和受控
-上游产生的合成记录。实际调用者读到 12 条记录，双时长分别保留 3,000 与 4,000、金额
-保持十进制字符串 `0.03990000`；旧回执的时长未知值仍为 null。共同付款父账户读到零条，
-证明共同付款不扩展调用记录读取范围；客户端没有推理密钥或已选节点。第一次汇总为零
-而调用记录已有 12 条，随后通过真实 `UsageRollupBuffer::flush(100)` 从数据库待处理标记
-恢复并聚合全部 12 条，生成 3 个汇总桶；钱包余额与账本条数前后严格不变。刷新后的汇总
-请求数与已知时长和未知状态继续由原生消费者校验，原先零汇总回执保留。合成会话由守卫过的
-专属 MySQL CLI 预置、Vault 为内存实现，不是实际 PKCE 登录验收。首轮错误地用付款主体
-预置会话时读到空记录并失败；修正夹具为 API Key 的实际调用者后完整 opt-in 通过，保留
-失败和诊断输出，没有修改产品权限或降低断言。
+- [真实本地 Panel](../../crates/orbit-core/src/service/tests/panel_acceptance.rs)：受保护的独立 Panel/MySQL/TLS 与私有输入，包含 Key 管理和结果未知后的核对。
+- [合成图片/只读用量](../../crates/orbit-core/src/service/tests/release_check.rs)：真实原生消费者与本地组件，合成会话/内存 Vault。证据目录以 create_new 防止同一用例原地重放。
+- [真实图片上游](../../crates/orbit-core/src/service/tests/image_live_demo.rs)：当前明确预算与专属 fixture；重建目录不增加付款授权。
+- [Codex/Keychain roundtrip](../../crates/orbit-core/src/service/tests/macos_config_roundtrip.rs)、[NativeVault](../../crates/orbit-core/tests/macos_native_preflight.rs)和 [CLI signer](../../crates/orbit-core/tests/updater_cli.rs)：各有独立 ignored 入口，不能计入普通合成通过。
 
-本次未执行 Windows 原生安装/更新、正式签名安装包生命周期、真实 Keychain、实际共享
-客户端配置写入、真实账户/provider/付费请求、远端 CI、发布或生产操作。当前来源的
-Windows 签名安装验证与打包脚本通过源码和宿主脚本复核，不能据此声称 Windows 实机通过。
-原始命令、失败、最终回执及截图位于本地 `.worktrees/preflight/evidence/orbit/`，实际 TLS
-用量链路位于 `.worktrees/preflight/runtime/orbit-usage/`。
+未运行与 ignored 分开记录；历史预算、凭据及真实客户端写入授权不延续。Windows 真实多屏/DPI、全新 WebView2 引导和 macOS 完整签名包安装/在线更新等，须按实际候选另行提供证据。
 
-### 2026-11-17 图片工作台本地准备与历史标题
+## 本地平台与图片的历史结论
 
-已登录账户可在未选择推理密钥或节点时添加参考图、再次编辑本地图片；提交生成或编辑请求时仍需有效凭据、可用节点、模型和有效提示词。提交按钮上方显示未满足的条件及相应入口，按钮可见时原因提示也应可见。同一账户连接内切换页面、密钥或节点保留草稿，选定新连接版本后重新校验素材归属并更新预览；切换账户或会话失效会清空草稿，迟到响应不能恢复其他账户的内容。
+以下是当时的独立检查，具体测试数量和逐步失败通过固定 Git 版本追溯，不能据此免除后续变更的门禁。
 
-历史卡片默认以请求 ID 为标题，缺失时使用本地图片 ID；长标题使用省略号截断，悬停显示完整内容。标题支持本地持久改名和留空恢复默认值，原始请求 ID 不变；第二行按 `PNG · 1536 × 1024 · 1.9 MiB` 展示。旧记录不要求迁移，重新完成本地保存也保留已修改的标题。
+- **2026-11-18；正式 v1.0.8 `54212e3d` → `acc3d4f4`**。完整前端、浏览器、锁定 Rust 与 Tauri 检查通过，外部验收仍单列。原生只读用量经严格 TLS/Ed25519、真实 Panel/MySQL 读取 12 条合成调用，保留两类缓存写入及未知值；共同付款父账户读到零条。首次用错会话归属与零汇总失败保留，真实 flush 恢复三个桶且钱包/账本不变；内存 Vault/预置会话不是真实登录
 
-前端完整检查的既有 200 项单元测试及新增 2 项草稿隔离测试通过，类型、ESLint、格式、生产构建和夹具排除通过。真实 Chrome 的图片、API 图片、API Key 和关联页面共 49 项浏览器用例分组通过，覆盖选 Key 后继续编辑、标题改名与恢复、1280/460px 截断和提交原因可见性；提示词重复文案与旧分辨率标题断言已修正。截图位于本地 `.cache/evidence/images-key-required.png`、`images-submit-reason.png` 和 `images-history-request-title.png`。
+  证据：`.worktrees/preflight/evidence/orbit/`及 `runtime/orbit-usage/`。
 
-Rust 1.97.1 离线运行 313 项 core 测试通过，包含新增 4 项本地准备、素材作用域、标题持久化及提交前凭据校验；macOS arm64 Tauri 编译及新 typed IPC 权限生成通过。6 项核心外部验收及两个独立的 Keychain/签名 CLI 验收保持 ignored，不计通过。本轮使用项目内合成数据，没有真实账户图片请求或费用，也没有替换已安装应用。
+- **2026-11-17；v1.0.7 `90f72237` → `2f658cef`**。三个原生 Service 用例实际经过 Panel/MySQL、Edge 和受控上游，默认订阅 PNG、API stream+n=2、蒙版编辑各一次；本地保存/解码及再次发送拒绝通过。正式 v1.0.7 源码旧 Service 另经 TLS 代理完成一次高级请求，不能当作旧 UI 默认订阅或正式包通过。首轮 CA 误作终端证书全部在 TLS 阶段拒绝，换合格证书后新证据根通过；无额外付费请求
 
-### 2026-11-17 正式标签后的上线检查
+  证据：原本地发布检查的 evidence/fixture，入口见 release_check.rs。
 
-检查范围为正式 `v1.0.7`（`90f7223787499a3f052670520b33d52dbbd53aa1`）到本地候选
-`develop`（`2f658cefe0ed4af26b4f9b356ece3103f94371d4`）及受影响的旧入口，重点核对
-高级图片参数和订阅默认值、素材作用域、流式中间图、原始结果保存、未知结果与防重放，
-以及 Codex 模型同步、已绑定密钥和最初配置恢复。本轮没有修改 Orbit 产品逻辑。
+- **2026-11-17；图片准备/标题**。未选 Key/节点可准备草稿，提交仍核资格；同连接切页保留草稿，跨账户清空并丢弃迟到结果。本地请求 ID 标题/改名、旧记录读取、持久保存、宽窄布局和 Rust 回归通过；合成数据，不是实际图片消费
 
-完整前端检查通过 200 项单元测试、类型、ESLint、格式、生产构建及夹具排除；宿主构建脚本
-85 项、真实 Chrome 的完整浏览器分组 67 项通过。浏览器使用合成 IPC，已核对高级选项、
-SVG 与窄屏 GIF 截图；首轮受沙箱限制在 Chrome 启动时失败，经自动审批在沙箱外使用
-项目临时目录运行相同入口后通过。锁定 Rust 1.97.1 的完整原生检查通过 309 项 core、
-2 项 helper 和 macOS arm64 Tauri 编译；5 项既有外部验收保持 ignored，不计通过。
+  证据：原候选 `.cache/evidence/`。
 
-新增[独立合成本地链路入口](../../crates/orbit-core/src/service/tests/release_check.rs)，
-三个显式 opt-in 用例使用实际 Panel 生成的模型投影和预置到 FakeVault 的合成推理密钥，
-由真实 `Service::send_image_once` 经严格 TLS 连接实际 Edge，再经过本地 Panel 的机器授权、
-隔离 MySQL 和受控测试上游。默认订阅 PNG、高级 API `stream+n=2` 和带 PNG 蒙版的编辑
-各发送一次，均完成本地文件写入、读取与解码，共四张 1024×1024 PNG；每个用例随后再次
-调用发送入口，均在本地以 `task_state_conflict` 拒绝，未重放推理。Orbit 编辑请求和 Edge
-转发上游的媒体类型均为 JSON；真实 multipart 入站归一化另由 Edge 联调覆盖。
-Panel Dispatch 与上游写入计数均恰好增加三条，三项请求均成功，活动租约归零。
-隔离夹具的订阅销售价为每张 0.10、高级销售价为每张 0.80，实际合成扣款分别为
-0.10、1.60、0.80，测试余额由 95.90 变为 93.40；这些金额不描述生产价格或真实资金。
+- **2026-11-17；模型同步 `39828b1` / Panel `c09f10df`**。支持推理但未给默认 effort 的模型仍进入兼容目录，Orbit 从权限交集选择值；绑定节点/Key、外部配置冲突、半发布与最初配置恢复有回归。后续通知收敛为刷新反馈和需处理的新故障；未取得当时 Windows 会话原始返回，也未做 Windows 原生或真实上游验证
 
-另从未改动的正式 `v1.0.7` 源码离线编译原 `local_docker_image_once`，通过专属本地 TLS
-转发代理连接新 Edge 和新 Panel，完成一次真实旧 Service 请求、PNG 保存及本地防重放校验。
-该旧测试直接构造 `quality=low`、`size=1024x1024` 的 TaskSnapshot，属于高级 API 请求；
-结果证明旧消费者的线协议和结果保存可以与新组件互通，不代表旧 UI 默认订阅流程或正式签名包。
-代理原样转发请求内容与鉴权，仅适配本地目标 Host；仍使用合成账户、FakeVault 和受控上游。
-Panel Dispatch 与上游写入各增加一条，按合成高级销售价结算 0.80，活动租约归零。
+  证据：原功能 worktree，逐项结果见整理前版本。
 
-首次三项链路均被严格 TLS 校验拒绝，根因为测试夹具将 `CA:TRUE` 的自签 CA 用作终端证书，
-只读 reqwest 探针确认 `CaUsedAsEndEntity`，没有新增 Panel Dispatch 或上游请求。
-换为独立 CA 签发的 `CA:FALSE`、`serverAuth` 终端证书后，先确认健康接口 204，再在新的
-证据根目录通过全部三项用例。原失败报告保留；每个根目录与用例均以 `create_new` 预留记录，
-包括失败和未知结果在内的已记录用例都不能原地重放。未弱化 TLS、主机名或防重放保护。
+- **2026-11-16；v1.0.6 `5f2f4cbd` → `21a99b9d`**。实际 Rust → HTTPS 代理 → Panel/MySQL 验证显式选择、轮换、重授权、CSRF/PKCE/安装证明和登出。仅对指定合成创建断开成功回包，持久化请求核对恢复且未重复创建；旧 Caddy 本身不具备此注入。Weak 引用、TLS CA 和模型 slug 三次夹具失败保留；无系统 Vault/真实配置写入
 
-这不是正式桌面登录、真实系统 Vault、真实服务商或付费业务验收；原生网络消费者使用预置
-合成会话，图片文件在专属临时 Store 中校验后随用例清理，只保留安全摘要。本轮未执行
-Windows 原生、签名安装包生命周期、真实客户端配置写入、远端 CI、发布或生产操作。
+  证据：Panel 验收夹具及原本地回执。
 
-### 2026-11-17 Codex 模型目录与同步
+- **2026-11-16；API 图片与 Key 管理**。SVG/GIF 的解析预算、脚本/外部资源拒绝、媒体类型与 EOF 前流式交付、整批原始文件保存有合成回归，无真实图片或 Windows 原生请求。同日 Key 清理的独立 MySQL 8.4 并发验证旧客户端不能在清理后重新发行自动 Key，保留手动 Key、账务与安装 tombstone；未操作生产 Key
 
-基于 Orbit `39828b1`、Panel `c09f10df` 的 `feature/codex-model-sync`，通过真实 Panel HTTP 测试复现已知模型支持推理但 `default_effort` 为空的投影：八种模板中只有 gpt-6.1-sol 声明了上游默认值。旧 Orbit 自动选择会将其余模型排除，并可能误报缺少声明。修复保留 Panel 对上游默认行为的语义，改由 Orbit 明确配置权限交集内的默认值。
+  证据：原功能 worktree，完整结果由整理前版本追溯。
 
-- Panel：26 项、467 个断言通过，覆盖八种模板、公开别名、自动/手动声明优先级、原账户/节点权限、未知值与私有路由不外泄；相关应用 PHPStan、Pint、Vue/文档格式和 CI profile 清单验证通过。新增回归已纳入核心 CI。
-- Rust：完整核心曾通过 308 项、3 项原有外部验收 ignored；最后的源快照复核、维护锁与 Key 绑定补充后，最终关联 Codex 46 项全部通过。包含模型新增/移除、默认档位为空、别名保留、外部配置冲突、断网、已绑定 Key 与当前默认 Key 分离、半发布恢复及精确恢复最初配置。
-- 前端相关 100 项通过；lint、格式、类型、生产构建及夹具排除通过。macOS 原生 Tauri 编译检查通过。
-- 同日 UI 复核移除接入页常驻的同步说明；需要重启或处理同步问题时复用右下角通知，目录最新时不提示，同一故障不随周期检查重复弹出，启动时不重播缓存的成功通知。前端相关 101 项通过，补强通知场景后 18 项通过；类型、lint、格式和生产构建通过，Rust 未改动。
-- 后续按实际用户动作进一步收窄：顶部刷新只反馈数据刷新成功/失败；后台同步成功、目录变化、暂时断网和外部平台修改保持静默。仅整个已接入目录无法生成、需要处理模型配置的新问题提醒一次。相关前端 133 项通过，覆盖刷新各阶段失败、状态事件不插入刷新反馈、启动成功静默及账户隔离；Rust 未改动。
-- Claude 接入页保留已绑定模型的选择框并禁用编辑，未选齐的说明移至接入按钮旁。相关 133 项单元和 9 项浏览器检查通过，覆盖 1280/800/460 像素布局、已下架的绑定模型、其他账户隔离及密钥更新流程；类型、lint、格式、生产构建和夹具排除通过。仅前端变更。
-- 这是合成账户、隔离 SQLite 和项目内临时配置的验证；没有发送真实推理请求或修改实际桌面配置。本次未取得用户 Windows 会话的线上原始返回，不能确认当时是否同时缺少模板声明；未做 Windows 原生、MySQL、发布或生产部署验收。
+- **2026-11-13；用量 `1611b791` / Panel `47db1d83`**。本人全部入口、多币种、未知费用、时区/筛选/分页、只读与迟到响应回归；图片统一缩略图/原比例放大和模型显示名兼容通过。旧参数复用已移除。仅合成 UI/Rust/Panel 检查，不是当时 MySQL 或真实平台验收
 
-### 2026-11-16 图像 API 工作台
+  证据：原 usage/images 报告。
 
-在独立 `feature/image-api-workbench` worktree 接入高级参数、PNG 蒙版/标注、流式临时预览及
-SVG/GIF 原文件保存、受控预览和剪贴板复制；Panel 对应 `feature/orbit-image-api` 仅新增只读
-`image_api_parameters` 字段，保留旧订阅目录。共享 `images-api-catalog.json` 是静态合成合同，
-不能证明真实上游兑现。默认选项与透明背景继续走订阅，实际高级调整才使用专用池和独立销售价；
-错误字段只来自本次冻结请求，不展示上游私有文本或未调整的参数。
+- **发布复查；v1.0.3 `33a5e56d` → `d419fe4c`**。当轮 quality、浏览器、core/helper/Tauri 通过；工作台 Prettier 修于 `5978798`。Chrome 沙箱、缺临时目录的首轮准备失败和外部 ignored 保留；旧 Windows/DMG 回执不能替代此候选的签名包生命周期
 
-前端完整检查通过 184 项单元测试、类型、格式、ESLint、生产构建及夹具排除。
-18 项相关浏览器用例通过，覆盖 Unicode 的订阅字节界限与 API 字符上限、显式默认值、素材替换、
-格式互斥、流式中间图、按参数报错、SVG/GIF 展示与复制/另存入口、再次编辑限制及旧图片工作流。
-包含 1280 像素亮色 SVG 和 460 像素暗色 GIF 预览。Chrome 在项目隔离临时目录中运行；
-原沙箱启动失败及旧按钮选择器失败保留日志，修正后的最终相关回归全部通过。
+  证据：原 release-gate 报告。
 
-完整锁定 Rust 原生工作流通过 303 项 core、2 项 helper 及本机 macOS arm64 Tauri 编译。
-3 项外部 core 验收、独立真实 Keychain 和签名探针共 5 项保持 ignored，不计通过。
-新增专项覆盖 SVG 脚本/事件/DTD/外部资源和 CSS 混淆、深度与离屏图层预算、嵌入位图、RGBA 透明度，
-GIF 的帧、时序、循环、子帧处置、截断与数量限制，以及超过解码器默认 50 MB 但符合显式预算的大帧。
-HTTP 传输证明 EOF 前交付、状态/媒体类型/体积限制和禁止重放；Service 集成使用合成 HTTP，
-验证蒙版/标注编辑、完整批次原字节保存、快照、SVG/GIF 导出与复制、预览归属和删除缓存。
+v1.0.8 的 origin 同名标签曾与 GitHub 正式标签存在一条浏览器 matcher 差异，产品树一致；原检查未移动标签。上表不声明今天最新发布状态，也不代表远端 CI 或生产部署。
 
-Panel 静态合同及 Orbit 账户接口通过 27 项、324 断言，PHPStan/Pint 通过，共享目录夹具字节一致。
-获用户明确授权后，仅在独立 worktree 内补充固定 Rust 图像依赖及 Cargo.lock，并通过项目镜像补齐
-已锁定的原生缓存；未修改系统软件或本机配置。早期缓存缺失和隔离 core 验证不再替代完整原生结果。
-本轮未使用真实 Vault、生产账户、付费图片或 Windows 原生验收，也未推送、打包发布或部署。
+## 桌面与安装包证据
 
-### 2026-11-16 API Key 管理
+机器回执在[验收资料索引](../../tests/acceptance/README.md)中保留原样。下面集中记录已修复失败、真实操作范围与欠缺项。
 
-独立功能 worktree 完成 Key 查看、管理、本地默认选择与按客户端冻结绑定。确认弹窗仅显示应用、账户、节点与密钥，接入页使用 API Key 页的唯一默认选择；取消 Claude 接入默认保留主设置。普通通知 4 秒、错误通知 6 秒自动关闭。旧自动 Key 改由 Panel 定时维护和新版接口的升级兼容逻辑清理，不等待本地绑定、任务或替代 Key；手动/外部 Key、账务与安装 tombstone 保留。
+- **2026-11-11；macOS arm64**。隔离 app 的托盘创建、关闭隐藏、单实例、菜单导航和退出保护通过；未直接鼠标点击图标、未证明真实 Claude 后台流量连续
 
-最终前端检查通过 180 项单元测试、TypeScript、ESLint、格式、生产构建和测试夹具排除。40 项相关浏览器用例中，首轮 36 项通过，4 项旧详情展示断言按新界面修正后定向复测通过。验证默认 Key 与接入后绑定一致、单一取消入口、基础确认字段、通知自动消失、十进制字符串、只读及 1280/800/460 像素布局。可交互预览使用合成 IPC；夹具的重复确认 ID 改为逐次生成，避免一次过期后影响后续预览。
+- **2026-11-12；Windows v1.0.1 → 候选 v1.0.2**。真实 NSIS、Windows 凭据、旧设置/图片历史、托盘/对话框/剪贴板/保存文件和退出保护；远端为受控 HTTPS peer。初版图标生命周期编译失败修复后通过；旧参数复用只描述原版本
 
-锁定 Rust 1.97.1 的原生工作流通过 288 项 core、2 项 helper 与 Tauri 编译。3 项外部 core 验收、独立真实 Keychain 和 signer 探针共 5 项保持 ignored，不计通过。Panel 本轮 44 项相关 HTTP/授权/维护回归通过（669 断言）；隔离 MySQL 8.4 的 10 项双进程并发通过（144 断言），包含清理先提交时旧客户端不能重新发行自动 Key。PHPStan、Pint 和新授权页 lint 通过。实际清理只在合成数据库验证，未连接生产 Key；Windows 原生、真实 vault、客户端网络与付费图片连续性未在本轮验收。
+- **2026-11-12；DMG**。实际 verify、只读挂载、Applications 链接、背景精确摘要和 Finder 布局；不含用户实际安装、重启或在线更新
 
-### 2026-11-16 正式标签后的上线检查
+- **2026-11-13；配置格式**。Codex/Claude 只读 preflight 及合成恢复通过，改以配置能力判断而非精确版本/文件指纹；预览仍在应用更新后失效，不证明未来格式或 Windows 写入
 
-检查范围为正式 `v1.0.6`（`5f2f4cbdea3f6370839c2050de237351ee97a28f`）到本地候选 `develop`（`21a99b9d94e07822dcdd649a9f3c5d4bd1c8a7e7`）及直接受影响的消费者。此轮未修改产品源码；补齐旧本地 Panel 验收仍依赖自动发行密钥的过时假设，按当前 `api-keys-v1` 明确授权后选择密钥。
+- **2026-11-14；macOS 快捷面板**。原普通 NSWindow 跨 Chrome 全屏点击不可见，追加 collection behavior 仍失败；改 NSPanel/NonactivatingPanel 并去掉激活整个 app 的 set_focus 后，在用户真实单屏点击下原地展开。仅展示期间注册外部鼠标监听，点击 Chrome 后收起、重复图标切换及原失焦路径通过；多屏按当时用户要求暂缓
 
-本机 macOS arm64 的完整 `npm run check` 通过：180 项 Vitest、格式、ESLint、类型、生产构建和夹具排除；宿主构建脚本 85 项通过；`native-workflow check` 通过 288 项 core、2 项 helper 和 Tauri 编译。完整浏览器 53 项通过，使用合成 IPC，并保存 API Key 宽屏及 460 像素暗色截图。首轮 Chrome 在沙箱内启动即 `SIGABRT`，未进入断言；获准在沙箱外使用相同入口后通过，原失败日志保留。
+- **2026-11-14；左右键统一**。左右键改为同一快捷面板，创建失败保留备用菜单。macOS 隔离快捷键、菜单/退出及编译通过，但该次真实图标左右键/全屏/多屏读取超时，未计通过；前一轮左键成功不覆盖新右键
 
-[本地 Panel 验收](../../crates/orbit-core/src/service/tests/panel_acceptance.rs)现覆盖真实会话的列表、创建、显式领取、揭示、轮换、编辑、重置计数、撤销和删除，并继续检查 TLS 链与主机名、错误 CA/SAN、CSRF、PKCE、安装证明、模型权限、离线节点、登出撤销和重新授权。轮换需证明旧凭据引用被持久化停用，新默认选择需在重新授权后以新的凭据引用恢复。丢应答场景额外要求任务所属的本地 TLS 代理：仅对名称为 `Synthetic Orbit recovery` 的首次创建，在真实 Panel 已返回成功后断开下游；代理不重发请求。原生消费者必须进入待核对状态、阻止另一次管理操作，再用同一持久化请求恢复并证明没有重复创建。旧 Caddy 夹具本身不提供此故障注入，不能直接宣称已覆盖丢应答。
+- **2026-11-15；Windows 原生客户端**。真实 MSIX Codex 与 Claude MSIX → 完整 EXE 重装均经 Windows Credential Manager/helper 和默认文件路径请求受控 HTTPS peer，随后恢复/撤销。单屏已有 WebView2，不覆盖多屏或新系统引导；未签名内部候选不代表正式发布
 
-该单一 opt-in 在本机完整通过：真实 Rust Service → 本地 HTTPS 代理 → 实际 Panel → 独立 MySQL；无网络 mock，使用合成账户与内存 Vault，不经过 Edge 推理。前三轮失败如实保留：旧夹具的 `Arc::get_mut` 无法处理 Service 自持的 Weak 引用，改为独占解包并重建正确 Weak；TLS 夹具把 CA 当作服务端证书，换为同根签发的终端证书；模型预期误填数据库 ID，改为协议实际的 slug。第三轮已完成密钥场景后在模型断言失败；修正专用数据与输入后复验完整同一入口，通过轮换、丢应答恢复、模型权限及登出重连的全部断言。原断言、TLS 校验及权限保护均保留。
+- **2026-11-16；托盘初始焦点**。共享前端回归覆盖打开无默认按钮、Enter 不导航、Tab 正常轮廓及重开。真实 macOS AppKit NSPanel/WKWebView 补验修复隐藏后残留轮廓；未构建完整 Tauri、未点真实图标，Windows 仅脚本/浏览器检查
 
-用户明确 Windows 更新链路已由其他任务在 GitHub Actions 验证，排除本轮补验。此前的源码指纹核对作为辅助证据保留，不将其他任务的 Actions 或[历史回执](../../tests/acceptance/desktop/windows-updater-2026-11-15.json)记为本轮执行。
+macOS NSPanel 最终单屏成功与后续左右键缺少实测分别保留，不能用 `visible=true`、快捷键或几何测试代替用户看到面板。原生事件与焦点 JSON 绑定各自候选，不是当前多屏通过证明。
 
-本轮未使用真实系统 Vault、修改真实客户端配置或发起付费图片请求。相应外部验收继续显式 opt-in，未运行项不计通过。
+Windows 最终普通用户交付由 `windows-native-2026-11-15.json` 的 `current_delivery` 与 `follow_up_ordinary_user` 读取，绑定 `b4def7f408a9a29ec1c2098770dd4866a2237714`。WindowsApps 父目录访问改用逐层元数据句柄，导出不再为已有当前所有者多申请 WRITE_OWNER；身份、签名、重解析和私有权限保护保留，并有真实普通用户检查。提升权限的环境准备/输入进程不充当应用运行条件。
 
-| 变更范围                           | 入口与必须区分的边界                                                                                                                                                                                       |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vue、状态和 typed IPC              | `npm run check`；页面交互另用 `npm run test:e2e`。浏览器测试使用合成 bridge，不能替代 Tauri、系统凭据或实际平台调用                                                                                        |
-| Rust core/helper、持久化及配置事务 | [原生工作流](../../scripts/native-workflow.mjs)与相关 Rust 测试；核对预览失效、文件变更冲突、应用/恢复、跨账户迟到响应和任务幂等                                                                           |
-| 账户、用量与平台接口               | [Panel 验收夹具](../../tests/acceptance/panel/)及 [Rust 消费者](../../crates/orbit-core/src/service/tests/panel_acceptance.rs)。独立数据库、合成账户和进程内 CA 不代表系统 Vault、现有业务库或真实用户钱包 |
-| 安装、系统交互和旧版升级           | 在目标 OS 使用真实包与系统控件，保存源码/可执行文件/安装包摘要、旧数据、窗口/托盘、退出保护及安装前后回执；不能用交叉编译或浏览器模拟替代                                                                  |
-| 发布和更新                         | 分别核对双平台 package evidence、DMG/NSIS 和 updater 签名；包可创建、签名可校验、实际安装/重启成功是不同结论                                                                                               |
+同轮 Codex 恢复曾在 publishing 被安装校验拒绝，触发原因未确定；原生 journal 重启续恢复、旧 helper 拒绝与后续最终复验分别保留。初始托盘误点 OneDrive、页面选择器和 fixture 缺路由也保留为失败。原黑窗归属事后未捕获，验收启动器改 GUI/隐藏进程后连续控制台 SHOW 观察为零，不据此抹除原反馈。
 
-运行前固定源码、依赖锁和数据目录，明确哪些 peer、HTTP、Vault 和资金端采用合成实现。生产构建必须排除 demo/fixture；演示应用的独立标识、数据库和非持久化 WebView 不能证明正式应用的数据迁移或登录链路。
+普通用户 Windows 入口为 `tests/windows/with-panel-fixture.ps1 -OrdinaryUser`，限明确标记的 disposable VM。按现有构建流程设置被测程序与 RUNNER_TEMP，将 `tests/windows/hidden-test-host.cs` 用已有 .NET Framework 编译为 `runtime/hidden-test-host.exe`（/target:winexe /platform:x64）；测试启动器和观察器不入发行物。
 
-外部验收保持显式 opt-in，具体保护以测试源码为准：
+### Windows 应用内更新（2026-11-15）
 
-- [真实图片入口](../../crates/orbit-core/src/service/tests/image_live_demo.rs)：需要当前明确的图片预算及专属 Docker fixture。
-- [真实本地 Panel](../../crates/orbit-core/src/service/tests/panel_acceptance.rs)：需要受保护的独立 Panel/MySQL/TLS 与私有输入。
-- [真实 Codex 配置与 Keychain roundtrip](../../crates/orbit-core/src/service/tests/macos_config_roundtrip.rs)：会接触默认配置与系统凭据，不能算进普通合成检查。
-- [NativeVault](../../crates/orbit-core/tests/macos_native_preflight.rs)与[CLI signer](../../crates/orbit-core/tests/updater_cli.rs)另有独立 ignored 入口。
+[Actions 实装验收](https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43730209076)完成真实签名 NSIS 0.2.0 → 0.3.0、确认后安装与自动重启；检查错误包/版本签名、下载取消、维护互斥和安装前篡改。语言、主题、启动检查及既有数据保留，新程序/helper 摘要匹配回执。
 
-未运行或 ignored 项不计为通过；历史任务的预算、凭据及写入授权不延续。
+包来自[构建运行](https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43727014430)的 `425bc43`；最终断言脚本 `1bc6112` 只改对话框断言，经祖先/输入/摘要/签名核对后复用包，没有声称重编。使用临时 updater 密钥、受控 HTTPS peer 和已有 WebView2，没有正式 Release。Windows 使用 NSIS 错误处理，不具有已验收的 macOS 式数据库/app 自动回滚。
 
-## 历史桌面与安装包验收
+### 真实图片样本（2026-11-11）
 
-| 日期与样本                             | 已执行的结果                                                                                                    | 适用边界与保留的失败                                                                                                               |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-11-11，macOS arm64                | 隔离 `.app` 的托盘创建、关闭隐藏、单实例唤回、菜单路由与合成任务退出保护通过                                    | 未自动化直接鼠标点击菜单栏图标，未证明隐藏期间真实 Claude 流量连续；未安装更新或执行系统注销                                       |
-| 2026-11-12，Windows v1.0.1→候选 v1.0.2 | 真实 NSIS 安装/升级、Windows 凭据及旧设置/图片历史保留、原生托盘/对话框/剪贴板/保存文件、退出取消和后台任务通过 | Panel、图片和用量是受控 HTTPS peer；非真实上游或 Codex/Claude 配置写入验收。最早 v1.0.2 发布编译因图标借用生命周期失败，修复后通过 |
-| 2026-11-12，macOS DMG                  | 实际 verify/只读挂载、Applications 链接、背景精确摘要、Finder 位置和窗口布局通过                                | 仅为安装介质及布局验收，不是安装后在线升级、重启或卸载验收                                                                         |
-| 2026-11-13，配置格式兼容               | 本机 Codex/Claude 只读 preflight 与合成配置/恢复回归通过；不再按精确版本或固定文件摘要限制接入                  | 版本仍使旧预览失效；未改真实配置、未发送真实模型请求，不代表未来配置格式或 Windows 自动配置均受支持                                |
+Orbit `5f8ae5d`、Panel `c420b919`、Edge `8b74d79c` 在当时三张预算内仅发送一张生成和一张编辑，均 n=1、无自动重试。实际原生 Service 经 Docker Panel 和正式 Edge 代码到上游，但使用合成会话、FakeVault、独立 SQLite 钱包及内存凭据 broker，不覆盖桌面登录、MySQL 并发或系统 Vault。
 
-Windows 的[原生回执](../../tests/acceptance/desktop/v1.0.2-windows.json)绑定验收源码 `99b2eb4`、应用构建 `3c64e7f`；其中旧参数复用只描述当时版本，当前入口已移除。NSIS 负载与安装文件只允许固定 Tauri 的 `__TAURI_BUNDLE_TYPE_VAR_UNK`→`__TAURI_BUNDLE_TYPE_VAR_NSS` 标记变化，其他字节须相同，不能泛化为任意哈希差异。DMG 的[布局回执](../../tests/acceptance/desktop/v1.0.2-dmg.json)绑定源码 `e1f379c`、构建 `29f4cec`；原生截图属于当时 Actions artifact，不保证永久可下载。
-
-这些结果只覆盖表列候选的原生菜单与托盘行为；后续快捷面板、全屏空间或托盘实现变更需按实际影响范围重新验证。
-
-## 2026-11-15 Windows 原生补齐
-
-本次已使用 Windows x64 VM 构建、安装并验证实际 NSIS 候选。原生启动与托盘、Codex MSIX 的 helper 认证请求、Claude MSIX 的实际 GUI 请求、完整卸载后的完整 EXE 重装复验与配置恢复，见[当前验收范围](../../tests/acceptance/desktop/windows-tray.md)及[机器回执](../../tests/acceptance/desktop/windows-native-2026-11-15.json)。源码文件清单、包与可执行文件摘要分别绑定，不能用本节替代正式发布签名或推送证明。
-
-客户端请求使用真实安装程序、Windows Credential Manager 和默认配置路径，远端为专用受控 HTTPS peer。Claude 首次运行会改写主设置，因此另验收明确选择保留当前设置的恢复模式；严格恢复仍拒绝冲突。单屏已有 WebView2 环境不证明真实多屏 DPI 或全新系统运行库引导安装通过。Windows 默认更新设置的变更没有改变该次未签名候选的手动安装包更新能力；后续正式渠道的应用内更新见下节。
-
-普通用户补验另外定位并修复 WindowsApps 目录访问及导出文件多余的所有者权限请求；提升权限的运行结果不能替代普通用户业务验证。主窗口在 Windows/macOS 共用固定标题栏和内容区独立滚动，另验收内容边界、返回位置与客户端定位。历史样式包和后续权限修复的产物分别记录，当前安装包以机器回执的 `current_delivery` 为准。
-
-## 2026-11-15 Windows 应用内更新
-
-[Actions 实装验收](https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43730209076)在 GitHub-hosted Windows x64 上完成真实 NSIS `0.2.0`→`0.3.0` 更新与自动重启。启动检查更新、错误包/版本签名拒绝、下载取消、维护互斥、安装前缓存篡改检测均通过；设置页下载后自动弹出确认框，确认后在含空格的原安装目录更新，新程序与 helper 的摘要均与构建回执一致，语言/主题/启动检查选择及现有用户数据文件保留。[机器回执](../../tests/acceptance/desktop/windows-updater-2026-11-15.json)保留源码、包摘要、复用证明及先前失败。
-
-安装包来自[构建运行](https://github.com/Morton-Li/Orivelle-Orbit/actions/runs/43727014430)的 `425bc43`，按测试版本派生构建提交；最终验收脚本为 `1bc6112`，仅修改确认对话框断言。同仓库祖先关系、应用输入未变、安装包摘要及两个版本签名验证通过后复用同一批包，未声称重新编译。构建运行中的前端 168 项、Windows core 227 项（另 2 项 ignored）、helper 2 项和原生桌面编译检查通过；本机另通过 7 项更新核心测试与 macOS 桌面编译检查，使用已有 Rust 1.98.0，项目锁定工具链仍为 1.97.1。
-
-此次使用临时 updater 密钥、受控 HTTPS peer 和已有 WebView2，不使用正式发布私钥，不创建 Release。安装包写入与重启使用真实系统流程；这份更新验收只覆盖设置和既有数据文件保留，真实客户端请求及凭据沿用上节独立回执。Windows 采用 NSIS 的安装及错误处理，未验证 macOS 式数据库/应用包自动回滚。普通候选保持空频道；旧版 Windows 需要先手动安装一次支持更新的新正式版本。
-
-## 历史图片链路
-
-2026-11-11，在当时最多三张图片预算内实际发送两次：一张生成、一张以生成结果为参考的编辑，均 `n=1`，没有自动重试或使用第三张额度。候选为 Orbit `5f8ae5d`、Panel `c420b919`、Edge `8b74d79c`。
-
-真实请求由 Orbit 原生 `Service::send_image_once` 经 Docker 内实际 Panel 授权/结算和正式 Edge 执行代码到上游。原生入口使用合成会话、FakeVault、受绑定推理 key 和独立 SQLite 钱包；进程内 CA 不修改系统信任或 hosts。上游 access token 由短期内存 broker 提供，不落入业务数据库、不执行 OAuth 刷新。此结果没有覆盖本次桌面登录、真实系统 Vault、真实用户钱包、MySQL 并发或正式构建身份。
-
-| 事实               | 生成                                                               | 编辑                                                               |
+| 项目               | 生成                                                               | 编辑                                                               |
 | ------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| 请求               | `1024x1024`、low、opaque、PNG                                      | `1536x1024`、low、opaque、JPEG/65                                  |
-| 完整解码与原始保存 | `1536×1024` PNG                                                    | `1536×1024` PNG                                                    |
-| 原始字节 SHA-256   | `e3d53041ca008c9df047e30af72ed3155cf8a71b6b1e232d7375026e40a8a132` | `39d4ea4b8b160f9ddf5f7c0fbc3cddf14540e6b24d32270125bc208c29b0c7d9` |
-| 本地合成销售金额   | USD 0.01                                                           | USD 0.01                                                           |
+| 请求               | 1024x1024、low、opaque、PNG                                        | 1536x1024、low、opaque、JPEG/65                                    |
+| 完整解码的实际文件 | 1536×1024 PNG                                                      | 1536×1024 PNG                                                      |
+| SHA-256            | `e3d53041ca008c9df047e30af72ed3155cf8a71b6b1e232d7375026e40a8a132` | `39d4ea4b8b160f9ddf5f7c0fbc3cddf14540e6b24d32270125bc208c29b0c7d9` |
+| 合成销售金额       | USD 0.01                                                           | USD 0.01                                                           |
 
-每次均只有一个 attempt、唯一终态 event 和资源 permit，沿 `image_count` 合成结算并释放租约。未验收 token 销售计量、真实采购成本或剩余额度。上游没有提供实际执行模型身份；成功事件可选 HTTP 状态为空，不能写成已观测 200。尺寸/格式差异说明参数可提交不等于上游兑现，不能从两张扩展为全部模型、透明背景或参数组合通过。
+每次只有一个 attempt/终态/permit，按 image_count 合成结算并释放租约。未知实际模型与可选 HTTP 状态没有补成已观测 200；请求参数与文件差异说明接受不等于兑现。首次独占性检查与可选状态断言失败没有增加上游请求。收尾撤销合成 key、停止 broker/demo 模型；旧预览地址不是现行服务。安全摘要原位于旧 worktree `.cache/live-demo/evidence/acceptance-summary.json`，不保证仍在磁盘。
 
-首次原生准备遇到独占性检查失败，首次结算断言误把可选状态当必填，均未增加上游请求。收尾移除了内存 broker、撤销合成 key 并停用 demo 模型；旧本机预览地址不作为现行服务入口。原证据安全摘要位于当时 worktree 的 `.cache/live-demo/evidence/acceptance-summary.json`，不保证当前磁盘仍有副本。
+## 历史追溯与维护
 
-真实图片入口默认 ignored，要求 `ORBIT_IMAGE_LIVE_DEMO=1`、绝对 `ORBIT_IMAGE_DEMO_ROOT` 和 `ORBIT_IMAGE_DEMO_OPERATION=generation|edit`，fixture 内含合成输入、进程内 CA 和证据目录。每个操作在发送前用 `create_new` 预留证据文件；文件已存在时拒绝重放，编辑只读前次已验证文件。重新准备目录不产生新的付款授权。
+`ea39836` 保留本轮整理前原文：
 
-## 历史用量、工作台与发布复查
+```sh
+git show ea39836:docs/testing/validation.md
+git show ea39836:tests/acceptance/desktop/menubar.md
+git show ea39836:tests/acceptance/desktop/windows-tray.md
+git show ea39836:tests/acceptance/desktop/tray-focus.md
+```
 
-2026-11-13 的用量功能候选 Orbit `1611b791` 与 Panel `47db1d83` 完成本机合成 UI、Rust、Panel HTTP 回归；验证本人全部入口、多币种十进制金额、未知费用、时区、只读账户、跨账户迟到响应、筛选/分页/详情。后续错误提示布局检查覆盖 1280/800/460 像素及失败重试。没有真实平台联调或 MySQL 验收，平台汇总仍依赖提供 `/api/v1/orbit/usage/summary` 的 Panel。
+更早 release-gate、desktop/images/usage 阶段报告可从 `63631f2` 对应旧路径查询。可执行夹具与机器 JSON 不删除、不改写；原生包只允许固定 Tauri UNK→NSS 标记差异，不能泛化任意摘要差异。
 
-同日图片工作台回归验证模型显示名在任务及快照持久化、旧 JSON 缺字段兼容、模型移出目录后的读取、统一缩略图框和原比例放大。请求仍用模型 ID；移除的参数复用不复活，历史图片仍可用于再次编辑。SQLite schema 未变，原请求参数/返回/结算数据继续供保存和恢复使用。这些是合成数据与本机 demo，不产生真实图片消费；当轮 Windows 只做脚本语法检查。
-
-上线前复查记录绑定稳定基线 `v1.0.3`（`33a5e56dffe0a27c86c6b3e80a6cc554a1b96f59`）、候选 `d419fe4c21bfde94324ce5dca06339a775dbc209`，归档提交 `1bf3d47`；不是今天最新发布或候选状态。原记录的 npm check、Playwright、构建脚本、core/helper 和 typed Tauri 检查通过；唯一新门禁问题是工作台报告的 Prettier，修复于 `5978798`。网络/安装/更新等未变链路沿前轮精确候选证据复用，没有声称重跑。
-
-首轮 Chrome 因沙箱 EPERM/SIGABRT 未进入页面断言，构建脚本首轮因临时目录缺失报 ENOENT；环境具备后同入口通过，原失败不改成首轮全绿。core 三项外部验收及独立 Keychain、CLI signer 仍 ignored，未计通过。未执行真实上游/消费、正式原生网络全链路、该候选 Windows 原生、正式签名 `.app` 实机在线更新/安装/重启/卸载或远端 CI；旧 Windows/DMG 回执不替代这些后续候选验证。
-
-## 历史追溯与新增证据
-
-原阶段文档已归并，本地 `63631f2` 保留整理前版本，可用 `git show 63631f2:<原路径>` 查阅：
-
-- `docs/testing/release-gate.md`：两轮发布复查的候选、逐项结果及证据工作区。
-- `tests/acceptance/desktop/README.md`：菜单/托盘、Windows 与 DMG、配置兼容的原记录。
-- `tests/acceptance/images/README.md`、`tests/acceptance/images/workbench.md`：两张真实图片与后续工作台合成验证。
-- `tests/acceptance/usage/README.md`：用量及错误布局的分段结果。
-
-新增报告写清完整源码、平台/依赖、实际包和 peer、执行命令、失败/跳过及完成条件；只在当前验证主题追加仍有维护用途的结论。原始日志、截图与私有输入放入明确归属的证据目录，不能继续逐轮复制进 docs 或当作自动化 fixture。
+新增证据记录完整源码、平台/依赖、包摘要、替换组件、实际命令、失败/跳过/未运行及完成条件；只将稳定方法、独有失败与剩余条件合入本页，逐轮日志/截图/私有输入留在证据目录。

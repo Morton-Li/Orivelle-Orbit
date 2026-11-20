@@ -7,7 +7,7 @@
 | 安装、连接账户、接入工具、使用图片与用量     | [用户说明](../README.md)                             |
 | 理解进程、凭据、配置切换、图片状态和平台接口 | [运行机制与安全边界](architecture/runtime.md)        |
 | 准备开发环境、选择检查、构建安装包或发布     | [开发、构建与发布](development/build-and-release.md) |
-| 区分合成测试、原生操作和真实上游证据         | [验证入口与历史结果](testing/validation.md)          |
+| 区分合成测试、原生操作和真实上游证据         | [验证方法与证据索引](testing/validation.md)          |
 | 查原生安装包回执或 Panel 验收夹具            | [验收资料入口](../tests/acceptance/README.md)        |
 
 ## 维护约定
