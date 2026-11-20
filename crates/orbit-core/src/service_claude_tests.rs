@@ -2555,19 +2555,26 @@ fn assert_unobserved(service: &Service, state: &str) {
 }
 
 #[tokio::test]
-async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_revisions() {
+async fn claude_b3c_command_reviews_cache_and_refreshes_only_at_confirmation() {
     let mut fixture = mapping_fixture();
     let wire: Value =
         serde_json::from_str(include_str!("../tests/fixtures/public-wire.json")).unwrap();
     let bootstrap = wire["bootstrap_reply"].clone();
     // The immutable wire exposes a non-Claude route. Keep this command-level
     // regression on that real shape rather than inheriting the direct fixture.
-    let mut cache = fixture.service.account_cache(&fixture.record).unwrap();
+    let mut cache = map_account_cache(&bootstrap["data"], &fixture.record).unwrap();
     fixture.model = bootstrap["data"]["models"][0]["id"]
         .as_str()
         .unwrap()
         .into();
-    cache.models[0].id = fixture.model.clone();
+    let models_revision = sha256(b"synthetic independent models endpoint revision");
+    cache.catalog_revision = models_revision.clone();
+    cache.models = bootstrap["data"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| map_model(value, &models_revision).unwrap())
+        .collect();
     fixture
         .service
         .store
@@ -2578,7 +2585,6 @@ async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_rev
             &cache,
         )
         .unwrap();
-    let models_revision = sha256(b"synthetic independent models endpoint revision");
     assert_ne!(
         bootstrap["data"]["meta"]["catalog_revision"],
         models_revision
@@ -2616,8 +2622,8 @@ async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_rev
             ClientKind::Claude,
             Some(&mapping),
         )
-        .await
         .unwrap();
+    assert!(calls.lock().unwrap().is_empty());
     assert!(preview.can_apply && preview.paths.len() == 3 && preview.expires_at.is_none());
     assert!(!service.paths.claude_library.exists());
     assert!(
@@ -2663,10 +2669,7 @@ async fn claude_b3c_command_refresh_accepts_independent_bootstrap_and_models_rev
         .await
         .unwrap();
     assert_eq!(saved.state, "saved");
-    assert_eq!(
-        calls.lock().unwrap().as_slice(),
-        ["bootstrap", "models", "bootstrap", "models"]
-    );
+    assert_eq!(calls.lock().unwrap().as_slice(), ["bootstrap", "models"]);
     assert!(preview.paths.iter().all(|path| Path::new(path).is_file()));
     assert!(
         fs::read_to_string(&preview.paths[1])

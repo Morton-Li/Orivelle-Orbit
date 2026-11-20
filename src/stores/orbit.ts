@@ -429,7 +429,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     return true;
   }
   async function loadModels(
-    options: { silent?: boolean } = {},
+    options: { silent?: boolean; cached?: boolean } = {},
   ): Promise<boolean> {
     const connection = activeConnection.value;
     const capturedScope = scope.value;
@@ -443,6 +443,7 @@ export const useOrbitStore = defineStore("orbit", () => {
     try {
       const result = await call("list_models", {
         connection_id: connection.id,
+        ...(options.cached ? { cached: true } : {}),
       });
       if (generation !== modelGeneration || capturedScope !== scope.value)
         return false;

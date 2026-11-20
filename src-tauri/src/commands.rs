@@ -97,6 +97,13 @@ pub struct Connection {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ListModels {
+    connection_id: String,
+    #[serde(default)]
+    cached: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefreshAccount {
     connection_id: String,
     expected_revision: u64,
@@ -354,8 +361,12 @@ pub fn select_node(native: State<'_, Native>, request: Node) -> Result<Bootstrap
     )
 }
 #[tauri::command]
-pub async fn list_models(native: State<'_, Native>, request: Connection) -> Result<Vec<ModelView>> {
-    native.service.list_models(&request.connection_id).await
+pub async fn list_models(native: State<'_, Native>, request: ListModels) -> Result<Vec<ModelView>> {
+    if request.cached {
+        native.service.cached_models(&request.connection_id)
+    } else {
+        native.service.list_models(&request.connection_id).await
+    }
 }
 #[tauri::command]
 pub async fn probe_nodes(
@@ -381,15 +392,12 @@ pub async fn preview_client_config(
     native: State<'_, Native>,
     request: Preview,
 ) -> Result<ConfigPreview> {
-    native
-        .service
-        .preview_switch_config(
-            &request.connection_id,
-            request.expected_revision,
-            request.client,
-            request.claude_mapping.as_ref(),
-        )
-        .await
+    native.service.preview_switch_config(
+        &request.connection_id,
+        request.expected_revision,
+        request.client,
+        request.claude_mapping.as_ref(),
+    )
 }
 #[tauri::command]
 pub fn discard_config_preview(native: State<'_, Native>, request: PreviewId) -> Result<()> {

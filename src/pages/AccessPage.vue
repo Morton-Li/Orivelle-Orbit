@@ -287,13 +287,13 @@ async function requestPreview(client: ClientKind) {
         );
       return;
     }
-    // Native preview refreshes Panel's catalogue. Synchronize that authoritative
-    // model revision before the dialog can permanently retire a fresh preview.
+    // A background refresh may have updated the native cache. Read that local
+    // revision without introducing a second network round during review.
     const noticeBeforeRead = store.notice;
     const synchronized =
       (result.expires_at === null &&
         matchesReviewModel(result, store.models)) ||
-      (await store.loadModels());
+      (await store.loadModels({ cached: true }));
     if (!current()) return;
     if (
       !synchronized &&

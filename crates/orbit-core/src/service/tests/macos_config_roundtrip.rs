@@ -922,7 +922,6 @@ impl NativeRun {
                 ClientKind::Codex,
                 None,
             )
-            .await
             .map_err(|_| "native_joint_preview_failed")?;
         if !preview.can_apply
             || preview.codex_configuration_target.is_none()

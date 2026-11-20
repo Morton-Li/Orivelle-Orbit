@@ -254,6 +254,7 @@ async function exportImport() {
 async function confirm() {
   const preview = props.preview;
   if (!preview || !allowed.value) return;
+  const scope = store.scope;
   let message: string | undefined;
   const result = await store.perform(
     "config-apply",
@@ -280,8 +281,14 @@ async function confirm() {
           ),
       };
     rejectedPreviewIds.value.add(preview.id);
-    if (preview.client === "claude" && preview.expires_at !== null)
+    if (preview.expires_at === null || preview.client === "claude")
       await store.refresh();
+    if (
+      preview.operation === "apply" &&
+      preview.expires_at === null &&
+      scope === store.scope
+    )
+      await store.loadModels({ cached: true, silent: true });
   }
   if (result) {
     await store.refresh();
