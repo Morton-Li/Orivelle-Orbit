@@ -714,7 +714,11 @@ fn publish(
 /// Caller holds the maintenance lease and one helper-update exclusive lock.
 pub(crate) fn ensure_configuration_idle(store: &Store) -> Result<()> {
     for journal in store.list::<crate::config::Journal>("journal", None)? {
-        if !["committed", "restored"].contains(&journal.phase.as_str()) {
+        // A prepared preview has not published any client files. Canceled or
+        // expired previews can survive in older databases; keeping their records
+        // must not prevent an update. Publishers persist `publishing` before the
+        // first write, and the service mutation lease excludes a live publisher.
+        if !["prepared", "committed", "restored"].contains(&journal.phase.as_str()) {
             return Err(fail("update_configuration_pending"));
         }
     }
@@ -2015,8 +2019,51 @@ mod tests {
         }
     }
     #[test]
+    fn prepared_previews_allow_maintenance_without_deleting_records_or_bypassing_live_work() {
+        for client in ["codex", "claude"] {
+            for expires_at in ["2000-01-01T00:00:00Z", "2099-01-01T00:00:00Z"] {
+                let (f, store) = fixture();
+                let store = Arc::new(store);
+                let vault = Arc::new(NoCallsVault::default());
+                let service = crate::service::Service::new(
+                    store.clone(),
+                    vault.clone(),
+                    crate::system::SystemPaths::isolated(&f.root).unwrap(),
+                )
+                .unwrap();
+                for purpose in ["switch", "switch_restore"] {
+                    let id = uuid();
+                    let journal = json!({"id":id,"client":client,"account_id":f.binding.account_id,"account_label":"Synthetic","installation":{"id":f.binding.installation_id,"origin":f.binding.origin,"public_key":"synthetic","signing_reference":"synthetic-signing-ref","backup_reference":"synthetic-backup-ref"},"created_at":"2000-01-01T00:00:00Z","expires_at":expires_at,"phase":"prepared","purpose":purpose,"paths":[],"target_version":null,"target_bundle_id":null,"nonce":"synthetic","ciphertext":"synthetic"});
+                    store
+                        .put("journal", &id, &f.binding.account_id, &journal)
+                        .unwrap();
+                }
+                let before = store.list::<Value>("journal", None).unwrap();
+                let old_tree = tree_digest(&f.app).unwrap();
+                let new_tree = tree_digest(&f.extracted).unwrap();
+                let operation = service.begin_mutation().unwrap();
+                assert_eq!(
+                    service.begin_maintenance().err().unwrap().code,
+                    "update_busy"
+                );
+                drop(operation);
+                let maintenance = service.begin_maintenance().unwrap();
+                assert!(service.bootstrap().unwrap().maintenance_active);
+                assert_eq!(service.begin_mutation().err().unwrap().code, "update_busy");
+                // The macOS preparation path uses the same gate as Windows handoff.
+                let update = prepared(&f, &store);
+                assert_eq!(store.list::<Value>("journal", None).unwrap(), before);
+                assert_eq!(tree_digest(&f.app).unwrap(), old_tree);
+                assert_eq!(tree_digest(&update.layout.staged).unwrap(), new_tree);
+                assert_eq!(vault.0.load(Ordering::SeqCst), 0);
+                drop(update);
+                drop(maintenance);
+            }
+        }
+    }
+    #[test]
     fn unfinished_configuration_prevents_maintenance_and_preparation_before_any_material_change() {
-        for phase in ["prepared", "publishing", "conflict", "unknown"] {
+        for phase in ["publishing", "conflict", "unknown"] {
             let (f, store) = fixture();
             let store = Arc::new(store);
             let vault = Arc::new(NoCallsVault::default());

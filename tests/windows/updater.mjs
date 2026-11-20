@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
 import { releaseNames, updateEndpoint } from "../../scripts/github-release.mjs";
@@ -297,6 +298,42 @@ try {
   receipt.checks.push(
     "Confirmation is required; changes to the cached installer are caught by re-verification immediately before installation",
   );
+  // Older clients persisted unconfirmed switch/restore previews. Their expiry
+  // must not permanently block the real installed application's update flow.
+  const previewIds = [randomUUID(), randomUUID()];
+  const database = new DatabaseSync(path.join(data, "orbit.sqlite3"));
+  try {
+    const insert = database.prepare(
+      "INSERT INTO records(kind, id, scope, payload) VALUES('journal', ?, 'updater-fixture', ?)",
+    );
+    for (const [index, client] of ["codex", "claude"].entries()) {
+      const id = previewIds[index];
+      insert.run(
+        id,
+        JSON.stringify({
+          id,
+          client,
+          account_id: "updater-fixture",
+          installation: {
+            id: randomUUID(),
+            origin: "https://example.invalid",
+            public_key: "synthetic",
+            signing_reference: "synthetic",
+            backup_reference: "synthetic",
+          },
+          created_at: "2000-01-01T00:00:00Z",
+          expires_at: "2000-01-01T00:00:00Z",
+          phase: "prepared",
+          purpose: index === 0 ? "switch" : "switch_restore",
+          paths: [],
+          nonce: "synthetic",
+          ciphertext: "synthetic",
+        }),
+      );
+    }
+  } finally {
+    database.close();
+  }
   await page.evaluate(() => {
     window.location.hash = "/settings";
   });
@@ -348,6 +385,19 @@ try {
     hash(await readFile(path.join(data, "bin/orbit-credential-helper.exe"))),
     build.packages.target.helper_sha256,
   );
+  const updatedDatabase = new DatabaseSync(path.join(data, "orbit.sqlite3"), {
+    readOnly: true,
+  });
+  try {
+    for (const id of previewIds) {
+      const saved = updatedDatabase
+        .prepare("SELECT payload FROM records WHERE kind='journal' AND id=?")
+        .get(id);
+      assert.equal(JSON.parse(saved.payload).phase, "prepared");
+    }
+  } finally {
+    updatedDatabase.close();
+  }
   await page.screenshot({
     path: path.join(evidence, "updated-and-restarted.png"),
   });
@@ -356,6 +406,9 @@ try {
   );
   receipt.checks.push(
     "Settings, the disabled startup-check choice and existing user data survive; the new embedded helper is deployed and the channel reports up to date",
+  );
+  receipt.checks.push(
+    "Expired Codex switch and Claude restore previews do not block installation and remain intact after restart",
   );
   receipt.status = "passed";
 } catch (error) {
