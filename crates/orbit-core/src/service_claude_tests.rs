@@ -305,6 +305,46 @@ fn mapping_fixture() -> tests::PolicyFixture {
     f
 }
 
+#[tokio::test]
+async fn claude_client_activation_requires_the_bound_local_mapping_to_be_running() {
+    use crate::{client_process::Process, dto::ClientActivationState as State};
+    let f = mapping_fixture();
+    let processes = Arc::new(Mutex::new(Some(Vec::<Process>::new())));
+    let source = processes.clone();
+    let mut paths = f.service.paths.clone();
+    paths.fixture_client_processes = Some(Arc::new(move |_| source.lock().unwrap().clone()));
+    let service = Service::new(f.service.store.clone(), f.vault.clone(), paths).unwrap();
+    let preview = automatic_preview(&service, &f);
+    let port = mapping_context(&service, &preview).mapping.unwrap().port;
+    service
+        .apply_client_config(&preview.id, true, false)
+        .unwrap();
+    let state = || {
+        service
+            .bootstrap()
+            .unwrap()
+            .clients
+            .into_iter()
+            .find(|c| c.client == ClientKind::Claude)
+            .unwrap()
+            .activation_state
+    };
+    assert_eq!(state(), Some(State::WaitingStart));
+    *processes.lock().unwrap() = Some(vec![Process {
+        pid: 99,
+        started_at_micros: chrono::Utc::now().timestamp_micros(),
+        desktop: true,
+    }]);
+    service.reconcile_client_activations().unwrap();
+    assert_eq!(state(), Some(State::Connected));
+    service.stop_claude_mappings();
+    assert_eq!(state(), Some(State::Unavailable));
+    drop(take_stopped_mapping_port(port).await);
+    service.reconcile_claude_mappings().unwrap();
+    service.reconcile_client_activations().unwrap();
+    assert_eq!(state(), Some(State::Connected));
+}
+
 fn preferences_restore_fixture() -> tests::PolicyFixture {
     let f = tests::policy_fixture(ClientKind::Claude);
     let root = f.service.paths.claude_library.parent().unwrap();

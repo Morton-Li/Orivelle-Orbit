@@ -122,6 +122,16 @@ pub struct CatalogSyncView {
     pub model_count: usize,
     pub error: Option<String>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientActivationState {
+    WaitingRestart,
+    WaitingStart,
+    Connected,
+    Unverified,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientView {
     pub client: ClientKind,
@@ -140,6 +150,9 @@ pub struct ClientView {
     pub configuration_state: String,
     pub loaded_state: String,
     pub connection_state: String,
+    /// Local configuration + process lifecycle only; never a network receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_state: Option<ClientActivationState>,
     pub configuration_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_route_revision: Option<String>,

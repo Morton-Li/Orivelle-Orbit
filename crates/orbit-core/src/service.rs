@@ -38,6 +38,8 @@ use tokio::{
 };
 use zeroize::Zeroizing;
 
+#[path = "service_activation.rs"]
+mod activation;
 #[path = "service_api_keys.rs"]
 mod api_keys;
 #[path = "service_claude.rs"]
@@ -327,6 +329,7 @@ impl Service {
         let _ = store.list::<InputRecord>("input", None)?;
         let _ = store.list::<Journal>("journal", None)?;
         Self::validate_api_key_store(store)?;
+        Self::validate_client_activation_store(store)?;
         Ok(())
     }
     pub fn new(store: Arc<Store>, vault: Arc<dyn Vault>, paths: SystemPaths) -> Result<Arc<Self>> {
@@ -419,6 +422,7 @@ impl Service {
         }
         service.upgrade_claude_display_revision()?;
         service.coordinate_configuration_recovery()?;
+        let _ = service.refresh_client_activations();
         Ok(service)
     }
     pub fn observe(&self, observer: Observer) -> Result<()> {
@@ -947,6 +951,7 @@ impl Service {
                     observed.manual_steps.push(instruction.into());
                 }
             }
+            self.project_activation(&mut observed, active.as_ref(), &snapshot)?;
             *client = observed;
         }
         Ok(BootstrapView {
@@ -3604,6 +3609,8 @@ impl Service {
                     .put("client-state", client.client.as_str(), "local", client)?;
             }
         }
+        drop(_gate);
+        let _ = self.refresh_client_activations();
         self.changed();
         Ok(ConfigResult {
             client: journal.client,

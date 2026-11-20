@@ -177,6 +177,13 @@ export type ClientView = {
   configuration_state: "not_configured" | "saved" | "conflict" | "unsupported";
   loaded_state: "unconfirmed" | "restart_required" | "confirmed";
   connection_state: "not_tested" | "passed" | "failed";
+  activation_state?:
+    | "waiting_restart"
+    | "waiting_start"
+    | "connected"
+    | "unverified"
+    | "unavailable"
+    | null;
   configuration_revision: string | null;
   codex_route_revision?: string | null;
   claude_route_revision?: string | null;

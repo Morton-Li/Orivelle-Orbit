@@ -78,11 +78,13 @@ const verified = computed(
         class="client-stages"
       >
         <StatusBadge :text="t('client.saved')" /><StatusBadge
-          :text="t(loaded ? 'client.loaded' : 'client.restart')"
-          :tone="loaded ? 'success' : 'warning'"
+          v-if="loaded"
+          :text="t('client.loaded')"
+          tone="success"
         /><StatusBadge
-          :text="t(verified ? 'client.verified' : 'client.notTested')"
-          :tone="verified ? 'success' : 'neutral'"
+          v-if="verified"
+          :text="t('client.verified')"
+          tone="success"
         />
       </div>
     </div>

@@ -209,8 +209,20 @@ export function clientStatus(
     evidenceMatches(client.loaded_evidence, client, connection)
   )
     return { text: t("client.loaded"), tone: "success" };
-  if (client.configuration_state === "saved")
-    return { text: t("client.restart"), tone: "warning" };
+  if (client.configuration_state === "saved") {
+    switch (client.activation_state) {
+      case "connected":
+        return { text: t("client.connected"), tone: "success" };
+      case "waiting_start":
+        return { text: t("client.start"), tone: "warning" };
+      case "unverified":
+        return { text: t("client.activationUnverified"), tone: "warning" };
+      case "unavailable":
+        return { text: t("client.activationUnavailable"), tone: "warning" };
+      default:
+        return { text: t("client.restart"), tone: "warning" };
+    }
+  }
   return { text: t("client.notConfigured"), tone: "neutral" };
 }
 export function utf8Bytes(value: string): number {

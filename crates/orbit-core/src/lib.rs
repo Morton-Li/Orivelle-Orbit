@@ -5,6 +5,7 @@ pub mod claude_config;
 pub mod claude_mapping;
 pub(crate) mod claude_mapping_http;
 mod client_compatibility;
+mod client_process;
 pub mod clipboard;
 pub mod codex_binding;
 pub mod codex_catalog;
