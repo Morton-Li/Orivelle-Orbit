@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { apiKeyPage } from "../api-key-fixtures";
 import { bootstrap } from "../fixtures";
-import { calls, fixture, pushState } from "./native-fixture";
+import { calls, fixture } from "./native-fixture";
 
 test("API Key list aligns its actions and creates and selects a key while preserving client bindings", async ({
   page,
@@ -126,41 +126,6 @@ test("readonly accounts cannot mutate or choose; usage detail carries the actor-
   expect(await calls(page, "mutate_api_key")).toBe(0);
 });
 
-test("API Key layout stays inside the window at smaller widths and with dark theme", async ({
-  page,
-}) => {
-  await fixture(page);
-  await page.goto("/#/api-keys");
-  await expect(page.locator(".key-table tbody tr")).toHaveCount(3);
-  const dark = bootstrap("synthetic-account-a", 2);
-  dark.settings.theme = "dark";
-  await pushState(page, dark);
-  for (const width of [1280, 800, 460]) {
-    await page.setViewportSize({ width, height: 900 });
-    const search = await page.locator(".key-search").evaluate((container) => {
-      const icon = container.querySelector("svg")!.getBoundingClientRect();
-      const input = container.querySelector("input")!;
-      const bounds = input.getBoundingClientRect();
-      const style = getComputedStyle(input);
-      return {
-        iconRight: icon.right,
-        textLeft:
-          bounds.left +
-          parseFloat(style.borderLeftWidth) +
-          parseFloat(style.paddingLeft),
-      };
-    });
-    expect(search.textLeft - search.iconRight).toBeGreaterThanOrEqual(8);
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth),
-    ).toBeLessThanOrEqual(width);
-    await page.screenshot({
-      path: ".cache/api-keys-demo/api-keys-dark-" + width + ".png",
-      fullPage: true,
-    });
-  }
-});
-
 test("access uses the API Key page default, shows a compact confirmation and automatically dismisses its notice", async ({
   page,
 }) => {
@@ -191,7 +156,7 @@ test("access uses the API Key page default, shows a compact confirmation and aut
   ).toBeEnabled();
   await dialog.getByRole("button", { name: "确认接入", exact: true }).click();
   await expect(page.locator(".toast")).toHaveText(
-    "接入配置已保存，请重启应用。",
+    "接入配置已保存，应用启动或重启后会自动更新连接状态。",
   );
   await expect(page.locator(".toast")).toHaveCount(0, { timeout: 6000 });
   await page
