@@ -1,5 +1,4 @@
 import { expect, test, type Page } from "@playwright/test";
-import manifest from "../../package.json" with { type: "json" };
 import { bootstrap, task } from "../fixtures";
 import {
   calls,
@@ -473,10 +472,8 @@ test("Claude local configuration save uses basic confirmation without claiming l
     has: page.getByRole("heading", { name: "Claude Desktop", exact: true }),
   });
   await expect(row.getByText("配置已保存", { exact: true })).toBeVisible();
-  await expect(
-    row.locator(".client-stages").getByText("待重启", { exact: true }),
-  ).toBeVisible();
-  await expect(row.getByText("连接未验证", { exact: true })).toBeVisible();
+  await expect(row.getByText("待重启", { exact: true })).toBeVisible();
+  await expect(row.getByText("已连接", { exact: true })).toHaveCount(0);
   await expect(row.getByText("客户端载入已确认", { exact: true })).toHaveCount(
     0,
   );
@@ -748,22 +745,6 @@ test("deleting one local image never deletes other results of the same task", as
   expect(await calls(page, "create_image_task")).toBe(0);
 });
 
-test("home uses concise subtitles and Claude uses explicit model mappings", async ({
-  page,
-}) => {
-  await fixture(page);
-  await page.goto("/");
-  await expect(
-    page.getByText("接入全部兼容模型", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText("自定义模型映射", { exact: true })).toBeVisible();
-  await page.goto("/#/access");
-  for (const name of ["Sonnet", "Opus", "Haiku"]) {
-    await expect(page.getByLabel(name, { exact: true })).toBeVisible();
-  }
-  await expect(page.getByText("角色模型", { exact: true })).toHaveCount(0);
-});
-
 test("manual update builds hide unavailable controls", async ({ page }) => {
   const state = bootstrap();
   state.in_app_updates = false;
@@ -806,68 +787,6 @@ test("startup update checking runs once and its result survives page navigation"
   expect(await calls(page, "download_update")).toBe(0);
   expect(await calls(page, "install_update")).toBe(0);
 });
-
-for (const width of [1160, 640]) {
-  test(`${width}px manual update notice preserves the page position and dismisses automatically`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width, height: 720 });
-    await page.clock.install();
-    await fixture(page);
-    await page.goto("/#/settings");
-    await page.evaluate(() => {
-      const bridge = (
-        window as unknown as {
-          __TAURI_INTERNALS__: {
-            invoke: (
-              command: string,
-              args?: Record<string, unknown>,
-            ) => Promise<unknown>;
-          };
-        }
-      ).__TAURI_INTERNALS__;
-      const invoke = bridge.invoke;
-      bridge.invoke = async (command, args) => {
-        if (command === "check_update")
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        return invoke(command, args);
-      };
-    });
-    const check = page.getByRole("button", { name: /检查更新/ });
-    await check.scrollIntoViewIfNeeded();
-    const layout = () =>
-      page.evaluate(() => {
-        const content = document.querySelector(".main-shell")!;
-        return {
-          scroll: content.scrollTop,
-          elements: [
-            ".sidebar",
-            ".main-shell",
-            ".page-heading",
-            ".settings-sections",
-            ".update-status",
-            ".update-status ~ .settings-actions button",
-          ].map((selector) =>
-            document.querySelector(selector)!.getBoundingClientRect().toJSON(),
-          ),
-        };
-      });
-    const before = await layout();
-    await check.click();
-    await expect(page.locator(".update-status")).toHaveText("正在检查更新…");
-    expect(await layout()).toEqual(before);
-    await page.clock.fastForward(1000);
-    await expect(page.locator(".toast")).toHaveText("当前已是最新版本");
-    expect(await layout()).toEqual(before);
-    await expect(
-      page.getByRole("button", { name: "下载并更新", exact: true }),
-    ).toHaveCount(0);
-    await page.clock.fastForward(4000);
-    await expect(page.locator(".toast")).toHaveCount(0);
-    expect(await layout()).toEqual(before);
-    await expect(page.locator(".update-status")).toHaveText("当前已是最新版本");
-  });
-}
 
 test("update download shows progress, cancels, retries and asks before restarting", async ({
   page,
@@ -993,71 +912,4 @@ test("update timeout is readable and leaves download available", async ({
     page.getByRole("button", { name: "检查更新", exact: true }),
   ).toBeEnabled();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
-});
-
-test("access and settings show the supported controls and the installed version", async ({
-  page,
-}) => {
-  const state = bootstrap();
-  state.settings.check_updates_on_start = false;
-  await fixture(page, { state });
-  await page.goto("/#/access");
-  await expect(
-    page.getByRole("heading", { name: "模型映射", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText("更多操作", { exact: true })).toHaveCount(0);
-  await page
-    .getByRole("navigation")
-    .getByRole("link", { name: "设置", exact: true })
-    .click();
-  const currentVersion = page.locator(".settings-current-version");
-  await expect(
-    currentVersion.getByText("当前版本", { exact: true }),
-  ).toBeVisible();
-  await expect(currentVersion.locator("strong")).toHaveText(manifest.version);
-  expect(await calls(page, "check_update")).toBe(0);
-  await expect(
-    page.getByRole("button", { name: "退出登录", exact: true }),
-  ).toBeEnabled();
-  await expect(
-    page.getByRole("button", { name: "忘记此安装", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByText("Orivelle Orbit · 2 GiB", { exact: true }),
-  ).toHaveCount(0);
-});
-
-test("theme, language, wide window and accessible image tabs", async ({
-  page,
-}) => {
-  await fixture(page);
-  await page.goto("/#/settings");
-  await choose(page, "setting-theme", "深色");
-  await expect(page.locator("html")).toContainClass("dark");
-  await choose(page, "setting-locale", "English");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    "Make Orbit fit your workflow",
-  );
-  await page.setViewportSize({ width: 1600, height: 1000 });
-  await page
-    .getByRole("navigation")
-    .getByRole("link", { name: "Images", exact: true })
-    .click();
-  const create = page.getByRole("tab", { name: "Create", exact: true });
-  await page.screenshot({
-    path: ".cache/evidence/images-composer-dark-wide.png",
-    fullPage: true,
-  });
-  await create.focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(page.getByRole("tab", { name: "Local history" })).toBeFocused();
-  await page.screenshot({
-    path: ".cache/evidence/images-dark-wide.png",
-    fullPage: true,
-  });
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
 });

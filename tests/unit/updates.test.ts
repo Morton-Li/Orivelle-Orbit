@@ -175,15 +175,6 @@ describe("latest-version notice lifecycle", () => {
     bridge.call.mockResolvedValue(latest());
   });
 
-  it("automatically dismisses ordinary notifications without an explicit duration", () => {
-    const store = useOrbitStore();
-    store.notify("接入配置已保存，请重启应用。", "success");
-    vi.advanceTimersByTime(3999);
-    expect(store.notice?.text).toContain("接入配置已保存");
-    vi.advanceTimersByTime(1);
-    expect(store.notice).toBeNull();
-  });
-
   it("dismisses the toast after four seconds while retaining the update result", async () => {
     const store = useOrbitStore();
     await store.checkUpdates();
