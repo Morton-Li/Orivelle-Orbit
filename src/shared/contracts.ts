@@ -527,7 +527,10 @@ export interface IpcCommands {
     args: { connection_id: string; node_id: string; expected_revision: number };
     result: BootstrapView;
   };
-  list_models: { args: { connection_id: string }; result: ModelView[] };
+  list_models: {
+    args: { connection_id: string; cached?: boolean };
+    result: ModelView[];
+  };
   probe_nodes: {
     args: {
       connection_id: string;
