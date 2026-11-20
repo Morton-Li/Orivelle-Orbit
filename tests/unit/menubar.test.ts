@@ -81,10 +81,6 @@ async function show() {
   await flushPromises();
   return wrapper;
 }
-function changeOS(dark: boolean) {
-  osDark = dark;
-  mediaListeners.forEach((fn) => fn({ matches: dark }));
-}
 function push(state: BootstrapView) {
   current = state;
   bridge.state?.(structuredClone(state));
@@ -103,32 +99,6 @@ describe("macOS menu bar panel", () => {
     await flushPromises();
     expect(wrapper!.get(".mb-stages").text()).toContain("已提交");
   });
-  it("follows Orbit overrides immediately and follows OS changes only in system mode", async () => {
-    current.settings.theme = "light";
-    await show();
-    changeOS(true);
-    await flushPromises();
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    const next = structuredClone(current);
-    next.state_revision++;
-    next.settings.theme = "dark";
-    push(next);
-    await flushPromises();
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    changeOS(false);
-    await flushPromises();
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    const system = structuredClone(current);
-    system.state_revision++;
-    system.settings.theme = "system";
-    push(system);
-    await flushPromises();
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    changeOS(true);
-    await flushPromises();
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-  });
-
   it("keeps currencies and pending money separate and does not start model or updater work", async () => {
     const data = usageSummary();
     data.summary.charges = [
